@@ -1,7 +1,9 @@
 import 'dotenv/config';
-import { app, Menu, nativeImage } from 'electron';
+import { app, ipcMain, Menu, nativeImage } from 'electron';
 import { menubar } from 'menubar';
 import path from 'path';
+import { captureTradingView } from './capture';
+import { analyzeChart } from './analyzer';
 
 const icon = nativeImage.createFromPath(
   path.join(app.getAppPath(), 'assets', 'iconTemplate.png')
@@ -19,6 +21,7 @@ const mb = menubar({
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
     resizable: false,
   },
@@ -36,5 +39,21 @@ mb.on('ready', () => {
       { label: 'Quit', click: () => app.quit() },
     ]);
     mb.tray.popUpContextMenu(menu);
+  });
+
+  ipcMain.handle('analyze:run', async () => {
+    try {
+      mb.window?.webContents.send('analyze:status', 'capturing');
+      const base64Image = await captureTradingView();
+
+      mb.window?.webContents.send('analyze:status', 'analyzing');
+      const result = await analyzeChart(base64Image);
+
+      mb.window?.webContents.send('analyze:status', 'complete');
+      return result;
+    } catch (err) {
+      mb.window?.webContents.send('analyze:status', 'error');
+      throw err;
+    }
   });
 });
