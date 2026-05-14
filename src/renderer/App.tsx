@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import type { AnalysisResult } from '../shared/types';
 
 const GearIcon: React.FC = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -6,25 +8,76 @@ const GearIcon: React.FC = () => (
   </svg>
 );
 
+type UIStatus = 'idle' | 'loading' | 'complete' | 'error';
+
 const App: React.FC = () => {
+  const [uiStatus, setUiStatus] = useState<UIStatus>('idle');
+  const [loadingMessage, setLoadingMessage] = useState('');
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    // Subscribe to status updates from main process
+    const unsubscribe = window.api.onStatus((status) => {
+      if (status === 'capturing') setLoadingMessage('Capturing TradingView...');
+      else if (status === 'analyzing') setLoadingMessage('Analyzing chart...');
+      // 'complete' and 'error' handled by the requestAnalysis promise
+    });
+    return unsubscribe; // cleanup removes the listener
+  }, []);
+
+  const handleRefresh = async () => {
+    setUiStatus('loading');
+    setErrorMessage('');
+    try {
+      const analysisResult = await window.api.requestAnalysis();
+      setResult(analysisResult);
+      setUiStatus('complete');
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unknown error');
+      setUiStatus('error');
+    }
+  };
+
+  // Status dot class
+  const dotClass = uiStatus === 'complete' ? 'status-dot active'
+    : uiStatus === 'error' ? 'status-dot error'
+    : 'status-dot';
+
+  // Body content
+  const bodyContent = () => {
+    if (uiStatus === 'loading') return <p className="loading-text">{loadingMessage}</p>;
+    if (uiStatus === 'error') return <p className="error-text">{errorMessage}</p>;
+    if (uiStatus === 'complete' && result) return (
+      <ReactMarkdown>{result.markdown_summary}</ReactMarkdown>
+    );
+    return <p className="placeholder-text">No analysis yet. Click refresh to capture.</p>;
+  };
+
   return (
     <div className="app">
       <header className="header">
         <div className="header-left">
           <h1 className="title">Trading Analyzer</h1>
-          <span className="status-dot" aria-label="Status: inactive" />
+          <span className={dotClass} aria-label={`Status: ${uiStatus}`} />
         </div>
         <button className="icon-btn" aria-label="Settings" title="Settings">
           <GearIcon />
         </button>
       </header>
 
-      <main className="body">
-        <p className="placeholder-text">No analysis yet. Click refresh to capture.</p>
+      <main className={uiStatus === 'complete' ? 'markdown-body' : 'body'}>
+        {bodyContent()}
       </main>
 
       <footer className="footer">
-        <button className="refresh-btn">Refresh</button>
+        <button
+          className="refresh-btn"
+          onClick={handleRefresh}
+          disabled={uiStatus === 'loading'}
+        >
+          {uiStatus === 'loading' ? 'Loading...' : 'Refresh'}
+        </button>
       </footer>
     </div>
   );
