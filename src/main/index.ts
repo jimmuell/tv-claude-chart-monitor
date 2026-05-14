@@ -21,6 +21,7 @@ const mb = menubar({
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: false, // required: preload uses require() for local modules
       preload: path.join(__dirname, 'preload.js'),
     },
     resizable: false,
@@ -30,6 +31,7 @@ const mb = menubar({
 
 mb.on('ready', () => {
   app.dock?.hide();
+  mb.window?.webContents.openDevTools({ mode: 'detach' }); // TODO: remove after debugging
 
   mb.tray.on('right-click', () => {
     const menu = Menu.buildFromTemplate([
