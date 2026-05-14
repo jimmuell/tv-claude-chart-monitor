@@ -10,6 +10,7 @@
     "package": "npm run build && electron-builder"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "menubar": "^9.3.0"
   },
   "devDependencies": {

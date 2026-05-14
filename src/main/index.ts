@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { app, Menu, nativeImage } from 'electron';
 import { menubar } from 'menubar';
 import path from 'path';
