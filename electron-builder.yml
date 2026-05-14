@@ -1,0 +1,16 @@
+appId: com.tradinganalyzer.app
+productName: Trading Analyzer
+
+directories:
+  output: release
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.finance
+  icon: assets/iconTemplate.png
+
+files:
+  - dist/**
+  - assets/**
+  - package.json
