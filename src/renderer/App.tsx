@@ -29,6 +29,7 @@ const App: React.FC = () => {
   const handleRefresh = async () => {
     setUiStatus('loading');
     setErrorMessage('');
+    setLoadingMessage('Requesting analysis…');
     try {
       const analysisResult = await window.api.requestAnalysis();
       setResult(analysisResult);
