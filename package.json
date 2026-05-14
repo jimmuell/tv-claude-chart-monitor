@@ -2,7 +2,7 @@
   "name": "trading-analyzer",
   "version": "0.1.0",
   "description": "TradingView chart analysis menubar app",
-  "main": "dist/main/index.js",
+  "main": "dist/main/main/index.js",
   "private": true,
   "scripts": {
     "dev": "tsc -p tsconfig.main.json && concurrently -k -n \"MAIN,VITE,APP\" -c \"cyan,yellow,green\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"wait-on http://localhost:5173 && electron .\"",
