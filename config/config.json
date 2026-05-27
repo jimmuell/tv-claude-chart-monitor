@@ -1,0 +1,75 @@
+{
+  "tv": {
+    "cdpHost": "localhost",
+    "cdpPort": 9222,
+    "pollIntervalMs": 1000,
+    "useMockReader": false
+  },
+  "anthropic": {
+    "apiKeyEnv": "ANTHROPIC_API_KEY",
+    "model": "claude-sonnet-4-6",
+    "maxOutputTokens": 2500,
+    "enabled": true
+  },
+  "session": {
+    "mode": "paper",
+    "defaultStopTicks": 8,
+    "defaultTargetTicks": 16,
+    "tickValue": 1.25
+  },
+  "filter": {
+    "zoneProximityTicks": 4,
+    "perZoneCooldownSec": 90,
+    "globalCooldownSec": 20,
+    "fireOn": {
+      "notablePatterns": true,
+      "zoneInteractions": true,
+      "trendOrMaEvents": true,
+      "everyCandleIfActionable": true
+    }
+  },
+  "ui": {
+    "alwaysOnTop": true,
+    "width": 380,
+    "height": 720,
+    "x": null,
+    "y": null,
+    "voiceReadHeadlines": false
+  },
+  "logging": {
+    "level": "info",
+    "fileLogPath": "./tv-monitor.log"
+  },
+  "annotator": {
+    "enabled": true,
+    "maxAnnotations": 20,
+    "ttlMinutes": 30,
+    "cleanupIntervalSeconds": 60
+  },
+  "google": {
+    "clientId": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "clientSecret": "YOUR_CLIENT_SECRET"
+  },
+  "detectors": {
+    "lifecycle": {
+      "enabled": true,
+      "maxDirectivesPerTick": 3,
+      "invalidate": {
+        "closeBeyondTicks": 8,
+        "holdBars": 3,
+        "lookbackBars": 10
+      },
+      "refine": {
+        "minTouches": 4,
+        "spreadTicks": 4,
+        "windowBars": 30
+      },
+      "recategorize": {
+        "closeBeyondTicks": 8,
+        "holdBars": 3,
+        "retestRequired": true,
+        "retestWithinBars": 15
+      }
+    }
+  }
+}

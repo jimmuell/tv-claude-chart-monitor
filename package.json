@@ -10,7 +10,10 @@
     "package": "npm run build && electron-builder"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
+    "chrome-remote-interface": "^0.34.0",
     "dotenv": "^17.4.2",
+    "googleapis": "^172.0.0",
     "menubar": "^9.3.0"
   },
   "devDependencies": {
