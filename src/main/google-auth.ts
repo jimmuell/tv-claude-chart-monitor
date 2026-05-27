@@ -82,11 +82,17 @@ async function runAuthFlow(): Promise<StoredTokens> {
         const code  = url.searchParams.get('code');
         const error = url.searchParams.get('error');
 
+        if (error || !code) {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Sign-in failed. You can close this tab.</h2></body></html>');
+          server.close();
+          reject(new Error(error ?? 'No auth code received'));
+          return;
+        }
+
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Signed in! You can close this tab.</h2></body></html>');
         server.close();
-
-        if (error || !code) { reject(new Error(error ?? 'No auth code received')); return; }
 
         const { tokens } = await client.getToken({ code, codeVerifier: verifier });
         client.setCredentials(tokens);
@@ -94,9 +100,13 @@ async function runAuthFlow(): Promise<StoredTokens> {
         const oauth2Api = google.oauth2({ version: 'v2', auth: client });
         const { data }  = await oauth2Api.userinfo.get();
 
+        if (!tokens.refresh_token) {
+          throw new Error('No refresh token returned from Google — try signing in again.');
+        }
+
         const stored: StoredTokens = {
           access_token:  tokens.access_token!,
-          refresh_token: tokens.refresh_token!,
+          refresh_token: tokens.refresh_token,
           expiry_date:   tokens.expiry_date!,
           email:         data.email ?? '',
         };
