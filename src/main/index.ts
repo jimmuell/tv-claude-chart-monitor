@@ -12,6 +12,8 @@ import type { AnalysisResult } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
+import { exportAnalysis, invalidateFolderCache } from './google-drive';
+import { getStatus as getGDriveStatus, signOut as gdriveSignOut } from './google-auth';
 
 // ── Window state persistence ──────────────────────────────────────────────
 
@@ -366,6 +368,21 @@ app.on('ready', () => {
 
   // IPC: API key status
   ipcMain.handle(IPC.SETTINGS_KEY_STATUS, () => getKeyStatus());
+
+  // IPC: Google Drive export
+  ipcMain.handle(IPC.GDRIVE_EXPORT, async () => {
+    if (!lastResult) throw new Error('No analysis result to export');
+    return exportAnalysis(lastResult);
+  });
+
+  // IPC: Google Drive auth status
+  ipcMain.handle(IPC.GDRIVE_STATUS, () => getGDriveStatus());
+
+  // IPC: Google Drive sign-out
+  ipcMain.handle(IPC.GDRIVE_SIGNOUT, async () => {
+    await gdriveSignOut();
+    invalidateFolderCache();
+  });
 
   // IPC: app version
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion());
