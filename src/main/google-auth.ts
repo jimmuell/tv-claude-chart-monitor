@@ -33,7 +33,7 @@ function loadTokens(): StoredTokens | null {
 }
 
 function saveTokens(t: StoredTokens): void {
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(t));
+  fs.writeFileSync(TOKEN_PATH, JSON.stringify(t), { mode: 0o600 });
 }
 
 function clearTokens(): void {
@@ -86,6 +86,7 @@ async function runAuthFlow(): Promise<StoredTokens> {
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Sign-in failed. You can close this tab.</h2></body></html>');
           server.close();
+          clearTimeout(authTimeout);
           reject(new Error(error ?? 'No auth code received'));
           return;
         }
@@ -97,7 +98,11 @@ async function runAuthFlow(): Promise<StoredTokens> {
         const { data }  = await oauth2Api.userinfo.get();
 
         if (!tokens.refresh_token) {
-          throw new Error('No refresh token returned from Google — try signing in again.');
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Sign-in failed. No refresh token returned — try again.</h2></body></html>');
+          server.close();
+          reject(new Error('No refresh token returned from Google — try signing in again.'));
+          return;
         }
 
         const stored: StoredTokens = {
@@ -111,8 +116,10 @@ async function runAuthFlow(): Promise<StoredTokens> {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Signed in! You can close this tab.</h2></body></html>');
         server.close();
+        clearTimeout(authTimeout);
         resolve(stored);
       } catch (err) {
+        clearTimeout(authTimeout);
         server.close();
         reject(err);
       }
@@ -122,7 +129,10 @@ async function runAuthFlow(): Promise<StoredTokens> {
     server.on('error', reject);
 
     // Time out after 5 minutes if the user never completes sign-in
-    setTimeout(() => { server.close(); reject(new Error('Google sign-in timed out')); }, 5 * 60_000);
+    const authTimeout = setTimeout(() => {
+      server.close();
+      reject(new Error('Google sign-in timed out'));
+    }, 5 * 60_000);
   });
 }
 
