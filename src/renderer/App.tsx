@@ -31,9 +31,8 @@ const ChevronDownIcon: React.FC = () => (
 type GDriveState = 'unauthenticated' | 'idle' | 'exporting' | 'success' | 'error';
 
 const GDriveButton: React.FC<{
-  result: AnalysisResult;
   onError: (msg: string) => void;
-}> = ({ result, onError }) => {
+}> = ({ onError }) => {
   const [gState, setGState]             = useState<GDriveState>('idle');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [folderUrl, setFolderUrl]       = useState<string | null>(null);
@@ -57,6 +56,10 @@ const GDriveButton: React.FC<{
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [dropdownOpen]);
+
+  useEffect(() => {
+    return () => { if (stateTimerRef.current) clearTimeout(stateTimerRef.current); };
+  }, []);
 
   const setTempState = (s: GDriveState, ms: number) => {
     setGState(s);
@@ -95,7 +98,7 @@ const GDriveButton: React.FC<{
   const leftLabel = () => {
     switch (gState) {
       case 'exporting':       return 'Exporting…';
-      case 'success':         return 'Opened ✓';
+      case 'success':         return 'Exported ✓';
       case 'error':           return 'Failed';
       case 'unauthenticated': return 'Connect Drive';
       default:                return 'Google Drive';
@@ -127,6 +130,8 @@ const GDriveButton: React.FC<{
           className="gdrive-btn-right"
           onClick={() => setDropdownOpen(v => !v)}
           aria-label="Drive options"
+          aria-haspopup="true"
+          aria-expanded={dropdownOpen}
           title="Drive options"
         >
           <ChevronDownIcon />
@@ -1071,7 +1076,6 @@ const App: React.FC = () => {
             <div className="header-actions">
               {result && (
                 <GDriveButton
-                  result={result}
                   onError={showAnnotateError}
                 />
               )}
