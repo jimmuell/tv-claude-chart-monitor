@@ -90,10 +90,6 @@ async function runAuthFlow(): Promise<StoredTokens> {
           return;
         }
 
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Signed in! You can close this tab.</h2></body></html>');
-        server.close();
-
         const { tokens } = await client.getToken({ code, codeVerifier: verifier });
         client.setCredentials(tokens);
 
@@ -111,6 +107,10 @@ async function runAuthFlow(): Promise<StoredTokens> {
           email:         data.email ?? '',
         };
         saveTokens(stored);
+
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><body style="font-family:sans-serif;padding:40px"><h2>Signed in! You can close this tab.</h2></body></html>');
+        server.close();
         resolve(stored);
       } catch (err) {
         server.close();
