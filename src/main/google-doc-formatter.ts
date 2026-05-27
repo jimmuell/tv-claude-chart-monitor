@@ -40,7 +40,7 @@ export function formatAsHtml(result: AnalysisResult): string {
 
   const parts: string[] = [
     `<h1>${esc(verdict)}: ${esc(headline)}</h1>`,
-    `<p><strong>${esc(symbol)} ${esc(timeframe)}m @ ${closedBarPrice}</strong> · ${timestamp}</p>`,
+    `<p><strong>${esc(symbol)} ${esc(timeframe)}m @ ${closedBarPrice.toFixed(2)}</strong> · ${timestamp}</p>`,
   ];
 
   if (structure_read) {
