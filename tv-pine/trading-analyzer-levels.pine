@@ -96,7 +96,8 @@ pm4_signal = input.int(   0,  title="pm4_signal")
 
 // ── Confidence label (in_58) ────────────────────────────────────────────────
 // Integer 0–100 (e.g. 73 = "73%"). 0 = hide label. Written by writeConfidence().
-conf_pct = input.int(0, title="conf_pct")
+conf_pct = input.int(0,    title="conf_pct")
+conf_dir = input.string("", title="conf_dir")
 
 // ── Level drawing state ────────────────────────────────────────────────────
 
@@ -433,7 +434,8 @@ if barstate.islast
         _conf_price = tp_entry > 0.0 ? tp_entry : close
         _conf_x     = bar_index + (tp_entry > 0.0 ? 55 : 8)
         _conf_col   = conf_pct >= 70 ? #26a69a : conf_pct >= 40 ? #f59e0b : #ef5350
-        _conf_txt   = str.tostring(conf_pct) + "% confidence"
+        _conf_dir   = conf_dir != "" ? conf_dir + " · " : ""
+        _conf_txt   = _conf_dir + str.tostring(conf_pct) + "% confidence"
         conf_lbl := label.new(_conf_x, _conf_price, text=_conf_txt,
                               xloc=xloc.bar_index, style=label.style_label_left,
-                              color=_conf_col, textcolor=color.white, size=size.small)
+                              color=_conf_col, textcolor=color.black, size=size.normal)

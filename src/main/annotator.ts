@@ -174,10 +174,14 @@ function truncateMarkerLabel(label: string): string {
 }
 
 const CONFIDENCE_INPUT = 58;
+const CONFIDENCE_DIR_INPUT = 59;
 
-/** Write confidence percentage (0–100) to in_58. Pass 0 to clear. */
-export async function writeConfidence(pct: number): Promise<void> {
-  const patch: Record<string, unknown> = { [`in_${CONFIDENCE_INPUT}`]: pct };
+/** Write confidence percentage (0–100) and direction label to in_58/in_59. Pass 0/'') to clear. */
+export async function writeConfidence(pct: number, dir: string = ''): Promise<void> {
+  const patch: Record<string, unknown> = {
+    [`in_${CONFIDENCE_INPUT}`]:     pct,
+    [`in_${CONFIDENCE_DIR_INPUT}`]: dir,
+  };
   const studyId = await resolveStudyId();
   const result  = await callSetStudyInputs(studyId, patch);
   if (!result.ok) {

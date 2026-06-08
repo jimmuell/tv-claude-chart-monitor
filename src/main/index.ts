@@ -196,7 +196,11 @@ function autoDrawResult(result: AnalysisResult): void {
   }
 
   const pct = Math.round((result.commentary.confidence ?? 0) * 100);
-  writeConfidence(pct)
+  const verdict = result.commentary.setup_verdict;
+  const dir = verdict === 'valid_long' || verdict === 'valid_long_was' ? 'Long'
+            : verdict === 'valid_short' || verdict === 'valid_short_was' ? 'Short'
+            : '';
+  writeConfidence(pct, dir)
     .catch(err => console.error('[auto-draw confidence]', (err as Error).message));
 }
 
