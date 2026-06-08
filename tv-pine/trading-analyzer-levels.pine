@@ -433,9 +433,9 @@ if barstate.islast
     if conf_pct > 0
         _conf_price = tp_entry > 0.0 ? tp_entry : close
         _conf_x     = bar_index + (tp_entry > 0.0 ? 55 : 8)
-        _conf_col   = conf_pct >= 70 ? #26a69a : conf_pct >= 40 ? #f59e0b : #ef5350
-        _conf_dir   = conf_dir != "" ? conf_dir + " · " : ""
-        _conf_txt   = _conf_dir + str.tostring(conf_pct) + "% confidence"
+        _conf_col   = conf_dir == "Long" ? #26a69a : conf_dir == "Short" ? #ef5350 : conf_pct >= 70 ? #26a69a : conf_pct >= 40 ? #f59e0b : #ef5350
+        _conf_prefix = conf_dir != "" ? conf_dir + " · " : ""
+        _conf_txt   = _conf_prefix + str.tostring(conf_pct) + "% confidence"
         conf_lbl := label.new(_conf_x, _conf_price, text=_conf_txt,
                               xloc=xloc.bar_index, style=label.style_label_left,
                               color=_conf_col, textcolor=color.black, size=size.normal)
