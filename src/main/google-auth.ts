@@ -15,8 +15,8 @@ const SCOPES = [
   'email',
 ];
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const cfg = require('../../config/config.json') as {
+const cfgPath = path.join(app.getAppPath(), 'config', 'config.json');
+const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) as {
   google: { clientIdEnv: string; clientSecretEnv: string };
 };
 

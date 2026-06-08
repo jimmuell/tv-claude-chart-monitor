@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, GDriveStatus } from '../shared/types';
+import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot } from '../shared/types';
 
 contextBridge.exposeInMainWorld('api', {
   requestAnalysis: () => ipcRenderer.invoke(IPC.ANALYZE_RUN),
@@ -50,10 +50,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on(IPC.PNL_PUSH, handler);
     return () => ipcRenderer.removeListener(IPC.PNL_PUSH, handler);
   },
-  exportToDrive: (): Promise<{ url: string; folderUrl: string }> =>
+  exportToDrive: (): Promise<{ filePath?: string; cancelled?: boolean }> =>
     ipcRenderer.invoke(IPC.GDRIVE_EXPORT),
-  getGDriveStatus: (): Promise<GDriveStatus> =>
-    ipcRenderer.invoke(IPC.GDRIVE_STATUS),
-  gdriveSignOut: (): Promise<void> =>
-    ipcRenderer.invoke(IPC.GDRIVE_SIGNOUT),
 });

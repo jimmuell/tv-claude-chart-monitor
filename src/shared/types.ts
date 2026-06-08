@@ -232,7 +232,5 @@ export interface ElectronAPI {
   clearTradePlan(): Promise<void>;
   getPnl(): Promise<PnlSnapshot>;
   onPnlUpdate(cb: (snapshot: PnlSnapshot) => void): () => void;
-  exportToDrive(): Promise<{ url: string; folderUrl: string }>;
-  getGDriveStatus(): Promise<GDriveStatus>;
-  gdriveSignOut(): Promise<void>;
+  exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
 }

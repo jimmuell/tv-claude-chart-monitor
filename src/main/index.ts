@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus } from './bridge';
@@ -12,8 +12,7 @@ import type { AnalysisResult } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
-import { exportAnalysis, invalidateFolderCache } from './google-drive';
-import { getStatus as getGDriveStatus, signOut as gdriveSignOut } from './google-auth';
+import { formatAsHtml, docName } from './google-doc-formatter';
 
 // ── Window state persistence ──────────────────────────────────────────────
 
@@ -369,19 +368,18 @@ app.on('ready', () => {
   // IPC: API key status
   ipcMain.handle(IPC.SETTINGS_KEY_STATUS, () => getKeyStatus());
 
-  // IPC: Google Drive export
+  // IPC: Export analysis as local HTML file
   ipcMain.handle(IPC.GDRIVE_EXPORT, async () => {
     if (!lastResult) throw new Error('No analysis result to export');
-    return exportAnalysis(lastResult);
-  });
-
-  // IPC: Google Drive auth status
-  ipcMain.handle(IPC.GDRIVE_STATUS, () => getGDriveStatus());
-
-  // IPC: Google Drive sign-out
-  ipcMain.handle(IPC.GDRIVE_SIGNOUT, async () => {
-    await gdriveSignOut();
-    invalidateFolderCache();
+    const defaultName = docName(lastResult) + '.html';
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: path.join(app.getPath('desktop'), defaultName),
+      filters: [{ name: 'HTML', extensions: ['html'] }],
+    });
+    if (canceled || !filePath) return { cancelled: true };
+    await fs.promises.writeFile(filePath, formatAsHtml(lastResult), 'utf-8');
+    shell.showItemInFolder(filePath);
+    return { filePath };
   });
 
   // IPC: app version

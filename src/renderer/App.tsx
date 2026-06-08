@@ -22,40 +22,14 @@ const GoogleDriveIcon: React.FC = () => (
   </svg>
 );
 
-const ChevronDownIcon: React.FC = () => (
-  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M7 10l5 5 5-5z" />
-  </svg>
-);
 
-type GDriveState = 'unauthenticated' | 'idle' | 'exporting' | 'success' | 'error';
+type GDriveState = 'idle' | 'exporting' | 'success' | 'error';
 
 const GDriveButton: React.FC<{
   onError: (msg: string) => void;
 }> = ({ onError }) => {
-  const [gState, setGState]             = useState<GDriveState>('idle');
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [folderUrl, setFolderUrl]       = useState<string | null>(null);
-  const [userEmail, setUserEmail]       = useState<string | undefined>();
-  const dropdownRef                     = useRef<HTMLDivElement>(null);
-  const stateTimerRef                   = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    window.api.getGDriveStatus().then(s => {
-      if (!s.authenticated) setGState('unauthenticated');
-      setUserEmail(s.email);
-    }).catch(() => setGState('unauthenticated'));
-  }, []);
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (!dropdownRef.current?.contains(e.target as Node)) setDropdownOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [dropdownOpen]);
+  const [gState, setGState]   = useState<GDriveState>('idle');
+  const stateTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => { if (stateTimerRef.current) clearTimeout(stateTimerRef.current); };
@@ -68,98 +42,46 @@ const GDriveButton: React.FC<{
   };
 
   const handleExport = async () => {
-    setDropdownOpen(false);
     setGState('exporting');
     try {
-      const { folderUrl: fUrl } = await window.api.exportToDrive();
-      setFolderUrl(fUrl);
+      const result = await window.api.exportToDrive();
+      if (result.cancelled) { setGState('idle'); return; }
       setTempState('success', 2000);
     } catch (err) {
-      onError(err instanceof Error ? err.message : 'Drive export failed');
+      onError(err instanceof Error ? err.message : 'Export failed');
       setTempState('error', 3000);
     }
   };
 
-  const handleSignOut = async () => {
-    setDropdownOpen(false);
-    try {
-      await window.api.gdriveSignOut();
-      setGState('unauthenticated');
-      setUserEmail(undefined);
-      setFolderUrl(null);
-    } catch { /* ignore */ }
-  };
-
-  const handleOpenFolder = () => {
-    setDropdownOpen(false);
-    if (folderUrl) window.open(folderUrl, '_blank');
-  };
-
-  const leftLabel = () => {
+  const label = () => {
     switch (gState) {
-      case 'exporting':       return 'Exporting…';
-      case 'success':         return 'Exported ✓';
-      case 'error':           return 'Failed';
-      case 'unauthenticated': return 'Connect Drive';
-      default:                return 'Google Drive';
+      case 'exporting': return 'Saving…';
+      case 'success':   return 'Saved ✓';
+      case 'error':     return 'Failed';
+      default:          return 'Save HTML';
     }
   };
 
-  const leftClass = [
+  const btnClass = [
     'gdrive-btn-left',
     gState === 'success' ? 'success' : '',
     gState === 'error'   ? 'error-state' : '',
   ].filter(Boolean).join(' ');
 
   return (
-    <div className="gdrive-wrap" ref={dropdownRef}>
-      <div className="gdrive-split-btn">
-        <button
-          className={leftClass}
-          onClick={handleExport}
-          disabled={gState === 'exporting'}
-          title={gState === 'unauthenticated' ? 'Sign in to Google Drive' : 'Export analysis to Google Drive'}
-        >
-          {gState === 'exporting'
-            ? <span className="gdrive-spinner" />
-            : <GoogleDriveIcon />
-          }
-          {leftLabel()}
-        </button>
-        <button
-          className="gdrive-btn-right"
-          onClick={() => setDropdownOpen(v => !v)}
-          aria-label="Drive options"
-          aria-haspopup="true"
-          aria-expanded={dropdownOpen}
-          title="Drive options"
-        >
-          <ChevronDownIcon />
-        </button>
-      </div>
-
-      {dropdownOpen && (
-        <div className="gdrive-dropdown">
-          {userEmail && (
-            <button className="gdrive-dropdown-item" style={{ opacity: 0.6, cursor: 'default' }} disabled>
-              {userEmail}
-            </button>
-          )}
-          {userEmail && <div className="gdrive-dropdown-sep" />}
-          <button
-            className="gdrive-dropdown-item"
-            onClick={handleOpenFolder}
-            disabled={!folderUrl}
-            title={folderUrl ? 'Open Trading Analyzer folder' : 'Export first to create the folder'}
-          >
-            Open folder
-          </button>
-          <div className="gdrive-dropdown-sep" />
-          <button className="gdrive-dropdown-item" onClick={handleSignOut}>
-            Sign out
-          </button>
-        </div>
-      )}
+    <div className="gdrive-wrap">
+      <button
+        className={btnClass}
+        onClick={handleExport}
+        disabled={gState === 'exporting'}
+        title="Save analysis as HTML"
+      >
+        {gState === 'exporting'
+          ? <span className="gdrive-spinner" />
+          : <GoogleDriveIcon />
+        }
+        {label()}
+      </button>
     </div>
   );
 };

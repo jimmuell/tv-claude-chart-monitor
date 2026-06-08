@@ -1,0 +1,340 @@
+//@version=6
+indicator("TA Levels", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=5)
+
+// ── Inputs — 8 slots × 5 fields = 40 inputs (positional: in_0 … in_39) ───
+// The Electron app writes to these via CDP setStudyInputs using the positional
+// key scheme documented in docs/phase2-annotation-spec.md.
+// Users never need to touch these settings manually.
+
+// Slot 1  (in_0 … in_4)
+s1_price    = input.float( 0.0,       title="s1_price")
+s1_kind     = input.string("",        title="s1_kind")
+s1_label    = input.string("",        title="s1_label")
+s1_visible  = input.int(   0,         title="s1_visible")
+s1_priority = input.string("primary", title="s1_priority")
+
+// Slot 2  (in_5 … in_9)
+s2_price    = input.float( 0.0,       title="s2_price")
+s2_kind     = input.string("",        title="s2_kind")
+s2_label    = input.string("",        title="s2_label")
+s2_visible  = input.int(   0,         title="s2_visible")
+s2_priority = input.string("primary", title="s2_priority")
+
+// Slot 3  (in_10 … in_14)
+s3_price    = input.float( 0.0,       title="s3_price")
+s3_kind     = input.string("",        title="s3_kind")
+s3_label    = input.string("",        title="s3_label")
+s3_visible  = input.int(   0,         title="s3_visible")
+s3_priority = input.string("primary", title="s3_priority")
+
+// Slot 4  (in_15 … in_19)
+s4_price    = input.float( 0.0,       title="s4_price")
+s4_kind     = input.string("",        title="s4_kind")
+s4_label    = input.string("",        title="s4_label")
+s4_visible  = input.int(   0,         title="s4_visible")
+s4_priority = input.string("primary", title="s4_priority")
+
+// Slot 5  (in_20 … in_24)
+s5_price    = input.float( 0.0,       title="s5_price")
+s5_kind     = input.string("",        title="s5_kind")
+s5_label    = input.string("",        title="s5_label")
+s5_visible  = input.int(   0,         title="s5_visible")
+s5_priority = input.string("primary", title="s5_priority")
+
+// Slot 6  (in_25 … in_29)
+s6_price    = input.float( 0.0,       title="s6_price")
+s6_kind     = input.string("",        title="s6_kind")
+s6_label    = input.string("",        title="s6_label")
+s6_visible  = input.int(   0,         title="s6_visible")
+s6_priority = input.string("primary", title="s6_priority")
+
+// Slot 7  (in_30 … in_34)
+s7_price    = input.float( 0.0,       title="s7_price")
+s7_kind     = input.string("",        title="s7_kind")
+s7_label    = input.string("",        title="s7_label")
+s7_visible  = input.int(   0,         title="s7_visible")
+s7_priority = input.string("primary", title="s7_priority")
+
+// Slot 8  (in_35 … in_39)
+s8_price    = input.float( 0.0,       title="s8_price")
+s8_kind     = input.string("",        title="s8_kind")
+s8_label    = input.string("",        title="s8_label")
+s8_visible  = input.int(   0,         title="s8_visible")
+s8_priority = input.string("primary", title="s8_priority")
+
+// ── ORB Inputs (in_40 … in_42) ─────────────────────────────────────────────
+orb_enabled       = input.bool(  true, title="orb_enabled")
+orb_high_override = input.float( 0.0,  title="orb_high_override")
+orb_low_override  = input.float( 0.0,  title="orb_low_override")
+
+// ── Trade Plan Bracket Inputs (in_43 … in_45) ──────────────────────────────
+tp_entry  = input.float(0.0, title="tp_entry")
+tp_stop   = input.float(0.0, title="tp_stop")
+tp_target = input.float(0.0, title="tp_target")
+
+// ── Level drawing state ────────────────────────────────────────────────────
+
+var lines_arr  = array.new<line>()
+var labels_arr = array.new<label>()
+
+// ── Level color helpers ────────────────────────────────────────────────────
+
+levelColor(k) =>
+    switch k
+        "support"    => #ef5350
+        "resistance" => #42a5f5
+        =>              #cfd8dc
+
+// Dark backgrounds (support/resistance) → white text; light (neutral gray) → black text.
+labelTextColor(k) =>
+    switch k
+        "support"    => color.white
+        "resistance" => color.white
+        =>              color.black
+
+// ── ORB constants ──────────────────────────────────────────────────────────
+
+ORB_GREEN   = #26a69a
+ORB_RED     = #ef5350
+ORB_NEUTRAL = #b0bec5
+
+// ── ORB calculation state ──────────────────────────────────────────────────
+// These vars accumulate across every bar; rendering happens in barstate.islast.
+
+var float orb_h        = na  // accumulated ORB high (this session)
+var float orb_l        = na  // accumulated ORB low  (this session)
+var bool  orb_done     = false
+var int   orb_done_bar = na  // bar_index when ORB window closed
+
+// ── ORB drawing handles ────────────────────────────────────────────────────
+// Held in var so the session-reset block can delete the previous session's drawings.
+
+var line  orb_h_line   = na  // completed solid high line
+var line  orb_l_line   = na  // completed solid low line
+var line  orb_hd_line  = na  // forming dashed high line
+var line  orb_ld_line  = na  // forming dashed low line
+var label orb_h_lbl    = na
+var label orb_l_lbl    = na
+var box   orb_box      = na
+
+// ── Trade plan bracket drawing handles ────────────────────────────────────
+var line  tp_entry_line  = na
+var line  tp_stop_line   = na
+var line  tp_target_line = na
+var label tp_entry_lbl   = na
+var box   tp_risk_box    = na
+var box   tp_reward_box  = na
+
+// ── Session timestamps (recomputed each bar from the bar's own date) ───────
+
+t_open    = timestamp("America/Chicago", year, month, dayofmonth, 8, 30, 0)
+t_close   = timestamp("America/Chicago", year, month, dayofmonth, 15, 0, 0)
+t_orb_end = timestamp("America/Chicago", year, month, dayofmonth, 8, 45, 0)
+
+in_sess    = time >= t_open and time < t_close
+in_orb_win = time >= t_open and time < t_orb_end
+// ≤15m timeframe: ORB forms over 15, 3, or 1 bar respectively; higher TFs skip.
+tf_ok      = timeframe.in_seconds() <= 900
+// Transition: previous bar outside session, this bar inside — new trading day.
+new_sess   = in_sess and not in_sess[1]
+
+// ── Session reset — runs once per day on the first 8:30 bar ───────────────
+// Deletes any drawings left from the prior session (they're already created so
+// safe to delete), then resets all ORB state for fresh accumulation.
+
+if new_sess
+    line.delete(orb_h_line)
+    line.delete(orb_l_line)
+    line.delete(orb_hd_line)
+    line.delete(orb_ld_line)
+    label.delete(orb_h_lbl)
+    label.delete(orb_l_lbl)
+    box.delete(orb_box)
+    orb_h_line  := na
+    orb_l_line  := na
+    orb_hd_line := na
+    orb_ld_line := na
+    orb_h_lbl   := na
+    orb_l_lbl   := na
+    orb_box     := na
+    orb_h        := na
+    orb_l        := na
+    orb_done     := false
+    orb_done_bar := na
+
+// ── ORB range accumulation (every bar during the opening 15-minute window) ─
+
+if in_orb_win
+    orb_h := na(orb_h) ? high : math.max(orb_h, high)
+    orb_l := na(orb_l) ? low  : math.min(orb_l, low)
+
+// Lock ORB on the first bar that falls after the 8:45 boundary
+if in_sess and not in_orb_win and not orb_done and not na(orb_h)
+    orb_done     := true
+    orb_done_bar := bar_index
+
+// ── Redraw on every last-bar evaluation ───────────────────────────────────
+// Runs on every tick of the last bar so lines/labels reposition as new bars
+// form.  extend.both on level lines makes them span the full chart regardless
+// of pan/zoom.
+
+if barstate.islast
+    // ── Purge and redraw level lines/labels ───────────────────────────────
+    for l in lines_arr
+        line.delete(l)
+    array.clear(lines_arr)
+
+    for lb in labels_arr
+        label.delete(lb)
+    array.clear(labels_arr)
+
+    // Pack slot inputs into parallel arrays for iteration
+    prices     = array.from(s1_price,    s2_price,    s3_price,    s4_price,
+                            s5_price,    s6_price,    s7_price,    s8_price)
+    kinds      = array.from(s1_kind,     s2_kind,     s3_kind,     s4_kind,
+                            s5_kind,     s6_kind,     s7_kind,     s8_kind)
+    lbltexts   = array.from(s1_label,    s2_label,    s3_label,    s4_label,
+                            s5_label,    s6_label,    s7_label,    s8_label)
+    visibles   = array.from(s1_visible,  s2_visible,  s3_visible,  s4_visible,
+                            s5_visible,  s6_visible,  s7_visible,  s8_visible)
+    priorities = array.from(s1_priority, s2_priority, s3_priority, s4_priority,
+                            s5_priority, s6_priority, s7_priority, s8_priority)
+
+    // 3-column stagger: slots 0/3/6 → +8, slots 1/4/7 → +18, slots 2/5 → +28
+    // Prevents label overlap even when multiple prices are within a few ticks.
+    x_offsets = array.from(8, 18, 28, 8, 18, 28, 8, 18)
+
+    for i = 0 to 7
+        if array.get(visibles, i) == 1 and array.get(prices, i) != 0.0
+            p   = array.get(prices,      i)
+            k   = array.get(kinds,       i)
+            lbl = array.get(lbltexts,    i)
+            pri = array.get(priorities,  i)
+            col = levelColor(k)
+
+            // Primary: solid line, full opacity. Secondary: dashed, 30% transparent.
+            isPrimary  = pri == "primary" or pri == ""
+            lineStyle  = isPrimary ? line.style_solid : line.style_dashed
+            lineWidth  = isPrimary ? 2 : 1
+            lineCol    = isPrimary ? col : color.new(col, 30)
+            labelCol   = isPrimary ? col : color.new(col, 30)
+
+            // extend.both makes the line span the full chart regardless of x coordinates,
+            // so pan/zoom never clips it. x1/x2 are arbitrary for a horizontal line.
+            l = line.new(bar_index, p, bar_index + 1, p,
+                         extend=extend.both, color=lineCol, width=lineWidth,
+                         style=lineStyle)
+            array.push(lines_arr, l)
+
+            // Single-line label: price · abbreviated tag (tag pre-truncated by Electron to ≤20 chars).
+            txt   = lbl != "" ? str.tostring(p, format.mintick) + " · " + lbl : str.tostring(p, format.mintick)
+            x_off = bar_index + array.get(x_offsets, i)
+            lb  = label.new(x_off, p, text=txt,
+                            xloc=xloc.bar_index, style=label.style_label_left,
+                            color=labelCol, textcolor=labelTextColor(k), size=size.normal)
+            array.push(labels_arr, lb)
+
+    // ── ORB rendering (inside barstate.islast so it updates every tick) ───
+    if orb_enabled and tf_ok
+        // Tear down all previous ORB drawings before rebuilding.
+        // The var handles survive because we reassign them below.
+        line.delete(orb_h_line)
+        line.delete(orb_l_line)
+        line.delete(orb_hd_line)
+        line.delete(orb_ld_line)
+        label.delete(orb_h_lbl)
+        label.delete(orb_l_lbl)
+        box.delete(orb_box)
+        orb_h_line  := na
+        orb_l_line  := na
+        orb_hd_line := na
+        orb_ld_line := na
+        orb_h_lbl   := na
+        orb_l_lbl   := na
+        orb_box     := na
+
+        // Override inputs take precedence over Pine-calculated values.
+        has_override = orb_high_override > 0.0 and orb_low_override > 0.0
+        eff_h = has_override ? orb_high_override : orb_h
+        eff_l = has_override ? orb_low_override  : orb_l
+
+        // Only render during the NY session and when we have values.
+        if in_sess and not na(eff_h) and not na(eff_l)
+            if orb_done or has_override
+                // ── Completed ORB: solid lines + shaded zone ──────────────
+                // Lines start at the bar where ORB locked; extend.right carries
+                // them to the right edge of the chart for the rest of the session.
+                start = not na(orb_done_bar) ? orb_done_bar : bar_index
+                orb_h_line := line.new(start, eff_h, bar_index, eff_h,
+                                       color=ORB_GREEN, width=2,
+                                       style=line.style_solid, extend=extend.right)
+                orb_l_line := line.new(start, eff_l, bar_index, eff_l,
+                                       color=ORB_RED,   width=2,
+                                       style=line.style_solid, extend=extend.right)
+                orb_h_lbl := label.new(bar_index + 3, eff_h, "ORB H",
+                                       xloc=xloc.bar_index,
+                                       color=ORB_GREEN, textcolor=color.white,
+                                       style=label.style_label_left, size=size.small)
+                orb_l_lbl := label.new(bar_index + 3, eff_l, "ORB L",
+                                       xloc=xloc.bar_index,
+                                       color=ORB_RED, textcolor=color.white,
+                                       style=label.style_label_left, size=size.small)
+                // Zone box extends 100 bars past current bar to stay visible
+                // while price trades inside or near the range.
+                orb_box := box.new(start, eff_h, bar_index + 100, eff_l,
+                                   bgcolor=color.new(#FFEB3B, 90),
+                                   border_color=na)
+            else
+                // ── Forming (8:30–8:45): dashed lines showing live range ──
+                // extend.both keeps them visible regardless of pan/zoom.
+                orb_hd_line := line.new(bar_index, eff_h, bar_index + 1, eff_h,
+                                        color=ORB_GREEN, width=1,
+                                        style=line.style_dashed, extend=extend.both)
+                orb_ld_line := line.new(bar_index, eff_l, bar_index + 1, eff_l,
+                                        color=ORB_RED,   width=1,
+                                        style=line.style_dashed, extend=extend.both)
+
+    // ── Trade Plan Bracket ────────────────────────────────────────────────
+    line.delete(tp_entry_line)
+    line.delete(tp_stop_line)
+    line.delete(tp_target_line)
+    label.delete(tp_entry_lbl)
+    box.delete(tp_risk_box)
+    box.delete(tp_reward_box)
+    tp_entry_line  := na
+    tp_stop_line   := na
+    tp_target_line := na
+    tp_entry_lbl   := na
+    tp_risk_box    := na
+    tp_reward_box  := na
+
+    if tp_entry > 0.0 and tp_stop > 0.0 and tp_target > 0.0
+        rr_val = math.abs(tp_target - tp_entry) / math.abs(tp_entry - tp_stop)
+        rr_txt = str.tostring(math.round(rr_val, 1)) + "R"
+
+        tp_entry_line  := line.new(bar_index, tp_entry, bar_index + 1, tp_entry,
+                                   extend=extend.both, color=#26a69a, width=2,
+                                   style=line.style_solid)
+        tp_stop_line   := line.new(bar_index, tp_stop, bar_index + 1, tp_stop,
+                                   extend=extend.both, color=#ef5350, width=2,
+                                   style=line.style_dashed)
+        tp_target_line := line.new(bar_index, tp_target, bar_index + 1, tp_target,
+                                   extend=extend.both, color=#4caf50, width=2,
+                                   style=line.style_dashed)
+
+        tp_entry_lbl := label.new(bar_index + 35, tp_entry,
+                                  text=str.tostring(tp_entry, format.mintick) + " · " + rr_txt,
+                                  xloc=xloc.bar_index, style=label.style_label_left,
+                                  color=#26a69a, textcolor=color.white, size=size.small)
+
+        risk_top    = math.max(tp_entry, tp_stop)
+        risk_bottom = math.min(tp_entry, tp_stop)
+        rew_top     = math.max(tp_entry, tp_target)
+        rew_bottom  = math.min(tp_entry, tp_target)
+
+        tp_risk_box   := box.new(bar_index, risk_top,   bar_index + 200, risk_bottom,
+                                 bgcolor=color.new(#ef5350, 92),
+                                 border_color=na)
+        tp_reward_box := box.new(bar_index, rew_top,    bar_index + 200, rew_bottom,
+                                 bgcolor=color.new(#4caf50, 92),
+                                 border_color=na)

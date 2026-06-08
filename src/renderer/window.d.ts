@@ -1,4 +1,4 @@
-import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, GDriveStatus } from '../shared/types';
+import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot } from '../shared/types';
 
 declare global {
   interface Window {
@@ -22,9 +22,7 @@ declare global {
       clearTradePlan(): Promise<void>;
       getPnl(): Promise<PnlSnapshot>;
       onPnlUpdate(cb: (snapshot: PnlSnapshot) => void): () => void;
-      exportToDrive(): Promise<{ url: string; folderUrl: string }>;
-      getGDriveStatus(): Promise<GDriveStatus>;
-      gdriveSignOut(): Promise<void>;
+      exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
     };
   }
 }
