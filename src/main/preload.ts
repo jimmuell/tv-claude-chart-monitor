@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot } from '../shared/types';
+import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, PatternMarker } from '../shared/types';
 
 contextBridge.exposeInMainWorld('api', {
   requestAnalysis: () => ipcRenderer.invoke(IPC.ANALYZE_RUN),
@@ -52,4 +52,6 @@ contextBridge.exposeInMainWorld('api', {
   },
   exportToDrive: (): Promise<{ filePath?: string; cancelled?: boolean }> =>
     ipcRenderer.invoke(IPC.GDRIVE_EXPORT),
+  writePatternMarkers: (markers: PatternMarker[]): Promise<void> =>
+    ipcRenderer.invoke(IPC.ANNOTATE_PATTERN_MARKERS, markers),
 });

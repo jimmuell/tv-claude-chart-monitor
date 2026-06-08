@@ -3,12 +3,12 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, s
 import fs from 'fs';
 import path from 'path';
 import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus } from './bridge';
-import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan } from './annotator';
+import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
 import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
-import type { AnalysisResult } from '../shared/types';
+import type { AnalysisResult, PatternMarker } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
@@ -149,9 +149,7 @@ function resolveTradePlanNumbers(result: AnalysisResult): { entry: number; stop:
   const tp  = result.commentary.trade_plan;
   const hpt = result.commentary.highest_probability_trade;
 
-  if (tp && tp.entry != null && tp.stop != null && tp.target != null) {
-    return { entry: tp.entry, stop: tp.stop, target: tp.target };
-  }
+  // HPT has priority — it is always the highest-conviction setup.
   if (hpt) {
     const entry  = parsePrice(hpt.entry_zone);
     const stop   = parsePrice(hpt.stop);
@@ -159,6 +157,10 @@ function resolveTradePlanNumbers(result: AnalysisResult): { entry: number; stop:
     if (entry != null && stop != null && target != null) {
       return { entry, stop, target };
     }
+  }
+  // Fallback to trade_plan exact numeric values.
+  if (tp && tp.entry != null && tp.stop != null && tp.target != null) {
+    return { entry: tp.entry, stop: tp.stop, target: tp.target };
   }
   return null;
 }
@@ -177,6 +179,20 @@ function autoDrawResult(result: AnalysisResult): void {
   } else {
     clearTradePlan()
       .catch(err => console.error('[auto-draw tp clear]', (err as Error).message));
+  }
+
+  const patterns = result.commentary.candlestick_patterns;
+  if (patterns && patterns.length > 0) {
+    const markers: PatternMarker[] = patterns.slice(0, 4).map(p => ({
+      bar_offset: p.bar_offset,
+      label:      p.name.slice(0, 12),
+      signal:     p.signal === 'bullish' ? 1 : p.signal === 'bearish' ? -1 : 0,
+    }));
+    writePatternMarkers(markers)
+      .catch(err => console.error('[auto-draw markers]', (err as Error).message));
+  } else {
+    writePatternMarkers([])
+      .catch(err => console.error('[auto-draw markers clear]', (err as Error).message));
   }
 }
 
@@ -360,6 +376,11 @@ app.on('ready', () => {
   });
   ipcMain.handle(IPC.ANNOTATE_CLEAR_TRADE_PLAN, async () => {
     await clearTradePlan();
+  });
+
+  // IPC: candle pattern markers
+  ipcMain.handle(IPC.ANNOTATE_PATTERN_MARKERS, async (_e, markers: PatternMarker[]) => {
+    await writePatternMarkers(markers);
   });
 
   // IPC: force CDP reconnect

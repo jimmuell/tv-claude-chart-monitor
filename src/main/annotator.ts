@@ -1,5 +1,5 @@
 import { findStudyId, callSetStudyInputs } from './bridge';
-import type { KeyLevel, LevelAnnotation } from '../shared/types';
+import type { KeyLevel, LevelAnnotation, PatternMarker } from '../shared/types';
 
 const SLOTS         = 8;
 const INDICATOR_NAME = 'TA Levels';
@@ -144,6 +144,33 @@ export async function writeTradePlan(entry: number, stop: number, target: number
 /** Zero out all 3 trade plan inputs. */
 export async function clearTradePlan(): Promise<void> {
   return writeTradePlan(0, 0, 0);
+}
+
+const PATTERN_MARKER_BASE = 46;
+const MAX_PATTERN_MARKERS = 4;
+
+/** Write up to 4 candle pattern markers (in_46–in_57). Pass [] to clear all. */
+export async function writePatternMarkers(markers: PatternMarker[]): Promise<void> {
+  const patch: Record<string, unknown> = {};
+  for (let i = 0; i < MAX_PATTERN_MARKERS; i++) {
+    const base = PATTERN_MARKER_BASE + i * 3;
+    const m    = markers[i];
+    patch[`in_${base}`]     = m?.bar_offset ?? 0;
+    patch[`in_${base + 1}`] = m ? truncateMarkerLabel(m.label) : '';
+    patch[`in_${base + 2}`] = m?.signal ?? 0;
+  }
+  const studyId = await resolveStudyId();
+  const result  = await callSetStudyInputs(studyId, patch);
+  if (!result.ok) {
+    invalidateStudyCache();
+    const freshId = await resolveStudyId();
+    const retry   = await callSetStudyInputs(freshId, patch);
+    if (!retry.ok) throw new Error(`Failed to write pattern markers: ${retry.error}`);
+  }
+}
+
+function truncateMarkerLabel(label: string): string {
+  return label.length > 12 ? label.slice(0, 12) : label;
 }
 
 /** Zero out all 8 slots. */

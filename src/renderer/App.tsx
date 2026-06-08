@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot } from '../shared/types';
+import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import SettingsPanel from './SettingsPanel';
 
@@ -107,12 +107,12 @@ const EyeOffIcon: React.FC = () => (
 // ── Verdict helpers ────────────────────────────────────────────────────────
 
 const VERDICT_LABEL: Record<SetupVerdict, string> = {
-  valid_long:       'LONG',
-  valid_long_was:   'LONG (WAS)',
-  valid_short:      'SHORT',
-  valid_short_was:  'SHORT (WAS)',
-  no_trade:         'NO TRADE',
-  wait:             'WAIT',
+  valid_long:       'Buy Setup',
+  valid_long_was:   'Missed Buy',
+  valid_short:      'Sell Setup',
+  valid_short_was:  'Missed Sell',
+  no_trade:         'No Setup',
+  wait:             'Wait',
 };
 
 function verdictColor(v: SetupVerdict): string {
@@ -326,18 +326,29 @@ function hptBiasColor(bias: HighestProbabilityTrade['bias']): string {
   return 'var(--text-secondary)';
 }
 
+function patternSignalStyle(signal: CandlestickPattern['signal']): { label: string; color: string } {
+  switch (signal) {
+    case 'bullish':  return { label: '▲ Bullish', color: 'var(--accent)' };
+    case 'bearish':  return { label: '▼ Bearish', color: 'var(--bearish)' };
+    default:         return { label: '◆ Neutral', color: '#f59e0b' };
+  }
+}
+
 const CommentaryCard: React.FC<{
   commentary:   CommentaryResult;
   currentPrice: number;
   annotation:   AnnotationState;
   tradePlanCtrl: TradePlanCtrl;
 }> = ({ commentary, currentPrice, annotation, tradePlanCtrl }) => {
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
+
   const {
     headline, objective, steps_what_happened,
     setup_verdict, what_now, what_not,
     next_trigger, key_lesson, bottom_line,
     trade_plan, key_levels_to_watch,
     structure_read, highest_probability_trade,
+    candlestick_patterns,
   } = commentary;
 
   const showTradePlan = trade_plan !== null && trade_plan !== undefined && trade_plan.direction !== 'none';
@@ -348,6 +359,7 @@ const CommentaryCard: React.FC<{
 
   const objectiveBullets = splitBullets(objective);
   const hasLevels = key_levels_to_watch && key_levels_to_watch.length > 0;
+  const hasPatterns = candlestick_patterns && candlestick_patterns.length > 0;
 
   return (
     <div className="commentary-card">
@@ -365,20 +377,89 @@ const CommentaryCard: React.FC<{
         </p>
       </div>
 
-      {/* Section A2 — Structure Read */}
-      {structure_read && (
+      {/* Section A1.5 — Candlestick Pattern Card */}
+      {hasPatterns && (
         <div className="commentary-section">
-          <div className="section-label">Structure</div>
-          <p className="structure-read-text">{structure_read}</p>
+          <div className="section-label">Patterns</div>
+          <div className="pattern-list">
+            {candlestick_patterns!.map((p, i) => {
+              const sig = patternSignalStyle(p.signal);
+              return (
+                <div key={i} className="pattern-card" style={{ borderLeftColor: sig.color }}>
+                  <div className="pattern-card-header">
+                    <span className="pattern-name">{p.name}</span>
+                    <span className="pattern-badge" style={{ color: sig.color }}>{sig.label}</span>
+                  </div>
+                  <p className="pattern-meaning">{p.meaning}</p>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Section B — Key Levels */}
+      {/* Section B2 — Best Setup (HPT) — moved before levels */}
+      {highest_probability_trade && (
+        <div className="commentary-section">
+          <div className="hpt-card" style={{ borderLeftColor: hptBiasColor(highest_probability_trade.bias) }}>
+            <div className="hpt-header">
+              <div className="section-label" style={{ margin: 0 }}>Best Setup</div>
+              <span className="verdict-badge" style={{ backgroundColor: hptBiasColor(highest_probability_trade.bias) }}>
+                {highest_probability_trade.bias.toUpperCase()}
+              </span>
+            </div>
+            <p className="hpt-setup">{highest_probability_trade.setup}</p>
+            <div className="hpt-details">
+              <div className="hpt-detail-item">
+                <span className="hpt-detail-label">Entry</span>
+                <span className="hpt-detail-value">{highest_probability_trade.entry_zone}</span>
+              </div>
+              <div className="hpt-detail-item">
+                <span className="hpt-detail-label">Stop</span>
+                <span className="hpt-detail-value">{highest_probability_trade.stop}</span>
+              </div>
+              <div className="hpt-detail-item">
+                <span className="hpt-detail-label">Targets</span>
+                <span className="hpt-detail-value">{highest_probability_trade.targets}</span>
+              </div>
+            </div>
+            {highest_probability_trade.condition && (
+              <div className="callout-box callout-amber" style={{ marginTop: 8 }}>
+                <span className="callout-prefix">IF</span>
+                <span>{highest_probability_trade.condition}</span>
+              </div>
+            )}
+            <div className="hpt-bracket-row">
+              {tradePlanCtrl.tpDrawn ? (
+                <button
+                  className="annotate-btn annotate-btn-clear"
+                  onClick={tradePlanCtrl.onClearTP}
+                  disabled={tradePlanCtrl.tpPending}
+                  title="Remove bracket from chart"
+                >
+                  Clear Bracket
+                </button>
+              ) : (
+                <button
+                  className="annotate-btn"
+                  onClick={tradePlanCtrl.onDrawTP}
+                  disabled={tradePlanCtrl.tpPending}
+                  title="Draw entry/stop/target bracket on chart"
+                >
+                  Draw on Chart
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Section B — Watch These Levels (renamed from Key Levels) */}
       {hasLevels && (
         <div className="commentary-section">
           <div className="level-section-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span className="section-label" style={{ margin: 0 }}>Key Levels</span>
+              <span className="section-label" style={{ margin: 0 }}>Watch These Levels</span>
               {annotation.isAnnotationStale && <span className="stale-badge">Stale</span>}
             </div>
             <div className="level-toolbar">
@@ -438,62 +519,6 @@ const CommentaryCard: React.FC<{
         </div>
       )}
 
-      {/* Section B2 — Highest Probability Trade */}
-      {highest_probability_trade && (
-        <div className="commentary-section">
-          <div className="hpt-card" style={{ borderLeftColor: hptBiasColor(highest_probability_trade.bias) }}>
-            <div className="hpt-header">
-              <div className="section-label" style={{ margin: 0 }}>Best Setup</div>
-              <span className="verdict-badge" style={{ backgroundColor: hptBiasColor(highest_probability_trade.bias) }}>
-                {highest_probability_trade.bias.toUpperCase()}
-              </span>
-            </div>
-            <p className="hpt-setup">{highest_probability_trade.setup}</p>
-            <div className="hpt-details">
-              <div className="hpt-detail-item">
-                <span className="hpt-detail-label">Entry</span>
-                <span className="hpt-detail-value">{highest_probability_trade.entry_zone}</span>
-              </div>
-              <div className="hpt-detail-item">
-                <span className="hpt-detail-label">Stop</span>
-                <span className="hpt-detail-value">{highest_probability_trade.stop}</span>
-              </div>
-              <div className="hpt-detail-item">
-                <span className="hpt-detail-label">Targets</span>
-                <span className="hpt-detail-value">{highest_probability_trade.targets}</span>
-              </div>
-            </div>
-            {highest_probability_trade.condition && (
-              <div className="callout-box callout-amber" style={{ marginTop: 8 }}>
-                <span className="callout-prefix">IF</span>
-                <span>{highest_probability_trade.condition}</span>
-              </div>
-            )}
-            <div className="hpt-bracket-row">
-              {tradePlanCtrl.tpDrawn ? (
-                <button
-                  className="annotate-btn annotate-btn-clear"
-                  onClick={tradePlanCtrl.onClearTP}
-                  disabled={tradePlanCtrl.tpPending}
-                  title="Remove bracket from chart"
-                >
-                  Clear Bracket
-                </button>
-              ) : (
-                <button
-                  className="annotate-btn"
-                  onClick={tradePlanCtrl.onDrawTP}
-                  disabled={tradePlanCtrl.tpPending}
-                  title="Draw entry/stop/target bracket on chart"
-                >
-                  Draw on Chart
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Section C — Trade Plan */}
       {showTradePlan && trade_plan && (
         <div className="commentary-section">
@@ -541,38 +566,6 @@ const CommentaryCard: React.FC<{
         </div>
       )}
 
-      {/* Section D — Play-by-play */}
-      {steps_what_happened.length > 0 && (
-        <div className="commentary-section">
-          <div className="section-label">What Happened</div>
-          <ol style={{ paddingLeft: 18, margin: 0 }}>
-            {steps_what_happened.map((step, i) => (
-              <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 3, lineHeight: 1.45 }}>
-                {stripLeadingNumber(step)}
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-
-      {/* Section E — Chart State */}
-      <div className="commentary-section">
-        <div className="section-label">Chart State</div>
-        {objectiveBullets.length > 1 ? (
-          <ul style={{ paddingLeft: 16, margin: 0 }}>
-            {objectiveBullets.map((b, i) => (
-              <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: 2 }}>
-                {b}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
-            {objective}
-          </p>
-        )}
-      </div>
-
       {/* Section F — What Now / What Not */}
       <div className="commentary-section">
         <div className="what-row">
@@ -585,8 +578,57 @@ const CommentaryCard: React.FC<{
         </div>
       </div>
 
+      {/* Details toggle — collapses What Happened, Structure Read, Chart State */}
+      <div
+        className="details-toggle"
+        onClick={() => setDetailsOpen(v => !v)}
+        role="button"
+        aria-expanded={detailsOpen}
+      >
+        <span className="section-label" style={{ margin: 0 }}>Details</span>
+        <span className="details-chevron">{detailsOpen ? '▲' : '▼'}</span>
+      </div>
+      {detailsOpen && (
+        <div className="details-body">
+          {structure_read && (
+            <div className="commentary-section">
+              <div className="section-label">Structure</div>
+              <p className="structure-read-text">{structure_read}</p>
+            </div>
+          )}
+          {steps_what_happened.length > 0 && (
+            <div className="commentary-section">
+              <div className="section-label">What Happened</div>
+              <ol style={{ paddingLeft: 18, margin: 0 }}>
+                {steps_what_happened.map((step, i) => (
+                  <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 3, lineHeight: 1.45 }}>
+                    {stripLeadingNumber(step)}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          <div className="commentary-section">
+            <div className="section-label">Chart State</div>
+            {objectiveBullets.length > 1 ? (
+              <ul style={{ paddingLeft: 16, margin: 0 }}>
+                {objectiveBullets.map((b, i) => (
+                  <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: 2 }}>
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                {objective}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Section G — Bottom line + callouts */}
-      <div className="commentary-section" style={{ marginBottom: 0 }}>
+      <div className="commentary-section" style={{ marginBottom: 0, marginTop: 8 }}>
         <p className="bottom-line">{bottom_line}</p>
         {next_trigger && (
           <div className="callout-box callout-amber">
@@ -871,12 +913,15 @@ const App: React.FC = () => {
     let stop:  number | null = null;
     let target: number | null = null;
 
-    if (tp && tp.entry != null && tp.stop != null && tp.target != null) {
-      entry = tp.entry; stop = tp.stop; target = tp.target;
-    } else if (hpt) {
+    // HPT has priority — it is the highest-confidence setup.
+    if (hpt) {
       entry  = parsePrice(hpt.entry_zone);
       stop   = parsePrice(hpt.stop);
       target = parsePrice(hpt.targets);
+    }
+    // Fallback to trade_plan numeric values if HPT parse failed.
+    if ((entry == null || stop == null || target == null) && tp && tp.entry != null && tp.stop != null && tp.target != null) {
+      entry = tp.entry; stop = tp.stop; target = tp.target;
     }
 
     if (entry == null || stop == null || target == null) return;

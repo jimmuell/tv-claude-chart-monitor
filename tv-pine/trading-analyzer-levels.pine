@@ -72,6 +72,28 @@ tp_entry  = input.float(0.0, title="tp_entry")
 tp_stop   = input.float(0.0, title="tp_stop")
 tp_target = input.float(0.0, title="tp_target")
 
+// ── Candle Pattern Marker Inputs (in_46 … in_57) ───────────────────────────
+// 4 marker slots × 3 inputs = 12 inputs.
+// Written by writePatternMarkers() in annotator.ts via CDP setStudyInputs.
+// bar_offset: bars back from the current bar (0 = just-closed bar)
+// label:      max 12 chars displayed on the candle
+// signal:     1 = bullish (▲ below low, teal), -1 = bearish (▼ above high, red), 0 = none
+pm1_offset = input.int(   0,  title="pm1_offset")
+pm1_label  = input.string("", title="pm1_label")
+pm1_signal = input.int(   0,  title="pm1_signal")
+
+pm2_offset = input.int(   0,  title="pm2_offset")
+pm2_label  = input.string("", title="pm2_label")
+pm2_signal = input.int(   0,  title="pm2_signal")
+
+pm3_offset = input.int(   0,  title="pm3_offset")
+pm3_label  = input.string("", title="pm3_label")
+pm3_signal = input.int(   0,  title="pm3_signal")
+
+pm4_offset = input.int(   0,  title="pm4_offset")
+pm4_label  = input.string("", title="pm4_label")
+pm4_signal = input.int(   0,  title="pm4_signal")
+
 // ── Level drawing state ────────────────────────────────────────────────────
 
 var lines_arr  = array.new<line>()
@@ -124,6 +146,12 @@ var line  tp_target_line = na
 var label tp_entry_lbl   = na
 var box   tp_risk_box    = na
 var box   tp_reward_box  = na
+
+// ── Candle pattern marker label handles (4 slots) ─────────────────────────
+var label pm_lbl1 = na
+var label pm_lbl2 = na
+var label pm_lbl3 = na
+var label pm_lbl4 = na
 
 // ── Session timestamps (recomputed each bar from the bar's own date) ───────
 
@@ -338,3 +366,58 @@ if barstate.islast
         tp_reward_box := box.new(bar_index, rew_top,    bar_index + 200, rew_bottom,
                                  bgcolor=color.new(#4caf50, 92),
                                  border_color=na)
+
+    // ── Candle Pattern Markers ────────────────────────────────────────────
+    // Delete any labels from the previous analysis run before redrawing.
+    label.delete(pm_lbl1)
+    label.delete(pm_lbl2)
+    label.delete(pm_lbl3)
+    label.delete(pm_lbl4)
+    pm_lbl1 := na
+    pm_lbl2 := na
+    pm_lbl3 := na
+    pm_lbl4 := na
+
+    // Slot 1
+    if pm1_label != "" and pm1_signal != 0
+        _y1   = pm1_signal == 1 ? low[pm1_offset]  - syminfo.mintick * 6
+                                : high[pm1_offset] + syminfo.mintick * 6
+        _sty1 = pm1_signal == 1 ? label.style_label_up : label.style_label_down
+        _col1 = pm1_signal == 1 ? #26a69a : #ef5350
+        _txt1 = (pm1_signal == 1 ? "▲ " : "▼ ") + pm1_label
+        pm_lbl1 := label.new(bar_index - pm1_offset, _y1, text=_txt1,
+                             xloc=xloc.bar_index, style=_sty1,
+                             color=_col1, textcolor=color.white, size=size.tiny)
+
+    // Slot 2
+    if pm2_label != "" and pm2_signal != 0
+        _y2   = pm2_signal == 1 ? low[pm2_offset]  - syminfo.mintick * 6
+                                : high[pm2_offset] + syminfo.mintick * 6
+        _sty2 = pm2_signal == 1 ? label.style_label_up : label.style_label_down
+        _col2 = pm2_signal == 1 ? #26a69a : #ef5350
+        _txt2 = (pm2_signal == 1 ? "▲ " : "▼ ") + pm2_label
+        pm_lbl2 := label.new(bar_index - pm2_offset, _y2, text=_txt2,
+                             xloc=xloc.bar_index, style=_sty2,
+                             color=_col2, textcolor=color.white, size=size.tiny)
+
+    // Slot 3
+    if pm3_label != "" and pm3_signal != 0
+        _y3   = pm3_signal == 1 ? low[pm3_offset]  - syminfo.mintick * 6
+                                : high[pm3_offset] + syminfo.mintick * 6
+        _sty3 = pm3_signal == 1 ? label.style_label_up : label.style_label_down
+        _col3 = pm3_signal == 1 ? #26a69a : #ef5350
+        _txt3 = (pm3_signal == 1 ? "▲ " : "▼ ") + pm3_label
+        pm_lbl3 := label.new(bar_index - pm3_offset, _y3, text=_txt3,
+                             xloc=xloc.bar_index, style=_sty3,
+                             color=_col3, textcolor=color.white, size=size.tiny)
+
+    // Slot 4
+    if pm4_label != "" and pm4_signal != 0
+        _y4   = pm4_signal == 1 ? low[pm4_offset]  - syminfo.mintick * 6
+                                : high[pm4_offset] + syminfo.mintick * 6
+        _sty4 = pm4_signal == 1 ? label.style_label_up : label.style_label_down
+        _col4 = pm4_signal == 1 ? #26a69a : #ef5350
+        _txt4 = (pm4_signal == 1 ? "▲ " : "▼ ") + pm4_label
+        pm_lbl4 := label.new(bar_index - pm4_offset, _y4, text=_txt4,
+                             xloc=xloc.bar_index, style=_sty4,
+                             color=_col4, textcolor=color.white, size=size.tiny)

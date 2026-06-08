@@ -1065,6 +1065,72 @@ body {
   font-style: italic;
 }
 
+/* ── Candlestick pattern cards ── */
+.pattern-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pattern-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid;
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+.pattern-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.pattern-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pattern-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.pattern-meaning {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* ── Details expand toggle ── */
+.details-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 5px 0;
+  margin-bottom: 2px;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.details-toggle:hover .section-label {
+  color: var(--text-primary);
+}
+
+.details-chevron {
+  font-size: 9px;
+  color: var(--text-secondary);
+}
+
+.details-body {
+  padding-top: 2px;
+}
+
 /* ── Highest probability trade card ── */
 .hpt-card {
   background: var(--surface);

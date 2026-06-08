@@ -23,6 +23,7 @@ declare global {
       getPnl(): Promise<PnlSnapshot>;
       onPnlUpdate(cb: (snapshot: PnlSnapshot) => void): () => void;
       exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
+      writePatternMarkers(markers: import('../shared/types').PatternMarker[]): Promise<void>;
     };
   }
 }

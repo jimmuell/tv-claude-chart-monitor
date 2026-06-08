@@ -58,7 +58,15 @@ Format your response as STRICT JSON matching this schema:
     "bias": "long" | "short" | "neutral",
     "condition": string               // what must happen first, e.g. "Price must reach 7443-7445 and show rejection candle"
   } | null,
-  "confidence": number                // 0-1
+  "confidence": number,               // 0-1
+  "candlestick_patterns": [           // OPTIONAL: 1-3 notable patterns on recent bars; null if none significant
+    {
+      "name": string,                 // human name, e.g. "Bullish Engulfing", "Hammer", "Inside Bar"
+      "meaning": string,              // 1 sentence, plain English for a beginner, e.g. "Buyers overpowered sellers; signals a potential upward reversal"
+      "signal": "bullish" | "bearish" | "neutral",
+      "bar_offset": number            // 0 = just-closed candle, 1 = one bar back, 2 = two bars back
+    }
+  ] | null
 }
 
 RULES:
@@ -76,6 +84,7 @@ RULES:
 - "trade_plan": populate for "valid_long" or "valid_short". Null for "was" verdicts and "wait"/"no_trade".
 - "key_levels_to_watch": populate for "wait", "no_trade", or "*_was" verdicts. 3-5 entries minimum, ordered by importance.
 - IMPORTANT: Always populate at least ONE of "trade_plan" or "key_levels_to_watch". Never both null.
+- CANDLESTICK PATTERNS: Populate "candlestick_patterns" only when one or more patterns from the "pattern tags:" line are genuinely significant in context (e.g. a bullish engulfing at a key support level matters; a random doji in the middle of nowhere does not). Return 1-3 entries max. Use bar_offset 0 for the just-closed candle, 1 for the prior candle. Write "meaning" for a beginner in one plain sentence. Return null if no pattern is contextually notable.
 - Output JSON only. No prose around it.`;
 
 function buildUserMessage(ctx) {
@@ -289,6 +298,7 @@ class CommentaryEngine {
         strength: primary.strength,
       },
       suggested_levels: candidates, // full list, in case the renderer wants it
+      candlestick_patterns: null,
       confidence: conf,
     };
   }
@@ -348,6 +358,7 @@ class CommentaryEngine {
         rationale_short:  rat,
         evidence:         reason.evidence   || {},
       },
+      candlestick_patterns: null,
       confidence: 0.7,
     };
   }
@@ -387,6 +398,7 @@ class CommentaryEngine {
       bottom_line: `${ctx.symbol} at ${ctx.closedBar.close}. Commentary stubbed — ${why}.`,
       trade_plan: null,
       key_levels_to_watch: keyLevels,
+      candlestick_patterns: null,
       confidence: 0,
     };
   }
