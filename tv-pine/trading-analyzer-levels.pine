@@ -380,8 +380,7 @@ if barstate.islast
 
     // Slot 1
     if pm1_label != "" and pm1_signal != 0
-        _y1   = pm1_signal == 1 ? low[pm1_offset]  - syminfo.mintick * 6
-                                : high[pm1_offset] + syminfo.mintick * 6
+        _y1   = pm1_signal == 1 ? low[pm1_offset] - syminfo.mintick * 6 : high[pm1_offset] + syminfo.mintick * 6
         _sty1 = pm1_signal == 1 ? label.style_label_up : label.style_label_down
         _col1 = pm1_signal == 1 ? #26a69a : #ef5350
         _txt1 = (pm1_signal == 1 ? "▲ " : "▼ ") + pm1_label
@@ -391,8 +390,7 @@ if barstate.islast
 
     // Slot 2
     if pm2_label != "" and pm2_signal != 0
-        _y2   = pm2_signal == 1 ? low[pm2_offset]  - syminfo.mintick * 6
-                                : high[pm2_offset] + syminfo.mintick * 6
+        _y2   = pm2_signal == 1 ? low[pm2_offset] - syminfo.mintick * 6 : high[pm2_offset] + syminfo.mintick * 6
         _sty2 = pm2_signal == 1 ? label.style_label_up : label.style_label_down
         _col2 = pm2_signal == 1 ? #26a69a : #ef5350
         _txt2 = (pm2_signal == 1 ? "▲ " : "▼ ") + pm2_label
@@ -402,8 +400,7 @@ if barstate.islast
 
     // Slot 3
     if pm3_label != "" and pm3_signal != 0
-        _y3   = pm3_signal == 1 ? low[pm3_offset]  - syminfo.mintick * 6
-                                : high[pm3_offset] + syminfo.mintick * 6
+        _y3   = pm3_signal == 1 ? low[pm3_offset] - syminfo.mintick * 6 : high[pm3_offset] + syminfo.mintick * 6
         _sty3 = pm3_signal == 1 ? label.style_label_up : label.style_label_down
         _col3 = pm3_signal == 1 ? #26a69a : #ef5350
         _txt3 = (pm3_signal == 1 ? "▲ " : "▼ ") + pm3_label
@@ -413,8 +410,7 @@ if barstate.islast
 
     // Slot 4
     if pm4_label != "" and pm4_signal != 0
-        _y4   = pm4_signal == 1 ? low[pm4_offset]  - syminfo.mintick * 6
-                                : high[pm4_offset] + syminfo.mintick * 6
+        _y4   = pm4_signal == 1 ? low[pm4_offset] - syminfo.mintick * 6 : high[pm4_offset] + syminfo.mintick * 6
         _sty4 = pm4_signal == 1 ? label.style_label_up : label.style_label_down
         _col4 = pm4_signal == 1 ? #26a69a : #ef5350
         _txt4 = (pm4_signal == 1 ? "▲ " : "▼ ") + pm4_label
