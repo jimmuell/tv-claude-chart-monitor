@@ -3,7 +3,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, s
 import fs from 'fs';
 import path from 'path';
 import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus } from './bridge';
-import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers } from './annotator';
+import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
 import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
@@ -194,6 +194,10 @@ function autoDrawResult(result: AnalysisResult): void {
     writePatternMarkers([])
       .catch(err => console.error('[auto-draw markers clear]', (err as Error).message));
   }
+
+  const pct = Math.round((result.commentary.confidence ?? 0) * 100);
+  writeConfidence(pct)
+    .catch(err => console.error('[auto-draw confidence]', (err as Error).message));
 }
 
 app.on('ready', () => {

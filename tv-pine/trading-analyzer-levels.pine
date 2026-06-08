@@ -94,6 +94,10 @@ pm4_offset = input.int(   0,  title="pm4_offset")
 pm4_label  = input.string("", title="pm4_label")
 pm4_signal = input.int(   0,  title="pm4_signal")
 
+// ── Confidence label (in_58) ────────────────────────────────────────────────
+// Integer 0–100 (e.g. 73 = "73%"). 0 = hide label. Written by writeConfidence().
+conf_pct = input.int(0, title="conf_pct")
+
 // ── Level drawing state ────────────────────────────────────────────────────
 
 var lines_arr  = array.new<line>()
@@ -152,6 +156,9 @@ var label pm_lbl1 = na
 var label pm_lbl2 = na
 var label pm_lbl3 = na
 var label pm_lbl4 = na
+
+// ── Confidence label handle ────────────────────────────────────────────────
+var label conf_lbl = na
 
 // ── Session timestamps (recomputed each bar from the bar's own date) ───────
 
@@ -417,3 +424,16 @@ if barstate.islast
         pm_lbl4 := label.new(bar_index - pm4_offset, _y4, text=_txt4,
                              xloc=xloc.bar_index, style=_sty4,
                              color=_col4, textcolor=color.white, size=size.tiny)
+
+    // ── Confidence label ──────────────────────────────────────────────────
+    label.delete(conf_lbl)
+    conf_lbl := na
+
+    if conf_pct > 0
+        _conf_price = tp_entry > 0.0 ? tp_entry : close
+        _conf_x     = bar_index + (tp_entry > 0.0 ? 55 : 8)
+        _conf_col   = conf_pct >= 70 ? #26a69a : conf_pct >= 40 ? #f59e0b : #ef5350
+        _conf_txt   = str.tostring(conf_pct) + "% confidence"
+        conf_lbl := label.new(_conf_x, _conf_price, text=_conf_txt,
+                              xloc=xloc.bar_index, style=label.style_label_left,
+                              color=_conf_col, textcolor=color.white, size=size.small)

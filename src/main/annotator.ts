@@ -173,6 +173,21 @@ function truncateMarkerLabel(label: string): string {
   return label.length > 12 ? label.slice(0, 12) : label;
 }
 
+const CONFIDENCE_INPUT = 58;
+
+/** Write confidence percentage (0–100) to in_58. Pass 0 to clear. */
+export async function writeConfidence(pct: number): Promise<void> {
+  const patch: Record<string, unknown> = { [`in_${CONFIDENCE_INPUT}`]: pct };
+  const studyId = await resolveStudyId();
+  const result  = await callSetStudyInputs(studyId, patch);
+  if (!result.ok) {
+    invalidateStudyCache();
+    const freshId = await resolveStudyId();
+    const retry   = await callSetStudyInputs(freshId, patch);
+    if (!retry.ok) throw new Error(`Failed to write confidence: ${retry.error}`);
+  }
+}
+
 /** Zero out all 8 slots. */
 export async function clearAll(): Promise<void> {
   const patch    = buildFullPatch(Array(SLOTS).fill(null));
