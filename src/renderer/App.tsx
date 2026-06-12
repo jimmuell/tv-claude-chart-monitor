@@ -900,7 +900,7 @@ const App: React.FC = () => {
     const kind    = levelKind(lvl, result.closedBarPrice);
     setPendingSlots(prev => new Set([...prev, idx]));
     try {
-      const chartLabel = !isDrawn && alertedPrices.has(lvl.price) ? lvl.label + ' 🔔' : lvl.label;
+      const chartLabel = !isDrawn && alertedPrices.has(lvl.price) ? armedLabel(lvl.label) : lvl.label;
       await window.api.toggleLevel(idx + 1, lvl.price, kind, chartLabel, isDrawn ? 0 : 1, lvl.priority ?? 'primary');
       setDrawnSlots(prev => {
         const next = new Set(prev);
@@ -945,10 +945,12 @@ const App: React.FC = () => {
     }
   };
 
+  const armedLabel = (base: string) => base.slice(0, 17).trimEnd() + ' 🔔';
+
   const updateChartLabel = (slotIndex: number, lvl: KeyLevel, armed: boolean) => {
     if (!result || !drawnSlots.has(slotIndex)) return;
-    const kind      = levelKind(lvl, result.closedBarPrice);
-    const chartLabel = armed ? lvl.label + ' 🔔' : lvl.label;
+    const kind       = levelKind(lvl, result.closedBarPrice);
+    const chartLabel = armed ? armedLabel(lvl.label) : lvl.label;
     window.api.toggleLevel(slotIndex + 1, lvl.price, kind, chartLabel, 1, lvl.priority ?? 'primary')
       .catch(() => {});
   };
