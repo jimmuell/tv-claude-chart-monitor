@@ -32,6 +32,7 @@ export const IPC = {
   GDRIVE_STATUS:             'gdrive:status',
   GDRIVE_SIGNOUT:            'gdrive:signout',
   ANNOTATE_PATTERN_MARKERS:  'annotate:patternMarkers',
+  ALERT_CREATE:              'alert:create',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -201,6 +202,15 @@ export interface LevelAnnotation {
   priority:  string; // 'primary' | 'secondary'
 }
 
+export interface AlertCreatePayload {
+  price: number;
+  label: string;
+}
+
+export type AlertCreateResult =
+  | { ok: true;  alertId: string }
+  | { ok: false; error: string };
+
 // ---------------------------------------------------------------------------
 // Wrapper returned from bridge.runAnalysis()
 // ---------------------------------------------------------------------------
@@ -252,4 +262,5 @@ export interface ElectronAPI {
   exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
   /** Write up to 4 candle pattern markers to the TA Levels Pine indicator (in_46–in_57) */
   writePatternMarkers(markers: PatternMarker[]): Promise<void>;
+  createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
 }
