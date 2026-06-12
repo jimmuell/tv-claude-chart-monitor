@@ -526,13 +526,13 @@ const CommentaryCard: React.FC<{
                     className="level-label"
                     style={{
                       color:   isBellActive ? 'var(--accent)' : bellError ? 'var(--bearish)' : secondary,
-                      cursor:  isBellActive || isBellPending ? 'default' : 'pointer',
+                      cursor:  isBellPending ? 'default' : 'pointer',
                       opacity: isBellPending ? 0.5 : 1,
                     }}
-                    onClick={() => !isBellActive && !isBellPending && alertCtrl.onAlertToggle(lvl.price, lvl.label)}
+                    onClick={() => !isBellPending && alertCtrl.onAlertToggle(lvl.price, lvl.label)}
                     title={
-                      bellError    ? `Alert failed: ${bellError}` :
-                      isBellActive ? 'Alert armed — fires when price crosses this level' :
+                      bellError    ? `Alert failed: ${bellError} — click to retry` :
+                      isBellActive ? 'Alert armed — click to disarm' :
                       isBellPending ? 'Setting alert…' :
                                      'Click to arm a price-crossing alert'
                     }
@@ -945,7 +945,13 @@ const App: React.FC = () => {
   };
 
   const handleAlertToggle = async (price: number, label: string) => {
-    if (alertedPrices.has(price)) return;
+    if (alertedPrices.has(price)) {
+      // Disarm: remove from main-process monitor and clear local state
+      await window.api.removeAlert(price).catch(() => {});
+      setAlertedPrices(prev => { const s = new Set(prev); s.delete(price); return s; });
+      return;
+    }
+    if (pendingAlertPrices.has(price)) return;
     setPendingAlertPrices(prev => { const s = new Set(prev); s.add(price); return s; });
     setAlertErrorPrices(prev => { const m = new Map(prev); m.delete(price); return m; });
     try {

@@ -33,6 +33,7 @@ export const IPC = {
   GDRIVE_SIGNOUT:            'gdrive:signout',
   ANNOTATE_PATTERN_MARKERS:  'annotate:patternMarkers',
   ALERT_CREATE:              'alert:create',
+  ALERT_REMOVE:              'alert:remove',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -263,4 +264,5 @@ export interface ElectronAPI {
   /** Write up to 4 candle pattern markers to the TA Levels Pine indicator (in_46–in_57) */
   writePatternMarkers(markers: PatternMarker[]): Promise<void>;
   createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
+  removeAlert(price: number): Promise<void>;
 }

@@ -56,4 +56,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(IPC.ANNOTATE_PATTERN_MARKERS, markers),
   createAlert: (payload: AlertCreatePayload): Promise<AlertCreateResult> =>
     ipcRenderer.invoke(IPC.ALERT_CREATE, payload),
+  removeAlert: (price: number): Promise<void> =>
+    ipcRenderer.invoke(IPC.ALERT_REMOVE, price),
 });

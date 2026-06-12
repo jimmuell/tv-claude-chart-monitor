@@ -25,6 +25,7 @@ declare global {
       exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
       writePatternMarkers(markers: import('../shared/types').PatternMarker[]): Promise<void>;
       createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
+      removeAlert(price: number): Promise<void>;
     };
   }
 }

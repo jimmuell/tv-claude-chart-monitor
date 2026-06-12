@@ -41,6 +41,12 @@ export function checkCrossings(currentPrice: number, symbol: string): void {
   for (const key of fired) alerts.delete(key);
 }
 
+export function clearAlertForPrice(price: number): void {
+  for (const [key, alert] of alerts) {
+    if (alert.price === price) alerts.delete(key);
+  }
+}
+
 export function clearAlertsForSymbol(symbol: string): void {
   for (const [key, alert] of alerts) {
     if (alert.symbol === symbol) alerts.delete(key);

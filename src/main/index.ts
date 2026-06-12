@@ -3,7 +3,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, s
 import fs from 'fs';
 import path from 'path';
 import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage } from './bridge';
-import { registerAlert, checkCrossings } from './alert-monitor';
+import { registerAlert, checkCrossings, clearAlertForPrice } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
 import { PnlTracker } from './pnl-tracker';
@@ -402,6 +402,9 @@ app.on('ready', () => {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  // IPC: remove a local price-crossing alert
+  ipcMain.handle(IPC.ALERT_REMOVE, (_e, price: number) => { clearAlertForPrice(price); });
 
   // IPC: force CDP reconnect
   ipcMain.handle(IPC.BRIDGE_RECONNECT, () => { resetConnection(); invalidateStudyCache(); resetNotifier(); });
