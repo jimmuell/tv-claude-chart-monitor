@@ -532,10 +532,16 @@ const CommentaryCard: React.FC<{
                     onClick={() => !isBellActive && !isBellPending && alertCtrl.onAlertToggle(lvl.price, lvl.label)}
                     title={
                       bellError    ? `Alert failed: ${bellError}` :
-                      isBellActive ? 'Alert set in TradingView — manage in TV Alerts panel' :
-                                     'Click to create TradingView alert for this level'
+                      isBellActive ? 'Alert armed — fires when price crosses this level' :
+                      isBellPending ? 'Setting alert…' :
+                                     'Click to arm a price-crossing alert'
                     }
-                  >{lvl.label}</span>
+                  >
+                    {lvl.label}
+                    {isBellActive  && <span className="alert-badge">🔔</span>}
+                    {isBellPending && <span className="alert-badge alert-badge-pending">…</span>}
+                    {bellError     && <span className="alert-badge alert-badge-error">!</span>}
+                  </span>
                   <span className="level-action">{lvl.action}</span>
                 </div>
               );
