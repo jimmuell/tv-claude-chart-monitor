@@ -946,8 +946,7 @@ const App: React.FC = () => {
 
   const handleAlertToggle = async (price: number, label: string) => {
     if (alertedPrices.has(price)) {
-      // Disarm: remove from main-process monitor and clear local state
-      await window.api.removeAlert(price).catch(() => {});
+      try { await window.api.removeAlert(price); } catch (_) {}
       setAlertedPrices(prev => { const s = new Set(prev); s.delete(price); return s; });
       return;
     }
