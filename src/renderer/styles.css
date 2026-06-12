@@ -522,39 +522,6 @@ body {
   cursor: not-allowed;
 }
 
-/* ── Bell alert button (mirrors .eye-btn geometry) ── */
-.bell-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  border-radius: 2px;
-  opacity: 0.55;
-  transition: opacity 0.12s;
-  -webkit-app-region: no-drag;
-}
-
-.bell-btn:hover      { opacity: 1; }
-.bell-btn.bell-on    { opacity: 1; }
-.bell-btn.bell-error { opacity: 1; }
-.bell-btn.bell-pending { opacity: 0.3; cursor: not-allowed; }
-
-.bell-spinner {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: gdrive-spin 0.7s linear infinite;
-}
-
 /* ── Level cards ── */
 .level-list {
   display: flex;

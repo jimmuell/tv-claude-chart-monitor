@@ -104,17 +104,6 @@ const EyeOffIcon: React.FC = () => (
   </svg>
 );
 
-const BellIcon: React.FC<{ filled?: boolean }> = ({ filled = false }) => (
-  <svg width="13" height="13" viewBox="0 0 24 24"
-    fill={filled ? 'currentColor' : 'none'}
-    stroke="currentColor" strokeWidth="2"
-    strokeLinecap="round" strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-  </svg>
-);
 
 // ── Verdict helpers ────────────────────────────────────────────────────────
 
@@ -532,29 +521,21 @@ const CommentaryCard: React.FC<{
                   >
                     {isDrawn ? <EyeOnIcon /> : <EyeOffIcon />}
                   </button>
-                  <button
-                    className={`bell-btn${isBellActive ? ' bell-on' : ''}${isBellPending ? ' bell-pending' : ''}${bellError ? ' bell-error' : ''}`}
-                    onClick={() => alertCtrl.onAlertToggle(lvl.price, lvl.label)}
-                    disabled={isBellPending || isBellActive}
-                    aria-label="Create TradingView alert for this level"
+                  <span className="level-price" style={{ color: primary }}>{lvl.price.toFixed(2)}</span>
+                  <span
+                    className="level-label"
+                    style={{
+                      color:   isBellActive ? 'var(--accent)' : bellError ? 'var(--bearish)' : secondary,
+                      cursor:  isBellActive || isBellPending ? 'default' : 'pointer',
+                      opacity: isBellPending ? 0.5 : 1,
+                    }}
+                    onClick={() => !isBellActive && !isBellPending && alertCtrl.onAlertToggle(lvl.price, lvl.label)}
                     title={
                       bellError    ? `Alert failed: ${bellError}` :
                       isBellActive ? 'Alert set in TradingView — manage in TV Alerts panel' :
-                                     'Create TradingView alert when price crosses this level'
+                                     'Click to create TradingView alert for this level'
                     }
-                    style={{
-                      color: isBellActive  ? 'var(--accent)'  :
-                             bellError      ? 'var(--bearish)' :
-                                              'var(--text-secondary)',
-                    }}
-                  >
-                    {isBellPending
-                      ? <span className="bell-spinner" />
-                      : <BellIcon filled={isBellActive} />
-                    }
-                  </button>
-                  <span className="level-price" style={{ color: primary }}>{lvl.price.toFixed(2)}</span>
-                  <span className="level-label" style={{ color: secondary }}>{lvl.label}</span>
+                  >{lvl.label}</span>
                   <span className="level-action">{lvl.action}</span>
                 </div>
               );
