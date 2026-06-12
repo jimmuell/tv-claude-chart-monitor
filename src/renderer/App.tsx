@@ -325,7 +325,7 @@ interface AlertCtrl {
   alertedPrices:    Set<number>;
   pendingAlertPrices: Set<number>;
   alertErrorPrices:   Map<number, string>;
-  onAlertToggle:    (price: number, label: string) => void;
+  onAlertToggle:    (slotIndex: number, price: number, label: string) => void;
 }
 
 function hptBiasColor(bias: HighestProbabilityTrade['bias']): string {
@@ -529,7 +529,7 @@ const CommentaryCard: React.FC<{
                       cursor:  isBellPending ? 'default' : 'pointer',
                       opacity: isBellPending ? 0.5 : 1,
                     }}
-                    onClick={() => !isBellPending && alertCtrl.onAlertToggle(lvl.price, lvl.label)}
+                    onClick={() => !isBellPending && alertCtrl.onAlertToggle(i, lvl.price, lvl.label)}
                     title={
                       bellError    ? `Alert failed: ${bellError} — click to retry` :
                       isBellActive ? 'Alert armed — click to disarm' :
@@ -900,7 +900,8 @@ const App: React.FC = () => {
     const kind    = levelKind(lvl, result.closedBarPrice);
     setPendingSlots(prev => new Set([...prev, idx]));
     try {
-      await window.api.toggleLevel(idx + 1, lvl.price, kind, lvl.label, isDrawn ? 0 : 1, lvl.priority ?? 'primary');
+      const chartLabel = !isDrawn && alertedPrices.has(lvl.price) ? lvl.label + ' 🔔' : lvl.label;
+      await window.api.toggleLevel(idx + 1, lvl.price, kind, chartLabel, isDrawn ? 0 : 1, lvl.priority ?? 'primary');
       setDrawnSlots(prev => {
         const next = new Set(prev);
         if (isDrawn) next.delete(idx); else next.add(idx);
@@ -944,21 +945,32 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAlertToggle = async (price: number, label: string) => {
+  const updateChartLabel = (slotIndex: number, lvl: KeyLevel, armed: boolean) => {
+    if (!result || !drawnSlots.has(slotIndex)) return;
+    const kind      = levelKind(lvl, result.closedBarPrice);
+    const chartLabel = armed ? lvl.label + ' 🔔' : lvl.label;
+    window.api.toggleLevel(slotIndex + 1, lvl.price, kind, chartLabel, 1, lvl.priority ?? 'primary')
+      .catch(() => {});
+  };
+
+  const handleAlertToggle = async (slotIndex: number, price: number, label: string) => {
+    const lvl = result?.commentary.key_levels_to_watch?.[slotIndex];
     if (alertedPrices.has(price)) {
       try { await window.api.removeAlert(price); } catch (_) {}
       setAlertedPrices(prev => { const s = new Set(prev); s.delete(price); return s; });
+      if (lvl) updateChartLabel(slotIndex, lvl, false);
       return;
     }
     if (pendingAlertPrices.has(price)) return;
     setPendingAlertPrices(prev => { const s = new Set(prev); s.add(price); return s; });
     setAlertErrorPrices(prev => { const m = new Map(prev); m.delete(price); return m; });
     try {
-      const result: AlertCreateResult = await window.api.createAlert({ price, label });
-      if (result.ok) {
+      const res: AlertCreateResult = await window.api.createAlert({ price, label });
+      if (res.ok) {
         setAlertedPrices(prev => { const s = new Set(prev); s.add(price); return s; });
+        if (lvl) updateChartLabel(slotIndex, lvl, true);
       } else {
-        setAlertErrorPrices(prev => { const m = new Map(prev); m.set(price, result.error); return m; });
+        setAlertErrorPrices(prev => { const m = new Map(prev); m.set(price, res.error); return m; });
       }
     } catch (err) {
       setAlertErrorPrices(prev => {
