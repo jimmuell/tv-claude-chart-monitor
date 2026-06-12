@@ -2,13 +2,14 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus } from './bridge';
-import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan } from './annotator';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage } from './bridge';
+import { registerAlert, checkCrossings, clearAlertForPrice } from './alert-monitor';
+import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
 import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
-import type { AnalysisResult } from '../shared/types';
+import type { AnalysisResult, PatternMarker, AlertCreatePayload } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
@@ -149,9 +150,7 @@ function resolveTradePlanNumbers(result: AnalysisResult): { entry: number; stop:
   const tp  = result.commentary.trade_plan;
   const hpt = result.commentary.highest_probability_trade;
 
-  if (tp && tp.entry != null && tp.stop != null && tp.target != null) {
-    return { entry: tp.entry, stop: tp.stop, target: tp.target };
-  }
+  // HPT has priority — it is always the highest-conviction setup.
   if (hpt) {
     const entry  = parsePrice(hpt.entry_zone);
     const stop   = parsePrice(hpt.stop);
@@ -159,6 +158,10 @@ function resolveTradePlanNumbers(result: AnalysisResult): { entry: number; stop:
     if (entry != null && stop != null && target != null) {
       return { entry, stop, target };
     }
+  }
+  // Fallback to trade_plan exact numeric values.
+  if (tp && tp.entry != null && tp.stop != null && tp.target != null) {
+    return { entry: tp.entry, stop: tp.stop, target: tp.target };
   }
   return null;
 }
@@ -178,6 +181,28 @@ function autoDrawResult(result: AnalysisResult): void {
     clearTradePlan()
       .catch(err => console.error('[auto-draw tp clear]', (err as Error).message));
   }
+
+  const patterns = result.commentary.candlestick_patterns;
+  if (patterns && patterns.length > 0) {
+    const markers: PatternMarker[] = patterns.slice(0, 4).map(p => ({
+      bar_offset: p.bar_offset,
+      label:      p.name.slice(0, 12),
+      signal:     p.signal === 'bullish' ? 1 : p.signal === 'bearish' ? -1 : 0,
+    }));
+    writePatternMarkers(markers)
+      .catch(err => console.error('[auto-draw markers]', (err as Error).message));
+  } else {
+    writePatternMarkers([])
+      .catch(err => console.error('[auto-draw markers clear]', (err as Error).message));
+  }
+
+  const pct = Math.round((result.commentary.confidence ?? 0) * 100);
+  const verdict = result.commentary.setup_verdict;
+  const dir = verdict === 'valid_long' || verdict === 'valid_long_was' ? 'Long'
+            : verdict === 'valid_short' || verdict === 'valid_short_was' ? 'Short'
+            : '';
+  writeConfidence(pct, dir)
+    .catch(err => console.error('[auto-draw confidence]', (err as Error).message));
 }
 
 app.on('ready', () => {
@@ -362,6 +387,25 @@ app.on('ready', () => {
     await clearTradePlan();
   });
 
+  // IPC: candle pattern markers
+  ipcMain.handle(IPC.ANNOTATE_PATTERN_MARKERS, async (_e, markers: PatternMarker[]) => {
+    await writePatternMarkers(markers);
+  });
+
+  // IPC: register a local price-crossing alert for a level
+  ipcMain.handle(IPC.ALERT_CREATE, async (_e, payload: AlertCreatePayload) => {
+    try {
+      const symbol = await evalPage("window.TradingViewApi.activeChart().symbol()") as string;
+      registerAlert(payload.price, payload.label, symbol);
+      return { ok: true, alertId: 'local' };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // IPC: remove a local price-crossing alert
+  ipcMain.handle(IPC.ALERT_REMOVE, (_e, price: number) => { clearAlertForPrice(price); });
+
   // IPC: force CDP reconnect
   ipcMain.handle(IPC.BRIDGE_RECONNECT, () => { resetConnection(); invalidateStudyCache(); resetNotifier(); });
 
@@ -384,6 +428,27 @@ app.on('ready', () => {
 
   // IPC: app version
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion());
+
+  // Price-crossing alert poller — checks every 5 s, fires macOS notification on cross
+  const PRICE_POLL_EXPR = `(() => {
+    try {
+      const chart = window.TradingViewApi.activeChart();
+      const series = chart.getSeries();
+      const bars = series.data().m_bars;
+      const last = bars.valueAt(bars.size() - 1);
+      return { price: last[4], symbol: chart.symbol() };
+    } catch(e) { return null; }
+  })()`;
+
+  setInterval(async () => {
+    try {
+      const result = await evalPage(PRICE_POLL_EXPR);
+      if (result && typeof (result as { price: number; symbol: string }).price === 'number') {
+        const { price, symbol } = result as { price: number; symbol: string };
+        checkCrossings(price, symbol);
+      }
+    } catch (_) { /* CDP not connected — skip silently */ }
+  }, 5000);
 });
 
 app.on('before-quit', () => {

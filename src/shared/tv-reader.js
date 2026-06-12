@@ -167,6 +167,57 @@ class TvReader {
     return result || { ok: false, error: "no result from evalPage" };
   }
 
+  async createAlert(price, label, symbol, resolution) {
+    if (!this.client) throw new Error("Not connected. Call connect() first.");
+    const name   = label + ' @ ' + price.toFixed(2);
+    // Embed all params as a JSON literal to avoid string-escaping issues inside
+    // the injected script.
+    const params = JSON.stringify({ name: name, price: price, symbol: symbol, resolution: String(resolution) });
+    const expr = `
+      (async () => {
+        const p = ${params};
+        try {
+          const csrfCookie = document.cookie.split(';').map(function(c) { return c.trim(); })
+            .find(function(c) { return c.startsWith('csrftoken='); });
+          const csrf = csrfCookie ? csrfCookie.split('=')[1] : '';
+          const resp = await fetch('https://pricealert.tradingview.com/api/v2/alerts/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': csrf,
+              'Referer': window.location.href,
+            },
+            body: JSON.stringify({
+              name: p.name,
+              conditions: [["crossing", p.symbol, p.price]],
+              resolution: p.resolution,
+              notify_options: {
+                notify_on_popup: true,
+                notify_on_sound: false,
+                notify_on_push: false,
+                notify_on_email: false,
+              },
+              frequency: "once",
+              message: p.name,
+              expiration: null,
+            }),
+          });
+          if (!resp.ok) {
+            var txt = '';
+            try { txt = await resp.text(); } catch (_e) {}
+            return { ok: false, error: 'HTTP ' + resp.status + ': ' + txt.slice(0, 200) };
+          }
+          const data = await resp.json();
+          return { ok: true, alertId: String(data.id || data.alert_id || '') };
+        } catch (e) {
+          return { ok: false, error: String(e && e.message || e) };
+        }
+      })()
+    `;
+    return await this.evalPage(expr);
+  }
+
   // Read the entire chart snapshot we need.
   // Returns { symbol, timeframe, candles[], drawings[], indicators[], replayMode, dataReady, fetchedAt }.
   async readSnapshot({ barCount = 200 } = {}) {
@@ -531,6 +582,9 @@ class MockTvReader {
   async disconnect() {}
   async evalPage() { return null; }
   async setStudyInputs(_studyId, _partialUpdate) { return { ok: true, shape: "mock" }; }
+  async createAlert(_price, _label, _symbol, _resolution) {
+    return { ok: false, error: 'createAlert not available in mock mode' };
+  }
 
   _buildScript() {
     // A short repeating script that produces interesting events for testing.

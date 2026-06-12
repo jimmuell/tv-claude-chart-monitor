@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot } from '../shared/types';
+import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import SettingsPanel from './SettingsPanel';
 
@@ -104,15 +104,16 @@ const EyeOffIcon: React.FC = () => (
   </svg>
 );
 
+
 // ── Verdict helpers ────────────────────────────────────────────────────────
 
 const VERDICT_LABEL: Record<SetupVerdict, string> = {
-  valid_long:       'LONG',
-  valid_long_was:   'LONG (WAS)',
-  valid_short:      'SHORT',
-  valid_short_was:  'SHORT (WAS)',
-  no_trade:         'NO TRADE',
-  wait:             'WAIT',
+  valid_long:       'Buy Setup',
+  valid_long_was:   'Missed Buy',
+  valid_short:      'Sell Setup',
+  valid_short_was:  'Missed Sell',
+  no_trade:         'No Setup',
+  wait:             'Wait',
 };
 
 function verdictColor(v: SetupVerdict): string {
@@ -320,10 +321,25 @@ interface TradePlanCtrl {
   onClearTP: () => void;
 }
 
+interface AlertCtrl {
+  alertedPrices:    Set<number>;
+  pendingAlertPrices: Set<number>;
+  alertErrorPrices:   Map<number, string>;
+  onAlertToggle:    (slotIndex: number, price: number, label: string) => void;
+}
+
 function hptBiasColor(bias: HighestProbabilityTrade['bias']): string {
   if (bias === 'long')  return 'var(--accent)';
   if (bias === 'short') return 'var(--bearish)';
   return 'var(--text-secondary)';
+}
+
+function patternSignalStyle(signal: CandlestickPattern['signal']): { label: string; color: string } {
+  switch (signal) {
+    case 'bullish':  return { label: '▲ Bullish', color: 'var(--accent)' };
+    case 'bearish':  return { label: '▼ Bearish', color: 'var(--bearish)' };
+    default:         return { label: '◆ Neutral', color: '#f59e0b' };
+  }
 }
 
 const CommentaryCard: React.FC<{
@@ -331,13 +347,17 @@ const CommentaryCard: React.FC<{
   currentPrice: number;
   annotation:   AnnotationState;
   tradePlanCtrl: TradePlanCtrl;
-}> = ({ commentary, currentPrice, annotation, tradePlanCtrl }) => {
+  alertCtrl:    AlertCtrl;
+}> = ({ commentary, currentPrice, annotation, tradePlanCtrl, alertCtrl }) => {
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
+
   const {
     headline, objective, steps_what_happened,
     setup_verdict, what_now, what_not,
     next_trigger, key_lesson, bottom_line,
     trade_plan, key_levels_to_watch,
     structure_read, highest_probability_trade,
+    candlestick_patterns,
   } = commentary;
 
   const showTradePlan = trade_plan !== null && trade_plan !== undefined && trade_plan.direction !== 'none';
@@ -348,6 +368,7 @@ const CommentaryCard: React.FC<{
 
   const objectiveBullets = splitBullets(objective);
   const hasLevels = key_levels_to_watch && key_levels_to_watch.length > 0;
+  const hasPatterns = candlestick_patterns && candlestick_patterns.length > 0;
 
   return (
     <div className="commentary-card">
@@ -365,72 +386,20 @@ const CommentaryCard: React.FC<{
         </p>
       </div>
 
-      {/* Section A2 — Structure Read */}
-      {structure_read && (
+      {/* Section A1.5 — Candlestick Pattern Card */}
+      {hasPatterns && (
         <div className="commentary-section">
-          <div className="section-label">Structure</div>
-          <p className="structure-read-text">{structure_read}</p>
-        </div>
-      )}
-
-      {/* Section B — Key Levels */}
-      {hasLevels && (
-        <div className="commentary-section">
-          <div className="level-section-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span className="section-label" style={{ margin: 0 }}>Key Levels</span>
-              {annotation.isAnnotationStale && <span className="stale-badge">Stale</span>}
-            </div>
-            <div className="level-toolbar">
-              <label className="auto-draw-switch" title="Auto-draw levels on every refresh">
-                <input
-                  type="checkbox"
-                  checked={annotation.autoDraw}
-                  onChange={e => annotation.onToggleAutoDraw(e.target.checked)}
-                />
-                <span className="switch-track" />
-                <span className="switch-label">Auto</span>
-              </label>
-              <button
-                className="annotate-btn"
-                onClick={annotation.onDrawAll}
-                title="Draw all levels on chart"
-              >
-                Draw All
-              </button>
-              <button
-                className="annotate-btn annotate-btn-clear"
-                onClick={annotation.onClearAll}
-                title="Remove all chart annotations"
-              >
-                Clear All
-              </button>
-            </div>
-          </div>
-          <div className="level-list">
-            {key_levels_to_watch!.map((lvl, i) => {
-              const { primary, secondary } = levelColors(lvl, currentPrice);
-              const isDrawn   = annotation.drawnSlots.has(i);
-              const isPending = annotation.pendingSlots.has(i);
-              const isSecondary = lvl.priority === 'secondary';
+          <div className="section-label">Patterns</div>
+          <div className="pattern-list">
+            {candlestick_patterns!.map((p, i) => {
+              const sig = patternSignalStyle(p.signal);
               return (
-                <div
-                  key={i}
-                  className={`level-card${isSecondary ? ' level-card-secondary' : ''}`}
-                  style={{ borderLeftColor: primary }}
-                >
-                  <button
-                    className={`eye-btn${isDrawn ? ' eye-on' : ''}${isPending ? ' eye-pending' : ''}`}
-                    onClick={() => annotation.onToggle(i, lvl)}
-                    disabled={isPending}
-                    aria-label={isDrawn ? 'Hide level on chart' : 'Draw level on chart'}
-                    style={{ color: isDrawn ? primary : 'var(--text-secondary)' }}
-                  >
-                    {isDrawn ? <EyeOnIcon /> : <EyeOffIcon />}
-                  </button>
-                  <span className="level-price" style={{ color: primary }}>{lvl.price.toFixed(2)}</span>
-                  <span className="level-label" style={{ color: secondary }}>{lvl.label}</span>
-                  <span className="level-action">{lvl.action}</span>
+                <div key={i} className="pattern-card" style={{ borderLeftColor: sig.color }}>
+                  <div className="pattern-card-header">
+                    <span className="pattern-name">{p.name}</span>
+                    <span className="pattern-badge" style={{ color: sig.color }}>{sig.label}</span>
+                  </div>
+                  <p className="pattern-meaning">{p.meaning}</p>
                 </div>
               );
             })}
@@ -438,7 +407,7 @@ const CommentaryCard: React.FC<{
         </div>
       )}
 
-      {/* Section B2 — Highest Probability Trade */}
+      {/* Section B2 — Best Setup (HPT) — moved before levels */}
       {highest_probability_trade && (
         <div className="commentary-section">
           <div className="hpt-card" style={{ borderLeftColor: hptBiasColor(highest_probability_trade.bias) }}>
@@ -494,6 +463,93 @@ const CommentaryCard: React.FC<{
         </div>
       )}
 
+      {/* Section B — Watch These Levels (renamed from Key Levels) */}
+      {hasLevels && (
+        <div className="commentary-section">
+          <div className="level-section-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span className="section-label" style={{ margin: 0 }}>Watch These Levels</span>
+              {annotation.isAnnotationStale && <span className="stale-badge">Stale</span>}
+            </div>
+            <div className="level-toolbar">
+              <label className="auto-draw-switch" title="Auto-draw levels on every refresh">
+                <input
+                  type="checkbox"
+                  checked={annotation.autoDraw}
+                  onChange={e => annotation.onToggleAutoDraw(e.target.checked)}
+                />
+                <span className="switch-track" />
+                <span className="switch-label">Auto</span>
+              </label>
+              <button
+                className="annotate-btn"
+                onClick={annotation.onDrawAll}
+                title="Draw all levels on chart"
+              >
+                Draw All
+              </button>
+              <button
+                className="annotate-btn annotate-btn-clear"
+                onClick={annotation.onClearAll}
+                title="Remove all chart annotations"
+              >
+                Clear All
+              </button>
+            </div>
+          </div>
+          <div className="level-list">
+            {key_levels_to_watch!.map((lvl, i) => {
+              const { primary, secondary } = levelColors(lvl, currentPrice);
+              const isDrawn   = annotation.drawnSlots.has(i);
+              const isPending = annotation.pendingSlots.has(i);
+              const isSecondary = lvl.priority === 'secondary';
+              const isBellPending = alertCtrl.pendingAlertPrices.has(lvl.price);
+              const isBellActive  = alertCtrl.alertedPrices.has(lvl.price);
+              const bellError     = alertCtrl.alertErrorPrices.get(lvl.price);
+              return (
+                <div
+                  key={i}
+                  className={`level-card${isSecondary ? ' level-card-secondary' : ''}`}
+                  style={{ borderLeftColor: primary }}
+                >
+                  <button
+                    className={`eye-btn${isDrawn ? ' eye-on' : ''}${isPending ? ' eye-pending' : ''}`}
+                    onClick={() => annotation.onToggle(i, lvl)}
+                    disabled={isPending}
+                    aria-label={isDrawn ? 'Hide level on chart' : 'Draw level on chart'}
+                    style={{ color: isDrawn ? primary : 'var(--text-secondary)' }}
+                  >
+                    {isDrawn ? <EyeOnIcon /> : <EyeOffIcon />}
+                  </button>
+                  <span className="level-price" style={{ color: primary }}>{lvl.price.toFixed(2)}</span>
+                  <span
+                    className="level-label"
+                    style={{
+                      color:   isBellActive ? 'var(--accent)' : bellError ? 'var(--bearish)' : secondary,
+                      cursor:  isBellPending ? 'default' : 'pointer',
+                      opacity: isBellPending ? 0.5 : 1,
+                    }}
+                    onClick={() => !isBellPending && alertCtrl.onAlertToggle(i, lvl.price, lvl.label)}
+                    title={
+                      bellError    ? `Alert failed: ${bellError} — click to retry` :
+                      isBellActive ? 'Alert armed — click to disarm' :
+                      isBellPending ? 'Setting alert…' :
+                                     'Click to arm a price-crossing alert'
+                    }
+                  >
+                    {lvl.label}
+                    {isBellActive  && <span className="alert-badge">🔔</span>}
+                    {isBellPending && <span className="alert-badge alert-badge-pending">…</span>}
+                    {bellError     && <span className="alert-badge alert-badge-error">!</span>}
+                  </span>
+                  <span className="level-action">{lvl.action}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Section C — Trade Plan */}
       {showTradePlan && trade_plan && (
         <div className="commentary-section">
@@ -541,38 +597,6 @@ const CommentaryCard: React.FC<{
         </div>
       )}
 
-      {/* Section D — Play-by-play */}
-      {steps_what_happened.length > 0 && (
-        <div className="commentary-section">
-          <div className="section-label">What Happened</div>
-          <ol style={{ paddingLeft: 18, margin: 0 }}>
-            {steps_what_happened.map((step, i) => (
-              <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 3, lineHeight: 1.45 }}>
-                {stripLeadingNumber(step)}
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-
-      {/* Section E — Chart State */}
-      <div className="commentary-section">
-        <div className="section-label">Chart State</div>
-        {objectiveBullets.length > 1 ? (
-          <ul style={{ paddingLeft: 16, margin: 0 }}>
-            {objectiveBullets.map((b, i) => (
-              <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: 2 }}>
-                {b}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
-            {objective}
-          </p>
-        )}
-      </div>
-
       {/* Section F — What Now / What Not */}
       <div className="commentary-section">
         <div className="what-row">
@@ -585,8 +609,57 @@ const CommentaryCard: React.FC<{
         </div>
       </div>
 
+      {/* Details toggle — collapses What Happened, Structure Read, Chart State */}
+      <div
+        className="details-toggle"
+        onClick={() => setDetailsOpen(v => !v)}
+        role="button"
+        aria-expanded={detailsOpen}
+      >
+        <span className="section-label" style={{ margin: 0 }}>Details</span>
+        <span className="details-chevron">{detailsOpen ? '▲' : '▼'}</span>
+      </div>
+      {detailsOpen && (
+        <div className="details-body">
+          {structure_read && (
+            <div className="commentary-section">
+              <div className="section-label">Structure</div>
+              <p className="structure-read-text">{structure_read}</p>
+            </div>
+          )}
+          {steps_what_happened.length > 0 && (
+            <div className="commentary-section">
+              <div className="section-label">What Happened</div>
+              <ol style={{ paddingLeft: 18, margin: 0 }}>
+                {steps_what_happened.map((step, i) => (
+                  <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 3, lineHeight: 1.45 }}>
+                    {stripLeadingNumber(step)}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          <div className="commentary-section">
+            <div className="section-label">Chart State</div>
+            {objectiveBullets.length > 1 ? (
+              <ul style={{ paddingLeft: 16, margin: 0 }}>
+                {objectiveBullets.map((b, i) => (
+                  <li key={i} style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5, marginBottom: 2 }}>
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                {objective}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Section G — Bottom line + callouts */}
-      <div className="commentary-section" style={{ marginBottom: 0 }}>
+      <div className="commentary-section" style={{ marginBottom: 0, marginTop: 8 }}>
         <p className="bottom-line">{bottom_line}</p>
         {next_trigger && (
           <div className="callout-box callout-amber">
@@ -649,6 +722,10 @@ const App: React.FC = () => {
   const autoDrawRef                           = useRef(false);
   const persistLevelsRef                      = useRef(false);
   const drawnSlotsRef                         = useRef<Set<number>>(new Set());
+  const [alertedPrices, setAlertedPrices]           = useState<Set<number>>(new Set());
+  const [pendingAlertPrices, setPendingAlertPrices] = useState<Set<number>>(new Set());
+  const [alertErrorPrices, setAlertErrorPrices]     = useState<Map<number, string>>(new Map());
+  const prevSymbolRef                               = useRef<string | null>(null);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -695,6 +772,11 @@ const App: React.FC = () => {
 
     const unsubAnalysis = window.api.onAnalysis((pushed) => {
       if (!pushed || typeof pushed !== 'object' || !('commentary' in pushed)) return;
+      if (pushed.symbol !== prevSymbolRef.current) {
+        setAlertedPrices(new Set());
+        setAlertErrorPrices(new Map());
+        prevSymbolRef.current = pushed.symbol;
+      }
       setResult(pushed);
       setUiStatus('complete');
       if (pushed.barCloseMs > Date.now()) setNextTickMs(pushed.barCloseMs);
@@ -818,7 +900,8 @@ const App: React.FC = () => {
     const kind    = levelKind(lvl, result.closedBarPrice);
     setPendingSlots(prev => new Set([...prev, idx]));
     try {
-      await window.api.toggleLevel(idx + 1, lvl.price, kind, lvl.label, isDrawn ? 0 : 1, lvl.priority ?? 'primary');
+      const chartLabel = !isDrawn && alertedPrices.has(lvl.price) ? armedLabel(lvl.label) : lvl.label;
+      await window.api.toggleLevel(idx + 1, lvl.price, kind, chartLabel, isDrawn ? 0 : 1, lvl.priority ?? 'primary');
       setDrawnSlots(prev => {
         const next = new Set(prev);
         if (isDrawn) next.delete(idx); else next.add(idx);
@@ -862,6 +945,46 @@ const App: React.FC = () => {
     }
   };
 
+  const armedLabel = (base: string) => base.slice(0, 17).trimEnd() + ' 🔔';
+
+  const updateChartLabel = (slotIndex: number, lvl: KeyLevel, armed: boolean) => {
+    if (!result || !drawnSlots.has(slotIndex)) return;
+    const kind       = levelKind(lvl, result.closedBarPrice);
+    const chartLabel = armed ? armedLabel(lvl.label) : lvl.label;
+    window.api.toggleLevel(slotIndex + 1, lvl.price, kind, chartLabel, 1, lvl.priority ?? 'primary')
+      .catch(() => {});
+  };
+
+  const handleAlertToggle = async (slotIndex: number, price: number, label: string) => {
+    const lvl = result?.commentary.key_levels_to_watch?.[slotIndex];
+    if (alertedPrices.has(price)) {
+      try { await window.api.removeAlert(price); } catch (_) {}
+      setAlertedPrices(prev => { const s = new Set(prev); s.delete(price); return s; });
+      if (lvl) updateChartLabel(slotIndex, lvl, false);
+      return;
+    }
+    if (pendingAlertPrices.has(price)) return;
+    setPendingAlertPrices(prev => { const s = new Set(prev); s.add(price); return s; });
+    setAlertErrorPrices(prev => { const m = new Map(prev); m.delete(price); return m; });
+    try {
+      const res: AlertCreateResult = await window.api.createAlert({ price, label });
+      if (res.ok) {
+        setAlertedPrices(prev => { const s = new Set(prev); s.add(price); return s; });
+        if (lvl) updateChartLabel(slotIndex, lvl, true);
+      } else {
+        setAlertErrorPrices(prev => { const m = new Map(prev); m.set(price, res.error); return m; });
+      }
+    } catch (err) {
+      setAlertErrorPrices(prev => {
+        const m = new Map(prev);
+        m.set(price, err instanceof Error ? err.message : 'Unknown error');
+        return m;
+      });
+    } finally {
+      setPendingAlertPrices(prev => { const s = new Set(prev); s.delete(price); return s; });
+    }
+  };
+
   const handleDrawTP = async () => {
     if (!result) return;
     const tp  = result.commentary.trade_plan;
@@ -871,12 +994,15 @@ const App: React.FC = () => {
     let stop:  number | null = null;
     let target: number | null = null;
 
-    if (tp && tp.entry != null && tp.stop != null && tp.target != null) {
-      entry = tp.entry; stop = tp.stop; target = tp.target;
-    } else if (hpt) {
+    // HPT has priority — it is the highest-confidence setup.
+    if (hpt) {
       entry  = parsePrice(hpt.entry_zone);
       stop   = parsePrice(hpt.stop);
       target = parsePrice(hpt.targets);
+    }
+    // Fallback to trade_plan numeric values if HPT parse failed.
+    if ((entry == null || stop == null || target == null) && tp && tp.entry != null && tp.stop != null && tp.target != null) {
+      entry = tp.entry; stop = tp.stop; target = tp.target;
     }
 
     if (entry == null || stop == null || target == null) return;
@@ -958,6 +1084,12 @@ const App: React.FC = () => {
                 tpPending,
                 onDrawTP:  handleDrawTP,
                 onClearTP: handleClearTP,
+              }}
+              alertCtrl={{
+                alertedPrices,
+                pendingAlertPrices,
+                alertErrorPrices,
+                onAlertToggle: handleAlertToggle,
               }}
             />
           </div>

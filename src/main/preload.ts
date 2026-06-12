@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot } from '../shared/types';
+import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, PatternMarker, AlertCreatePayload, AlertCreateResult } from '../shared/types';
 
 contextBridge.exposeInMainWorld('api', {
   requestAnalysis: () => ipcRenderer.invoke(IPC.ANALYZE_RUN),
@@ -52,4 +52,10 @@ contextBridge.exposeInMainWorld('api', {
   },
   exportToDrive: (): Promise<{ filePath?: string; cancelled?: boolean }> =>
     ipcRenderer.invoke(IPC.GDRIVE_EXPORT),
+  writePatternMarkers: (markers: PatternMarker[]): Promise<void> =>
+    ipcRenderer.invoke(IPC.ANNOTATE_PATTERN_MARKERS, markers),
+  createAlert: (payload: AlertCreatePayload): Promise<AlertCreateResult> =>
+    ipcRenderer.invoke(IPC.ALERT_CREATE, payload),
+  removeAlert: (price: number): Promise<void> =>
+    ipcRenderer.invoke(IPC.ALERT_REMOVE, price),
 });

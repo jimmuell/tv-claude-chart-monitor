@@ -31,6 +31,9 @@ export const IPC = {
   GDRIVE_EXPORT:             'gdrive:export',
   GDRIVE_STATUS:             'gdrive:status',
   GDRIVE_SIGNOUT:            'gdrive:signout',
+  ANNOTATE_PATTERN_MARKERS:  'annotate:patternMarkers',
+  ALERT_CREATE:              'alert:create',
+  ALERT_REMOVE:              'alert:remove',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -70,6 +73,19 @@ export interface HighestProbabilityTrade {
   targets:     string;
   bias:        'long' | 'short' | 'neutral';
   condition:   string;
+}
+
+export interface CandlestickPattern {
+  name:       string;                            // e.g. "Bullish Engulfing"
+  meaning:    string;                            // 1-sentence plain English for beginners
+  signal:     'bullish' | 'bearish' | 'neutral';
+  bar_offset: number;                            // 0 = just-closed bar, 1 = one bar back
+}
+
+export interface PatternMarker {
+  bar_offset: number;
+  label:      string;   // max 12 chars (Pine indicator constraint)
+  signal:     1 | -1 | 0;  // 1 = bullish, -1 = bearish, 0 = neutral
 }
 
 // Payload for 'suggest_level' special cards (Phase 4b.2)
@@ -112,6 +128,9 @@ export interface CommentaryResult {
   structure_read?:            string;
   highest_probability_trade?: HighestProbabilityTrade | null;
   confidence:                 number;
+
+  // Detected candlestick patterns (optional — null for special-card kinds)
+  candlestick_patterns?: CandlestickPattern[] | null;
 
   // Special-card discriminator (undefined for normal LLM-generated cards)
   kind?: 'suggest_level' | 'lifecycle';
@@ -184,6 +203,15 @@ export interface LevelAnnotation {
   priority:  string; // 'primary' | 'secondary'
 }
 
+export interface AlertCreatePayload {
+  price: number;
+  label: string;
+}
+
+export type AlertCreateResult =
+  | { ok: true;  alertId: string }
+  | { ok: false; error: string };
+
 // ---------------------------------------------------------------------------
 // Wrapper returned from bridge.runAnalysis()
 // ---------------------------------------------------------------------------
@@ -233,4 +261,8 @@ export interface ElectronAPI {
   getPnl(): Promise<PnlSnapshot>;
   onPnlUpdate(cb: (snapshot: PnlSnapshot) => void): () => void;
   exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
+  /** Write up to 4 candle pattern markers to the TA Levels Pine indicator (in_46–in_57) */
+  writePatternMarkers(markers: PatternMarker[]): Promise<void>;
+  createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
+  removeAlert(price: number): Promise<void>;
 }

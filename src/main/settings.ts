@@ -34,7 +34,7 @@ export function loadSettings(): AppSettings {
 export function saveSettings(settings: AppSettings): void {
   try {
     current = { ...DEFAULTS, ...settings };
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(current));
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(current), { mode: 0o600 });
   } catch { /* ignore */ }
 }
 
