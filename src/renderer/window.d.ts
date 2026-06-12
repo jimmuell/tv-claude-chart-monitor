@@ -1,4 +1,4 @@
-import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot } from '../shared/types';
+import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, AlertCreatePayload, AlertCreateResult } from '../shared/types';
 
 declare global {
   interface Window {
@@ -24,6 +24,7 @@ declare global {
       onPnlUpdate(cb: (snapshot: PnlSnapshot) => void): () => void;
       exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
       writePatternMarkers(markers: import('../shared/types').PatternMarker[]): Promise<void>;
+      createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
     };
   }
 }

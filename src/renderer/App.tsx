@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern } from '../shared/types';
+import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import SettingsPanel from './SettingsPanel';
 
@@ -101,6 +101,18 @@ const EyeOnIcon: React.FC = () => (
 const EyeOffIcon: React.FC = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
     <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z" />
+  </svg>
+);
+
+const BellIcon: React.FC<{ filled?: boolean }> = ({ filled = false }) => (
+  <svg width="13" height="13" viewBox="0 0 24 24"
+    fill={filled ? 'currentColor' : 'none'}
+    stroke="currentColor" strokeWidth="2"
+    strokeLinecap="round" strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
   </svg>
 );
 
@@ -320,6 +332,13 @@ interface TradePlanCtrl {
   onClearTP: () => void;
 }
 
+interface AlertCtrl {
+  alertedPrices:    Set<number>;
+  pendingAlertPrices: Set<number>;
+  alertErrorPrices:   Map<number, string>;
+  onAlertToggle:    (price: number, label: string) => void;
+}
+
 function hptBiasColor(bias: HighestProbabilityTrade['bias']): string {
   if (bias === 'long')  return 'var(--accent)';
   if (bias === 'short') return 'var(--bearish)';
@@ -339,7 +358,8 @@ const CommentaryCard: React.FC<{
   currentPrice: number;
   annotation:   AnnotationState;
   tradePlanCtrl: TradePlanCtrl;
-}> = ({ commentary, currentPrice, annotation, tradePlanCtrl }) => {
+  alertCtrl:    AlertCtrl;
+}> = ({ commentary, currentPrice, annotation, tradePlanCtrl, alertCtrl }) => {
   const [detailsOpen, setDetailsOpen] = React.useState(false);
 
   const {
@@ -494,6 +514,9 @@ const CommentaryCard: React.FC<{
               const isDrawn   = annotation.drawnSlots.has(i);
               const isPending = annotation.pendingSlots.has(i);
               const isSecondary = lvl.priority === 'secondary';
+              const isBellPending = alertCtrl.pendingAlertPrices.has(lvl.price);
+              const isBellActive  = alertCtrl.alertedPrices.has(lvl.price);
+              const bellError     = alertCtrl.alertErrorPrices.get(lvl.price);
               return (
                 <div
                   key={i}
@@ -508,6 +531,27 @@ const CommentaryCard: React.FC<{
                     style={{ color: isDrawn ? primary : 'var(--text-secondary)' }}
                   >
                     {isDrawn ? <EyeOnIcon /> : <EyeOffIcon />}
+                  </button>
+                  <button
+                    className={`bell-btn${isBellActive ? ' bell-on' : ''}${isBellPending ? ' bell-pending' : ''}${bellError ? ' bell-error' : ''}`}
+                    onClick={() => alertCtrl.onAlertToggle(lvl.price, lvl.label)}
+                    disabled={isBellPending || isBellActive}
+                    aria-label="Create TradingView alert for this level"
+                    title={
+                      bellError    ? `Alert failed: ${bellError}` :
+                      isBellActive ? 'Alert set in TradingView — manage in TV Alerts panel' :
+                                     'Create TradingView alert when price crosses this level'
+                    }
+                    style={{
+                      color: isBellActive  ? 'var(--accent)'  :
+                             bellError      ? 'var(--bearish)' :
+                                              'var(--text-secondary)',
+                    }}
+                  >
+                    {isBellPending
+                      ? <span className="bell-spinner" />
+                      : <BellIcon filled={isBellActive} />
+                    }
                   </button>
                   <span className="level-price" style={{ color: primary }}>{lvl.price.toFixed(2)}</span>
                   <span className="level-label" style={{ color: secondary }}>{lvl.label}</span>
@@ -691,6 +735,10 @@ const App: React.FC = () => {
   const autoDrawRef                           = useRef(false);
   const persistLevelsRef                      = useRef(false);
   const drawnSlotsRef                         = useRef<Set<number>>(new Set());
+  const [alertedPrices, setAlertedPrices]           = useState<Set<number>>(new Set());
+  const [pendingAlertPrices, setPendingAlertPrices] = useState<Set<number>>(new Set());
+  const [alertErrorPrices, setAlertErrorPrices]     = useState<Map<number, string>>(new Map());
+  const prevSymbolRef                               = useRef<string | null>(null);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -737,6 +785,11 @@ const App: React.FC = () => {
 
     const unsubAnalysis = window.api.onAnalysis((pushed) => {
       if (!pushed || typeof pushed !== 'object' || !('commentary' in pushed)) return;
+      if (pushed.symbol !== prevSymbolRef.current) {
+        setAlertedPrices(new Set());
+        setAlertErrorPrices(new Map());
+        prevSymbolRef.current = pushed.symbol;
+      }
       setResult(pushed);
       setUiStatus('complete');
       if (pushed.barCloseMs > Date.now()) setNextTickMs(pushed.barCloseMs);
@@ -904,6 +957,28 @@ const App: React.FC = () => {
     }
   };
 
+  const handleAlertToggle = async (price: number, label: string) => {
+    if (alertedPrices.has(price)) return;
+    setPendingAlertPrices(prev => { const s = new Set(prev); s.add(price); return s; });
+    setAlertErrorPrices(prev => { const m = new Map(prev); m.delete(price); return m; });
+    try {
+      const result: AlertCreateResult = await window.api.createAlert({ price, label });
+      if (result.ok) {
+        setAlertedPrices(prev => { const s = new Set(prev); s.add(price); return s; });
+      } else {
+        setAlertErrorPrices(prev => { const m = new Map(prev); m.set(price, result.error); return m; });
+      }
+    } catch (err) {
+      setAlertErrorPrices(prev => {
+        const m = new Map(prev);
+        m.set(price, err instanceof Error ? err.message : 'Unknown error');
+        return m;
+      });
+    } finally {
+      setPendingAlertPrices(prev => { const s = new Set(prev); s.delete(price); return s; });
+    }
+  };
+
   const handleDrawTP = async () => {
     if (!result) return;
     const tp  = result.commentary.trade_plan;
@@ -1003,6 +1078,12 @@ const App: React.FC = () => {
                 tpPending,
                 onDrawTP:  handleDrawTP,
                 onClearTP: handleClearTP,
+              }}
+              alertCtrl={{
+                alertedPrices,
+                pendingAlertPrices,
+                alertErrorPrices,
+                onAlertToggle: handleAlertToggle,
               }}
             />
           </div>
