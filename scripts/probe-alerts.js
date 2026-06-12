@@ -9,44 +9,33 @@ const PROBE = `
 (async () => {
   const findings = {};
 
-  findings.origin = window.location.origin;
-  findings.href   = window.location.href.slice(0, 100);
-
-  findings.alertGlobals = Object.keys(window).filter(function(k) {
-    return /alert|alarm|notify/i.test(k);
-  }).slice(0, 20);
-
-  const csrfCookie = (document.cookie.split(';').map(function(c) { return c.trim(); })
-    .find(function(c) { return c.startsWith('csrftoken='); }) || '');
-  findings.hasCsrf     = csrfCookie.length > 0;
-  findings.csrfPreview = csrfCookie.slice(0, 40);
-
   try {
-    const csrf = csrfCookie.split('=')[1] || '';
-    const r = await fetch('https://pricealert.tradingview.com/api/v2/alerts/', {
-      credentials: 'include',
-      headers: { 'X-CSRFToken': csrf },
-    });
-    findings.getAlertsStatus  = r.status;
-    findings.getAlertsHeaders = Object.fromEntries(Array.from(r.headers).slice(0, 10));
-    if (r.ok) {
-      const data = await r.json();
-      findings.existingAlertCount = Array.isArray(data) ? data.length
-        : (data.alerts ? data.alerts.length : 'unknown shape');
-      findings.alertSample = JSON.stringify(data).slice(0, 400);
-    } else {
-      findings.getAlertsBody = (await r.text()).slice(0, 300);
+    // Walk the full prototype chain of _alertService
+    const svc = window.TradingViewApi._alertService;
+    var allSvcKeys = [];
+    var proto = svc;
+    var depth = 0;
+    while (proto && depth < 5) {
+      allSvcKeys = allSvcKeys.concat(Object.getOwnPropertyNames(proto));
+      proto = Object.getPrototypeOf(proto);
+      depth++;
     }
-  } catch (e) {
-    findings.getAlertsError = String(e);
-  }
+    findings.alertServiceAllKeys = allSvcKeys.filter(function(k) {
+      return k !== 'constructor';
+    }).slice(0, 50);
 
-  try {
-    const chart = window.TradingViewApi.activeChart();
-    findings.symbol     = chart.symbol();
-    findings.resolution = chart.resolution();
-  } catch (e) {
-    findings.chartError = String(e);
+    // show() function source — tells us what args it expects
+    const dlg = window.TradingViewApi._alertsWidgetDialog;
+    findings.showFnSource = dlg && dlg.show ? dlg.show.toString().slice(0, 500) : 'n/a';
+    findings.setTabFnSource = dlg && dlg.setTab ? dlg.setTab.toString().slice(0, 300) : 'n/a';
+
+    // for..in on _alertService to catch enumerable props
+    var forInKeys = [];
+    for (var k in svc) { forInKeys.push(k); }
+    findings.alertServiceForInKeys = forInKeys.slice(0, 40);
+
+  } catch(e) {
+    findings.error = String(e);
   }
 
   return findings;

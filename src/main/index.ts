@@ -2,7 +2,8 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, createLevelAlert } from './bridge';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage } from './bridge';
+import { registerAlert, checkCrossings } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
 import { PnlTracker } from './pnl-tracker';
@@ -391,10 +392,12 @@ app.on('ready', () => {
     await writePatternMarkers(markers);
   });
 
-  // IPC: create TradingView native price-crossing alert for a level
+  // IPC: register a local price-crossing alert for a level
   ipcMain.handle(IPC.ALERT_CREATE, async (_e, payload: AlertCreatePayload) => {
     try {
-      return await createLevelAlert(payload.price, payload.label);
+      const symbol = await evalPage("window.TradingViewApi.activeChart().symbol()") as string;
+      registerAlert(payload.price, payload.label, symbol);
+      return { ok: true, alertId: 'local' };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -422,6 +425,27 @@ app.on('ready', () => {
 
   // IPC: app version
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion());
+
+  // Price-crossing alert poller — checks every 5 s, fires macOS notification on cross
+  const PRICE_POLL_EXPR = `(() => {
+    try {
+      const chart = window.TradingViewApi.activeChart();
+      const series = chart.getSeries();
+      const bars = series.data().m_bars;
+      const last = bars.valueAt(bars.size() - 1);
+      return { price: last[4], symbol: chart.symbol() };
+    } catch(e) { return null; }
+  })()`;
+
+  setInterval(async () => {
+    try {
+      const result = await evalPage(PRICE_POLL_EXPR);
+      if (result && typeof (result as { price: number; symbol: string }).price === 'number') {
+        const { price, symbol } = result as { price: number; symbol: string };
+        checkCrossings(price, symbol);
+      }
+    } catch (_) { /* CDP not connected — skip silently */ }
+  }, 5000);
 });
 
 app.on('before-quit', () => {
