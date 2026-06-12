@@ -2,13 +2,13 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus } from './bridge';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, createLevelAlert } from './bridge';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
 import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
-import type { AnalysisResult, PatternMarker } from '../shared/types';
+import type { AnalysisResult, PatternMarker, AlertCreatePayload } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
@@ -389,6 +389,15 @@ app.on('ready', () => {
   // IPC: candle pattern markers
   ipcMain.handle(IPC.ANNOTATE_PATTERN_MARKERS, async (_e, markers: PatternMarker[]) => {
     await writePatternMarkers(markers);
+  });
+
+  // IPC: create TradingView native price-crossing alert for a level
+  ipcMain.handle(IPC.ALERT_CREATE, async (_e, payload: AlertCreatePayload) => {
+    try {
+      return await createLevelAlert(payload.price, payload.label);
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   });
 
   // IPC: force CDP reconnect
