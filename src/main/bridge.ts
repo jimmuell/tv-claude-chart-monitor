@@ -9,7 +9,7 @@
 import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import type { AnalysisResult, KeyStatus } from '../shared/types';
+import type { AnalysisResult, KeyStatus, AlertCreateResult } from '../shared/types';
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -71,6 +71,7 @@ const { createReader } = require(path.join(app.getAppPath(), 'src/shared/tv-read
     hasNewClose(snapshot: unknown):               boolean;
     setStudyInputs(studyId: string, patch: Record<string, unknown>): Promise<{ok: boolean; error?: string}>;
     evalPage(expression: string):                 Promise<unknown>;
+    createAlert(price: number, label: string, symbol: string, resolution: string): Promise<unknown>;
   };
 };
 
@@ -290,6 +291,22 @@ export async function evalPage(expression: string): Promise<unknown> {
     throw err;
   }
   return reader!.evalPage(expression);
+}
+
+export async function createLevelAlert(
+  price: number,
+  label: string,
+): Promise<AlertCreateResult> {
+  try {
+    await ensureConnected();
+  } catch (err: unknown) {
+    connected = false;
+    reader    = null;
+    throw err;
+  }
+  const symbol     = await reader!.evalPage("window.TradingViewApi.activeChart().symbol()") as string;
+  const resolution = await reader!.evalPage("window.TradingViewApi.activeChart().resolution()") as string;
+  return reader!.createAlert(price, label, symbol, resolution) as Promise<AlertCreateResult>;
 }
 
 export async function findStudyId(nameContains: string): Promise<string | null> {
