@@ -582,6 +582,9 @@ class MockTvReader {
   async disconnect() {}
   async evalPage() { return null; }
   async setStudyInputs(_studyId, _partialUpdate) { return { ok: true, shape: "mock" }; }
+  async createAlert(_price, _label, _symbol, _resolution) {
+    return { ok: false, error: 'createAlert not available in mock mode' };
+  }
 
   _buildScript() {
     // A short repeating script that produces interesting events for testing.

@@ -304,8 +304,16 @@ export async function createLevelAlert(
     reader    = null;
     throw err;
   }
-  const symbol     = await reader!.evalPage("window.TradingViewApi.activeChart().symbol()") as string;
-  const resolution = await reader!.evalPage("window.TradingViewApi.activeChart().resolution()") as string;
+  let symbol: string;
+  let resolution: string;
+  try {
+    symbol     = await reader!.evalPage("window.TradingViewApi.activeChart().symbol()") as string;
+    resolution = await reader!.evalPage("window.TradingViewApi.activeChart().resolution()") as string;
+  } catch (err: unknown) {
+    connected = false;
+    reader    = null;
+    throw err;
+  }
   return reader!.createAlert(price, label, symbol, resolution) as Promise<AlertCreateResult>;
 }
 
