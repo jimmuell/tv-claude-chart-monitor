@@ -3,7 +3,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, s
 import fs from 'fs';
 import path from 'path';
 import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage } from './bridge';
-import { registerAlert, checkCrossings, clearAlertForPrice } from './alert-monitor';
+import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
 import { PnlTracker } from './pnl-tracker';
@@ -169,7 +169,7 @@ function resolveTradePlanNumbers(result: AnalysisResult): { entry: number; stop:
 function autoDrawResult(result: AnalysisResult): void {
   const levels = result.commentary.key_levels_to_watch;
   if (levels && levels.length > 0) {
-    writeLevels(buildAnnotations(levels, result.closedBarPrice))
+    writeLevels(buildAnnotations(levels, result.closedBarPrice, getArmedPrices()))
       .catch(err => console.error('[auto-draw levels]', (err as Error).message));
   }
 

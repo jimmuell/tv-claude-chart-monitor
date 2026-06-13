@@ -922,7 +922,7 @@ const App: React.FC = () => {
       slotIndex: i + 1,
       price:     lvl.price,
       kind:      levelKind(lvl, currentPrice),
-      label:     lvl.label,
+      label:     alertedPrices.has(lvl.price) ? armedLabel(lvl.label) : lvl.label,
       visible:   1,
       priority:  lvl.priority ?? 'primary',
     }));

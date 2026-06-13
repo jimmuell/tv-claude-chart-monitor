@@ -47,6 +47,10 @@ export function clearAlertForPrice(price: number): void {
   }
 }
 
+export function getArmedPrices(): Set<number> {
+  return new Set([...alerts.values()].map(a => a.price));
+}
+
 export function clearAlertsForSymbol(symbol: string): void {
   for (const [key, alert] of alerts) {
     if (alert.symbol === symbol) alerts.delete(key);

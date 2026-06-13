@@ -111,17 +111,21 @@ function levelKind(color: string, price: number, currentPrice: number): string {
 }
 
 /** Build a full LevelAnnotation array from key_levels_to_watch (up to 8 slots). */
-export function buildAnnotations(levels: KeyLevel[], currentPrice: number): LevelAnnotation[] {
+export function buildAnnotations(levels: KeyLevel[], currentPrice: number, armedPrices?: Set<number>): LevelAnnotation[] {
   const summary = levels.slice(0, SLOTS).map(l => `${l.price}(${l.color})`).join(', ');
   console.log(`[annotator] buildAnnotations currentPrice=${currentPrice} levels=[${summary}]`);
-  return levels.slice(0, SLOTS).map((lvl, i) => ({
-    slotIndex: i + 1,
-    price:     lvl.price,
-    kind:      levelKind(lvl.color, lvl.price, currentPrice),
-    label:     abbreviateLabel(lvl.label),
-    visible:   1,
-    priority:  lvl.priority ?? 'primary',
-  }));
+  return levels.slice(0, SLOTS).map((lvl, i) => {
+    const base  = abbreviateLabel(lvl.label);
+    const label = armedPrices?.has(lvl.price) ? base.slice(0, 17).trimEnd() + ' 🔔' : base;
+    return {
+      slotIndex: i + 1,
+      price:     lvl.price,
+      kind:      levelKind(lvl.color, lvl.price, currentPrice),
+      label,
+      visible:   1,
+      priority:  lvl.priority ?? 'primary',
+    };
+  });
 }
 
 /** Write entry/stop/target bracket lines (in_43–in_45). Pass 0 to clear. */
