@@ -10,6 +10,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import type { AnalysisResult, KeyStatus, AlertCreateResult } from '../shared/types';
+import { getSettings } from './settings';
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -72,6 +73,7 @@ const { createReader } = require(path.join(app.getAppPath(), 'src/shared/tv-read
     setStudyInputs(studyId: string, patch: Record<string, unknown>): Promise<{ok: boolean; error?: string}>;
     evalPage(expression: string):                 Promise<unknown>;
     createAlert(price: number, label: string, symbol: string, resolution: string): Promise<unknown>;
+    readBarsByResolution(symbol: string, resolution: string, barCount?: number): Promise<unknown>;
   };
 };
 
@@ -202,7 +204,7 @@ export async function runAnalysis(): Promise<AnalysisResult> {
   sendStatus('Reading chart data...');
   let snapshot: unknown;
   try {
-    snapshot = await reader!.readSnapshot({ barCount: 200 });
+    snapshot = await reader!.readSnapshot({ barCount: 300 });
   } catch (err: unknown) {
     // Treat any read error as a lost connection so we reconnect next time.
     connected = false;
@@ -225,7 +227,6 @@ export async function runAnalysis(): Promise<AnalysisResult> {
   ensureEngine();
   const commentary = await engine!.analyze(ctx, [{ kind: 'on-demand' }]);
 
-  // ctx carries the shape returned by buildContext; cast via unknown for safety.
   const typedCtx = ctx as {
     symbol:    string;
     timeframe: string;
@@ -233,7 +234,6 @@ export async function runAnalysis(): Promise<AnalysisResult> {
   };
 
   // Compute the close time of the currently-forming bar (last candle in snapshot).
-  // time field in m_bars is Unix seconds (bar open); close = open + resolution_secs.
   const snapCandles = (snapshot as { candles?: Array<{ time: number }> })?.candles;
   const lastCandle  = snapCandles && snapCandles.length > 0 ? snapCandles[snapCandles.length - 1] : null;
   const resNum      = parseFloat(typedCtx.timeframe);
@@ -260,7 +260,7 @@ export async function getSnapshot(): Promise<unknown> {
   }
 
   try {
-    return await reader!.readSnapshot({ barCount: 200 });
+    return await reader!.readSnapshot({ barCount: 300 });
   } catch (err: unknown) {
     connected = false;
     reader = null;

@@ -203,6 +203,7 @@ function autoDrawResult(result: AnalysisResult): void {
             : '';
   writeConfidence(pct, dir)
     .catch(err => console.error('[auto-draw confidence]', (err as Error).message));
+
 }
 
 app.on('ready', () => {

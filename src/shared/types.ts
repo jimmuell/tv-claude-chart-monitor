@@ -217,12 +217,12 @@ export type AlertCreateResult =
 // ---------------------------------------------------------------------------
 
 export interface AnalysisResult {
-  symbol:          string;
-  timeframe:       string;
-  closedBarPrice:  number;
+  symbol:         string;
+  timeframe:      string;
+  closedBarPrice: number;
   /** Epoch ms when the current open bar closes (lastBarOpenSecs + resolution*60)*1000). Zero when unavailable (daily/weekly). */
-  barCloseMs:      number;
-  commentary:      CommentaryResult;
+  barCloseMs:     number;
+  commentary:     CommentaryResult;
 }
 
 export interface GDriveStatus {

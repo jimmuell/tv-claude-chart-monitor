@@ -125,11 +125,10 @@ class ActionabilityFilter {
 
     if (reasons.length === 0) return { fire: false, reasons };
 
-    // Global cooldown gates trade-like events. A reason set that is PURELY
-    // suggest_level entries bypasses it — suggestions should never be silenced
-    // by a recent zone-rejection cooldown.
-    const allSuggestLevel = reasons.every((r) => r.kind === 'suggest_level');
-    if (!allSuggestLevel && nowMs < this._globalCooldownUntil) {
+    // Global cooldown gates trade-like events. Pure informational reasons
+    // (suggest_level) bypass it so they're never silenced by a recent event.
+    const allInfoOnly = reasons.every((r) => r.kind === 'suggest_level');
+    if (!allInfoOnly && nowMs < this._globalCooldownUntil) {
       return { fire: false, reasons, suppressedBy: "global-cooldown" };
     }
 
@@ -137,12 +136,11 @@ class ActionabilityFilter {
   }
 
   noteFired(ctx, reasons, nowMs = Date.now()) {
-    // Pure suggest_level fires don't set global / per-zone cooldowns — they're
-    // informational nudges, not trade events.
-    const allSuggestLevel = Array.isArray(reasons) && reasons.length > 0 &&
+    // Pure informational fires (suggest_level) don't set global / per-zone cooldowns.
+    const allInfoOnly = Array.isArray(reasons) && reasons.length > 0 &&
       reasons.every((r) => r.kind === 'suggest_level');
 
-    if (!allSuggestLevel) {
+    if (!allInfoOnly) {
       const cd = (this.cfg.globalCooldownSec || 0) * 1000;
       this._globalCooldownUntil = nowMs + cd;
       const zoneCd = (this.cfg.perZoneCooldownSec || 0) * 1000;

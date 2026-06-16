@@ -1,26 +1,32 @@
 import { findStudyId, callSetStudyInputs } from './bridge';
 import type { KeyLevel, LevelAnnotation, PatternMarker } from '../shared/types';
 
-const SLOTS         = 8;
+const SLOTS          = 8;
 const INDICATOR_NAME = 'TA Levels';
 
-let cachedStudyId: string | null = null;
+// ── Study cache ───────────────────────────────────────────────────────────────
+
+let singleStudyId: string | null = null;
 
 export function invalidateStudyCache(): void {
-  cachedStudyId = null;
+  singleStudyId = null;
 }
 
+// ── Study resolution ──────────────────────────────────────────────────────────
+
 async function resolveStudyId(): Promise<string> {
-  if (!cachedStudyId) {
-    cachedStudyId = await findStudyId(INDICATOR_NAME);
+  if (!singleStudyId) {
+    singleStudyId = await findStudyId(INDICATOR_NAME);
   }
-  if (!cachedStudyId) {
+  if (!singleStudyId) {
     throw new Error(
       "TA Levels indicator not found on chart. Add it in TradingView's Pine Editor.",
     );
   }
-  return cachedStudyId;
+  return singleStudyId;
 }
+
+// ── Level slots ───────────────────────────────────────────────────────────────
 
 function buildFullPatch(slots: Array<LevelAnnotation | null>): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
@@ -36,19 +42,17 @@ function buildFullPatch(slots: Array<LevelAnnotation | null>): Record<string, un
   return patch;
 }
 
-/** Write all 40 inputs at once. Slots beyond levels.length are zeroed. */
+/** Write all 40 level inputs at once. Slots beyond levels.length are zeroed. */
 export async function writeLevels(levels: LevelAnnotation[]): Promise<void> {
   const slots: Array<LevelAnnotation | null> = Array(SLOTS).fill(null);
   for (let i = 0; i < Math.min(levels.length, SLOTS); i++) {
     const lvl = levels[i];
-    // normalise slotIndex so the patch lands at the expected positional inputs
     slots[lvl.slotIndex - 1] = lvl;
   }
-  const patch = buildFullPatch(slots);
+  const patch   = buildFullPatch(slots);
   const studyId = await resolveStudyId();
   const result  = await callSetStudyInputs(studyId, patch);
   if (!result.ok) {
-    // Study ID may be stale (indicator removed and re-added). Invalidate cache and retry once.
     invalidateStudyCache();
     const freshId = await resolveStudyId();
     const retry   = await callSetStudyInputs(freshId, patch);
@@ -83,11 +87,6 @@ export async function writeLevel(
   }
 }
 
-/**
- * Truncate label to at most 20 chars at a clean word boundary.
- * Applied before writing to the Pine indicator so chips stay compact.
- * Called in buildFullPatch (covers all writeLevels paths) and writeLevel.
- */
 export function abbreviateLabel(label: string): string {
   const MAX = 20;
   if (label.length <= MAX) return label;
@@ -101,12 +100,9 @@ export function abbreviateLabel(label: string): string {
 }
 
 function levelKind(color: string, price: number, currentPrice: number): string {
-  // commentary.js color semantics: green=support/long, red=resistance/short,
-  // yellow=neutral/watch, gray=low-priority, blue=ORB/structure
   if (color === 'yellow' || color === 'gray') return 'neutral';
   if (color === 'green') return 'support';
   if (color === 'red') return 'resistance';
-  // blue (ORB/structure) and any unknown: use price position as tiebreaker
   return price < currentPrice ? 'support' : 'resistance';
 }
 
@@ -128,13 +124,11 @@ export function buildAnnotations(levels: KeyLevel[], currentPrice: number, armed
   });
 }
 
-/** Write entry/stop/target bracket lines (in_43–in_45). Pass 0 to clear. */
+// ── Trade plan bracket ────────────────────────────────────────────────────────
+
+/** Write entry/stop/target bracket lines (in_43–in_45). */
 export async function writeTradePlan(entry: number, stop: number, target: number): Promise<void> {
-  const patch: Record<string, unknown> = {
-    in_43: entry,
-    in_44: stop,
-    in_45: target,
-  };
+  const patch: Record<string, unknown> = { in_43: entry, in_44: stop, in_45: target };
   const studyId = await resolveStudyId();
   const result  = await callSetStudyInputs(studyId, patch);
   if (!result.ok) {
@@ -149,6 +143,8 @@ export async function writeTradePlan(entry: number, stop: number, target: number
 export async function clearTradePlan(): Promise<void> {
   return writeTradePlan(0, 0, 0);
 }
+
+// ── Pattern markers (general strategy — active chart) ─────────────────────────
 
 const PATTERN_MARKER_BASE = 46;
 const MAX_PATTERN_MARKERS = 4;
@@ -177,10 +173,12 @@ function truncateMarkerLabel(label: string): string {
   return label.length > 12 ? label.slice(0, 12) : label;
 }
 
-const CONFIDENCE_INPUT = 58;
+// ── Confidence (general strategy — active chart) ──────────────────────────────
+
+const CONFIDENCE_INPUT     = 58;
 const CONFIDENCE_DIR_INPUT = 59;
 
-/** Write confidence percentage (0–100) and direction label to in_58/in_59. Pass 0/'') to clear. */
+/** Write confidence percentage (0–100) and direction label to in_58/in_59. */
 export async function writeConfidence(pct: number, dir: string = ''): Promise<void> {
   const patch: Record<string, unknown> = {
     [`in_${CONFIDENCE_INPUT}`]:     pct,
@@ -196,11 +194,13 @@ export async function writeConfidence(pct: number, dir: string = ''): Promise<vo
   }
 }
 
-/** Zero out all 8 slots. */
+// ── Clear all level slots ─────────────────────────────────────────────────────
+
+/** Zero out all 8 level slots (in_0–in_39) on the active-chart study. */
 export async function clearAll(): Promise<void> {
-  const patch    = buildFullPatch(Array(SLOTS).fill(null));
-  const studyId  = await resolveStudyId();
-  const result   = await callSetStudyInputs(studyId, patch);
+  const patch   = buildFullPatch(Array(SLOTS).fill(null));
+  const studyId = await resolveStudyId();
+  const result  = await callSetStudyInputs(studyId, patch);
   if (!result.ok) {
     invalidateStudyCache();
     const freshId = await resolveStudyId();

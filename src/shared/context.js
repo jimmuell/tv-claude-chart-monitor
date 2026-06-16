@@ -229,13 +229,6 @@ function maEvents(candles, maPeriod = 20) {
 }
 
 // Top-level builder: takes a snapshot and produces the full context object.
-//
-// opts (in addition to existing tickSize / maPeriod / patterns):
-//   - trackedLevels: array of journal rows for the current symbol
-//                    (shape: { drawing_id, price, label, color, drawing_type, ... }).
-//                    Each row becomes a zone entry with source='tracked-drawing'.
-//   - swingPivots:   options forwarded to detectSwingPivots (lookback, minTouches,
-//                    toleranceTicks). tickSize is auto-inherited.
 function buildContext(snapshot, opts = {}) {
   const tickSize = opts.tickSize || 0.25;
   const maPeriod = opts.maPeriod || 20;
