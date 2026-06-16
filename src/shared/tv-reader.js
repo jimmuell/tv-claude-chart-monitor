@@ -548,51 +548,6 @@ class TvReader {
     return { ...raw, fetchedAt: Date.now() };
   }
 
-  async readBarsByResolution(symbol, resolution, barCount = 300) {
-    if (!this.client) throw new Error("Not connected. Call connect() first.");
-    const symJson = JSON.stringify(symbol);
-    const resJson = JSON.stringify(String(resolution));
-    const expr = `
-      (() => {
-        const safe = (fn, fb) => { try { return fn(); } catch { return fb; } };
-        const api = window.TradingViewApi;
-        if (!api) return { candles: [], error: 'no-api', message: 'TradingViewApi not available' };
-        const count = safe(() => api.chartsCount(), 0);
-        if (!count) return { candles: [], error: 'no-charts', message: 'chartsCount() returned 0' };
-        const sym = ${symJson};
-        const res = ${resJson};
-        for (let i = 0; i < count; i++) {
-          const c = safe(() => api.chart(i), null);
-          if (!c) continue;
-          if (safe(() => c.resolution(), null) !== res) continue;
-          if (safe(() => c.symbol(), null) !== sym) continue;
-          const series = safe(() => c.getSeries(), null);
-          const data   = series && safe(() => series.data(), null);
-          const m      = data && data.m_bars;
-          const candles = [];
-          if (m && typeof m.size === 'function' && typeof m.valueAt === 'function') {
-            const n = m.size();
-            const want = ${barCount};
-            const start = Math.max(0, n - want);
-            for (let j = start; j < n; j++) {
-              const v = m.valueAt(j);
-              if (Array.isArray(v) && v.length >= 5) {
-                candles.push({ time: v[0], open: v[1], high: v[2], low: v[3], close: v[4], volume: v.length > 5 ? v[5] : null });
-              }
-            }
-          }
-          return { candles, paneIndex: i };
-        }
-        return {
-          candles: [],
-          error: 'no-pane',
-          message: 'Add a ' + res + '-minute ' + sym + ' pane to your layout',
-        };
-      })()
-    `;
-    return await this.evalPage(expr);
-  }
-
   // Detect whether a new candle has closed since the last read.
   hasNewClose(snapshot) {
     if (!snapshot.candles || snapshot.candles.length < 2) return false;
@@ -630,11 +585,6 @@ class MockTvReader {
   async createAlert(_price, _label, _symbol, _resolution) {
     return { ok: false, error: 'createAlert not available in mock mode' };
   }
-  async readBarsByResolution(_symbol, _resolution, barCount = 300) {
-    const candles = this._closes.slice(Math.max(0, this._closes.length - barCount));
-    return { candles, paneIndex: 0 };
-  }
-
   _buildScript() {
     // A short repeating script that produces interesting events for testing.
     // Pulls down, rejects at a "zone", recovers, breaks down — designed to

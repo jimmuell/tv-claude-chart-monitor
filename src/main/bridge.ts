@@ -73,7 +73,6 @@ const { createReader } = require(path.join(app.getAppPath(), 'src/shared/tv-read
     setStudyInputs(studyId: string, patch: Record<string, unknown>): Promise<{ok: boolean; error?: string}>;
     evalPage(expression: string):                 Promise<unknown>;
     createAlert(price: number, label: string, symbol: string, resolution: string): Promise<unknown>;
-    readBarsByResolution(symbol: string, resolution: string, barCount?: number): Promise<unknown>;
   };
 };
 
