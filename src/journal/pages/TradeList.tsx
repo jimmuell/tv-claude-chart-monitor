@@ -115,7 +115,14 @@ export function TradeList() {
             <div className="date-group-header">
               {fmtDate(group[0].created_at)} &mdash; {group.length} trade{group.length !== 1 ? 's' : ''}
             </div>
-            {group.map(t => <TradeCard key={t.id} trade={t} />)}
+            {group.map(t => (
+              <TradeCard
+                key={t.id}
+                trade={t}
+                onDeleted={id => setTrades(prev => prev.filter(p => p.id !== id))}
+                onUpdated={updated => setTrades(prev => prev.map(p => p.id === updated.id ? updated : p))}
+              />
+            ))}
           </div>
         ))
       )}

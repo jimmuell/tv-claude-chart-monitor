@@ -68,7 +68,14 @@ export function Today() {
       {trades.length === 0 ? (
         <div className="empty-state">No trades today.</div>
       ) : (
-        trades.map(t => <TradeCard key={t.id} trade={t} />)
+        trades.map(t => (
+          <TradeCard
+            key={t.id}
+            trade={t}
+            onDeleted={id => setTrades(prev => prev.filter(p => p.id !== id))}
+            onUpdated={updated => setTrades(prev => prev.map(p => p.id === updated.id ? updated : p))}
+          />
+        ))
       )}
     </div>
   );

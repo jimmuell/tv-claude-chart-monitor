@@ -410,6 +410,56 @@ async function main() {
     }
   });
 
+  // DELETE /api/trades/:id — delete a single trade
+  app.delete('/api/trades/:id', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid_id' });
+    const db = openDb();
+    if (!db) return res.status(404).json({ error: 'not_found' });
+    try {
+      dbRun(db, 'DELETE FROM trades WHERE id=?', [id]);
+      saveAndClose(db);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('[journal] DELETE /api/trades/:id:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // POST /api/trades/:id/close — manually close an open trade
+  app.post('/api/trades/:id/close', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid_id' });
+    const { exit_price, pnl_gross } = req.body;
+    if (typeof pnl_gross !== 'number') return res.status(400).json({ error: 'pnl_gross required' });
+
+    const db = openDb();
+    if (!db) return res.status(404).json({ error: 'not_found' });
+    try {
+      const row = queryOne(db, 'SELECT * FROM trades WHERE id=?', [id]);
+      if (!row) { closeDb(db); return res.status(404).json({ error: 'trade_not_found' }); }
+      if (row.exit_at) { closeDb(db); return res.status(400).json({ error: 'already_closed' }); }
+
+      const entryPrice = row.entry_price ?? 0;
+      const stopPrice  = row.stop_price  ?? 0;
+      const rRisk = Math.abs(entryPrice - stopPrice) * 5; // MES: $5/point
+      const rMultiple = rRisk > 0 ? pnl_gross / rRisk : 0;
+
+      dbRun(db,
+        'UPDATE trades SET exit_at=?, exit_price=?, pnl_gross=?, pnl_net=?, r_multiple=? WHERE id=?',
+        [Date.now(), exit_price ?? null, pnl_gross, pnl_gross, rMultiple, id]
+      );
+      const updated = queryOne(db, 'SELECT * FROM trades WHERE id=?', [id]);
+      saveAndClose(db);
+      res.json(rowToRecord(updated));
+    } catch (e) {
+      console.error('[journal] POST /api/trades/:id/close:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // GET /api/stats
   app.get('/api/stats', (_req, res) => {
     const db = openDb();

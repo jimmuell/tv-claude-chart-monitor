@@ -22,9 +22,10 @@ const fmtTime = (ms: number) =>
 interface TradeCardProps {
   trade: TradeRecord;
   onUpdated?: (updated: TradeRecord) => void;
+  onDeleted?: (id: number) => void;
 }
 
-export function TradeCard({ trade, onUpdated }: TradeCardProps) {
+export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [notes, setNotes] = useState(trade.notes ?? '');
   const [tags, setTags] = useState<string[]>(() => {
@@ -38,6 +39,13 @@ export function TradeCard({ trade, onUpdated }: TradeCardProps) {
     catch { return null; }
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [deleting, setDeleting] = useState(false);
+
+  // Manual-close state (for open trades)
+  const [closePrice, setClosePrice] = useState('');
+  const [closePnl, setClosePnl] = useState('');
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
 
   const steps: string[] = (() => {
     try { return trade.steps_json ? JSON.parse(trade.steps_json) : []; }
@@ -78,7 +86,6 @@ export function TradeCard({ trade, onUpdated }: TradeCardProps) {
       const newTags = [...tags, tagInput.trim()];
       setTags(newTags);
       setTagInput('');
-      // Save immediately
       fetch(`/api/trades/${trade.id}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -112,6 +119,41 @@ export function TradeCard({ trade, onUpdated }: TradeCardProps) {
       // ignore
     } finally {
       setCritiqueLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!window.confirm('Delete this trade? This cannot be undone.')) return;
+    setDeleting(true);
+    try {
+      await fetch(`/api/trades/${trade.id}`, { method: 'DELETE' });
+      onDeleted?.(trade.id);
+    } catch {
+      setDeleting(false);
+    }
+  };
+
+  const handleClose = async () => {
+    const pnl = parseFloat(closePnl);
+    if (isNaN(pnl)) { setCloseError('Enter a valid P&L number (e.g. -21.25)'); return; }
+    const price = closePrice ? parseFloat(closePrice) : undefined;
+    setClosing(true);
+    setCloseError(null);
+    try {
+      const res = await fetch(`/api/trades/${trade.id}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ exit_price: price ?? null, pnl_gross: pnl }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error ?? `HTTP ${res.status}`);
+      }
+      const updated: TradeRecord = await res.json();
+      onUpdated?.(updated);
+    } catch (e: unknown) {
+      setCloseError(e instanceof Error ? e.message : 'Close failed');
+      setClosing(false);
     }
   };
 
@@ -187,7 +229,7 @@ export function TradeCard({ trade, onUpdated }: TradeCardProps) {
               <span className="detail-value">{isOpen ? 'Open' : fmtPrice(trade.exit_price)}</span>
             </div>
             <div className="detail-item">
-              <span className="detail-label">P&L (net)</span>
+              <span className="detail-label">P&L</span>
               <span className={`detail-value ${pnlClass}`}>{isOpen ? '—' : fmt$(trade.pnl_net)}</span>
             </div>
             {!isOpen && (
@@ -197,6 +239,48 @@ export function TradeCard({ trade, onUpdated }: TradeCardProps) {
               </div>
             )}
           </div>
+
+          {/* Manual close form — only for open trades */}
+          {isOpen && (
+            <div>
+              <div className="section-divider">MARK AS CLOSED</div>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Exit price</span>
+                  <input
+                    type="number"
+                    step="0.25"
+                    placeholder="7588.00"
+                    value={closePrice}
+                    onChange={e => setClosePrice(e.target.value)}
+                    style={{ width: 90, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text-primary)', padding: '0.25rem 0.4rem', fontSize: 12, fontFamily: 'var(--font)' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>P&L (from TV)</span>
+                  <input
+                    type="number"
+                    step="0.25"
+                    placeholder="-21.25"
+                    value={closePnl}
+                    onChange={e => setClosePnl(e.target.value)}
+                    style={{ width: 90, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text-primary)', padding: '0.25rem 0.4rem', fontSize: 12, fontFamily: 'var(--font)' }}
+                  />
+                </div>
+                <button
+                  className="btn-critique"
+                  onClick={handleClose}
+                  disabled={closing || !closePnl}
+                  style={{ alignSelf: 'flex-end' }}
+                >
+                  {closing ? <><span className="spinner" /> Saving…</> : 'Close Trade'}
+                </button>
+              </div>
+              {closeError && (
+                <p style={{ fontSize: 11, color: 'var(--bearish)', marginTop: '0.35rem' }}>{closeError}</p>
+              )}
+            </div>
+          )}
 
           {/* What Claude saw */}
           <div>
@@ -305,6 +389,18 @@ export function TradeCard({ trade, onUpdated }: TradeCardProps) {
                 {critiqueLoading ? <><span className="spinner" /> Asking Claude…</> : '🤖 Ask Claude'}
               </button>
             )}
+          </div>
+
+          {/* Delete */}
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem', marginTop: '0.25rem' }}>
+            <button
+              className="btn-reset"
+              onClick={handleDelete}
+              disabled={deleting}
+              style={{ fontSize: 11, padding: '0.25rem 0.6rem' }}
+            >
+              {deleting ? 'Deleting…' : 'Delete trade'}
+            </button>
           </div>
         </div>
       )}
