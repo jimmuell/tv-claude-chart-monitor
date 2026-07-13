@@ -15,6 +15,8 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 const DB_PATH = process.env.JOURNAL_DB_PATH
   || path.join(os.homedir(), 'Library', 'Application Support', 'trading-analyzer', 'trades.db');
 
+const CONFIG_PATH = path.join(__dirname, '..', 'config', 'config.json');
+
 const STATIC_DIR = path.join(__dirname, '..', 'dist', 'journal');
 
 // ─── sql.js wrappers ──────────────────────────────────────────────────────────
@@ -415,6 +417,122 @@ async function main() {
       res.status(500).json({ error: String(e) });
     } finally {
       closeDb(db);
+    }
+  });
+
+  // POST /api/review
+  app.post('/api/review', async (_req, res) => {
+    const db = openDb();
+    if (!db) return res.status(422).json({ error: 'insufficient_data', minRequired: 5 });
+
+    const trades = queryAll(db, `
+      SELECT direction, r_multiple, pnl_net, confidence, patterns_json, created_at, exit_at
+      FROM trades WHERE exit_at IS NOT NULL ORDER BY created_at ASC
+    `);
+    closeDb(db);
+
+    if (trades.length < 5) return res.status(422).json({ error: 'insufficient_data', minRequired: 5 });
+
+    // Aggregate stats
+    const totalClosed = trades.length;
+    const wins = trades.filter(t => (t.r_multiple ?? 0) > 0);
+    const losses = trades.filter(t => (t.r_multiple ?? 0) <= 0);
+    const winRate = totalClosed > 0 ? (wins.length / totalClosed * 100).toFixed(1) : '0.0';
+    const avgR = (trades.reduce((s, t) => s + (t.r_multiple ?? 0), 0) / totalClosed).toFixed(2);
+
+    const longs = trades.filter(t => t.direction === 'long');
+    const shorts = trades.filter(t => t.direction === 'short');
+    const longWinRate = longs.length > 0 ? (longs.filter(t => (t.r_multiple ?? 0) > 0).length / longs.length * 100).toFixed(1) : 'N/A';
+    const shortWinRate = shorts.length > 0 ? (shorts.filter(t => (t.r_multiple ?? 0) > 0).length / shorts.length * 100).toFixed(1) : 'N/A';
+
+    // Pattern performance — top 5 by avgR
+    const patternMap = {};
+    for (const t of trades) {
+      let patterns = [];
+      try { patterns = JSON.parse(t.patterns_json || '[]'); } catch {}
+      for (const p of patterns) {
+        if (!patternMap[p]) patternMap[p] = { count: 0, wins: 0, totalR: 0 };
+        patternMap[p].count++;
+        if ((t.r_multiple ?? 0) > 0) patternMap[p].wins++;
+        patternMap[p].totalR += (t.r_multiple ?? 0);
+      }
+    }
+    const topPatterns = Object.entries(patternMap)
+      .map(([name, s]) => ({ name, count: s.count, winRate: (s.wins / s.count * 100).toFixed(1), avgR: (s.totalR / s.count).toFixed(2) }))
+      .sort((a, b) => parseFloat(b.avgR) - parseFloat(a.avgR))
+      .slice(0, 5);
+
+    // Confidence correlation
+    const highConf = trades.filter(t => (t.confidence ?? 0) >= 0.5);
+    const lowConf = trades.filter(t => (t.confidence ?? 1) < 0.5);
+    const highConfAvgR = highConf.length > 0 ? (highConf.reduce((s, t) => s + (t.r_multiple ?? 0), 0) / highConf.length).toFixed(2) : 'N/A';
+    const lowConfAvgR = lowConf.length > 0 ? (lowConf.reduce((s, t) => s + (t.r_multiple ?? 0), 0) / lowConf.length).toFixed(2) : 'N/A';
+
+    // Worst 3 and best 3 trades
+    const sorted = [...trades].sort((a, b) => (a.r_multiple ?? 0) - (b.r_multiple ?? 0));
+    const worst3 = sorted.slice(0, 3).map(t => ({ direction: t.direction, r: (t.r_multiple ?? 0).toFixed(2), pnl: (t.pnl_net ?? 0).toFixed(2) }));
+    const best3 = sorted.slice(-3).reverse().map(t => ({ direction: t.direction, r: (t.r_multiple ?? 0).toFixed(2), pnl: (t.pnl_net ?? 0).toFixed(2) }));
+
+    // Current config
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {}
+
+    const prompt = `You are a trading coach reviewing a trader's automated trading system results. Analyze the following data and provide actionable recommendations.
+
+TRADING STATS:
+- Total closed trades: ${totalClosed}
+- Win rate: ${winRate}%
+- Avg R-multiple: ${avgR}R
+- Long win rate: ${longWinRate}% (${longs.length} trades)
+- Short win rate: ${shortWinRate}% (${shorts.length} trades)
+
+TOP PATTERNS BY AVG R:
+${topPatterns.map(p => `- ${p.name}: count=${p.count}, winRate=${p.winRate}%, avgR=${p.avgR}R`).join('\n') || 'No pattern data'}
+
+CONFIDENCE CORRELATION:
+- High confidence (≥50%): avgR=${highConfAvgR}R (${highConf.length} trades)
+- Low confidence (<50%): avgR=${lowConfAvgR}R (${lowConf.length} trades)
+
+WORST 3 TRADES:
+${worst3.map(t => `- ${t.direction}: ${t.r}R ($${t.pnl})`).join('\n')}
+
+BEST 3 TRADES:
+${best3.map(t => `- ${t.direction}: ${t.r}R ($${t.pnl})`).join('\n')}
+
+CURRENT FILTER CONFIG:
+- minConfidence: ${cfg.filter?.minConfidence ?? 0}
+- zoneProximityTicks: ${cfg.filter?.zoneProximityTicks ?? 'N/A'}
+- perZoneCooldownSec: ${cfg.filter?.perZoneCooldownSec ?? 'N/A'}
+- globalCooldownSec: ${cfg.filter?.globalCooldownSec ?? 'N/A'}
+- fireOn.notablePatterns: ${cfg.filter?.fireOn?.notablePatterns ?? 'N/A'}
+- fireOn.zoneInteractions: ${cfg.filter?.fireOn?.zoneInteractions ?? 'N/A'}
+- fireOn.trendOrMaEvents: ${cfg.filter?.fireOn?.trendOrMaEvents ?? 'N/A'}
+- fireOn.everyCandleIfActionable: ${cfg.filter?.fireOn?.everyCandleIfActionable ?? 'N/A'}
+
+Respond with ONLY a raw JSON object (no markdown, no code fences). Shape:
+{
+  "summary": "2-3 paragraph plain English analysis of what is and isn't working",
+  "patternRecommendations": [
+    { "pattern": "pattern name", "recommendation": "keep|avoid|reduce", "reason": "brief reason" }
+  ],
+  "configRecommendations": [
+    { "field": "filter.minConfidence", "currentValue": 0, "suggestedValue": 0.55, "reason": "brief reason" }
+  ],
+  "overallVerdict": "profitable|marginal|losing"
+}`;
+
+    try {
+      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' });
+      const msg = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const text = msg.content[0].type === 'text' ? msg.content[0].text : '';
+      const review = JSON.parse(text);
+      res.json({ ...review, generated_at: Date.now() });
+    } catch (e) {
+      res.status(500).json({ error: 'review_failed', detail: e.message });
     }
   });
 
