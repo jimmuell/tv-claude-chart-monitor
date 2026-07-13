@@ -17,6 +17,7 @@ export function Stats() {
   const [stats, setStats] = useState<TradeStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     fetch('/api/stats')
@@ -29,11 +30,27 @@ export function Stats() {
       .finally(() => setLoading(false));
   }, []);
 
+  const handleReset = async () => {
+    if (!window.confirm('Reset the trade journal? This deletes all trades and cannot be undone.')) return;
+    setResetting(true);
+    try {
+      await fetch('/api/trades', { method: 'DELETE' });
+      window.location.reload();
+    } catch {
+      setResetting(false);
+    }
+  };
+
   if (loading) return <div className="loading">Loading…</div>;
   if (error) return <div className="error-msg">Failed to load stats: {error}</div>;
   if (!stats || stats.totalTrades === 0) return (
     <div className="page">
       <div className="empty-state">No trade data yet.</div>
+      <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+        <button className="btn-reset" onClick={handleReset} disabled={resetting}>
+          {resetting ? 'Resetting…' : 'Reset Journal'}
+        </button>
+      </div>
     </div>
   );
 
@@ -138,6 +155,16 @@ export function Stats() {
           <div className="chip-label">Open</div>
           <div className="chip-value">{stats.openCount}</div>
         </div>
+      </div>
+
+      {/* Reset */}
+      <div style={{ marginTop: '2rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border)', textAlign: 'center' }}>
+        <button className="btn-reset" onClick={handleReset} disabled={resetting}>
+          {resetting ? 'Resetting…' : 'Reset Journal'}
+        </button>
+        <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: '0.4rem' }}>
+          Clears all trades. Use when resetting your paper trading account.
+        </p>
       </div>
     </div>
   );

@@ -338,6 +338,24 @@ async function main() {
     }
   });
 
+  // DELETE /api/trades — wipe all trades (paper trading reset)
+  app.delete('/api/trades', (_req, res) => {
+    const db = openDb();
+    if (!db) return res.json({ ok: true, deleted: 0 });
+    try {
+      const row = queryOne(db, 'SELECT COUNT(*) as n FROM trades');
+      const count = row ? (row.n ?? 0) : 0;
+      dbRun(db, 'DELETE FROM trades');
+      saveAndClose(db);
+      console.log(`[journal] Trade journal reset — ${count} trade(s) deleted`);
+      res.json({ ok: true, deleted: count });
+    } catch (e) {
+      console.error('[journal] DELETE /api/trades:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // GET /api/stats
   app.get('/api/stats', (_req, res) => {
     const db = openDb();

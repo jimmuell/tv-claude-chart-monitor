@@ -542,6 +542,28 @@ html, body {
   to { transform: rotate(360deg); }
 }
 
+/* ─── Reset button ────────────────────────────────────── */
+.btn-reset {
+  background: none;
+  border: 1px solid var(--bearish);
+  border-radius: var(--radius);
+  color: var(--bearish);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-reset:hover {
+  background: rgba(239,83,80,0.1);
+}
+
+.btn-reset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ─── Empty state ─────────────────────────────────────── */
 .empty-state {
   text-align: center;
