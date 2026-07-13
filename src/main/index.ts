@@ -6,9 +6,12 @@ import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, se
 import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
+import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './order-executor';
 import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
+import { TradeStore } from './trade-store';
+import { startJournalServer } from './journal-server';
 import type { AnalysisResult, PatternMarker, AlertCreatePayload } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
@@ -58,6 +61,7 @@ let scheduler:  Scheduler      | null = null;
 let lastResult: AnalysisResult | null = null;
 
 let pnlTracker:      PnlTracker     | null = null;
+let tradeStore:      TradeStore     | null = null;
 let schedulerStarted = false;
 let isQuitting       = false;
 let firstShow        = false; // set to true when no saved position exists
@@ -92,6 +96,11 @@ function rebuildMenu(): void {
         if (mainWindow) saveState(mainWindow);
         rebuildMenu();
       },
+    },
+    { type: 'separator' },
+    {
+      label: 'Open Journal',
+      click: () => shell.openExternal('http://localhost:3001'),
     },
     { type: 'separator' },
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
@@ -164,6 +173,19 @@ function resolveTradePlanNumbers(result: AnalysisResult): { entry: number; stop:
     return { entry: tp.entry, stop: tp.stop, target: tp.target };
   }
   return null;
+}
+
+// Build stop/target from configured dollar amounts so R:R is always consistent.
+// MES: 1 tick = $1.25, tick size = 0.25 pts.
+function configuredBracket(entry: number, dir: 'long' | 'short'): { stop: number; target: number } {
+  const s = getSettings();
+  const TICK_VALUE = 1.25;
+  const TICK_SIZE  = 0.25;
+  const stopOffset   = Math.round(s.autoTradeStopDollars   / TICK_VALUE) * TICK_SIZE;
+  const targetOffset = Math.round(s.autoTradeTargetDollars / TICK_VALUE) * TICK_SIZE;
+  return dir === 'long'
+    ? { stop: entry - stopOffset, target: entry + targetOffset }
+    : { stop: entry + stopOffset, target: entry - targetOffset };
 }
 
 function autoDrawResult(result: AnalysisResult): void {
@@ -287,13 +309,58 @@ app.on('ready', () => {
   );
   pnlTracker.start();
 
+  // Trade journal
+  tradeStore = new TradeStore(app.getPath('userData'));
+  startJournalServer(
+    tradeStore,
+    () => getSettings().apiKeyOverride || process.env.ANTHROPIC_API_KEY || '',
+  );
+
   // Scheduler
   scheduler = new Scheduler(
     (result) => {
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYSIS_PUSH, result);
-      if (getSettings().notifications) {
-        notifyVerdict(result.commentary.setup_verdict, result.commentary.headline);
+      const sv = result.commentary.setup_verdict;
+      const willTrade = getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short');
+      if (getSettings().notifications && !willTrade) {
+        notifyVerdict(sv, result.commentary.headline);
+      }
+      if (getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short')) {
+        const bracket = resolveTradePlanNumbers(result);
+        if (bracket) {
+          const dir = sv === 'valid_long' ? 'long' : 'short';
+          const cb  = configuredBracket(bracket.entry, dir);
+          submitMarketOrder(dir, cb.stop, cb.target, bracket.entry, getSettings().autoTradeTrailingStop)
+            .then(outcome => {
+              console.log('[auto-trade]', outcome);
+              if (outcome === 'submitted' && tradeStore) {
+                tradeStore.recordEntry({
+                  symbol:        result.symbol,
+                  timeframe:     result.timeframe,
+                  direction:     dir,
+                  entry_price:   bracket.entry,
+                  stop_price:    cb.stop,
+                  target_price:  cb.target,
+                  trailing_stop: getSettings().autoTradeTrailingStop,
+                  rr_planned:    result.commentary.trade_plan?.rr ?? null,
+                  verdict:       sv as 'valid_long' | 'valid_short',
+                  headline:      result.commentary.headline ?? null,
+                  objective:     result.commentary.objective ?? null,
+                  steps_json:    JSON.stringify(result.commentary.steps_what_happened ?? []),
+                  structure:     result.commentary.structure_read ?? null,
+                  rationale:     result.commentary.trade_plan?.rationale ?? null,
+                  patterns_json: JSON.stringify(
+                    result.commentary.candlestick_patterns?.map(p => p.name) ?? []
+                  ),
+                  confidence:    result.commentary.confidence ?? null,
+                });
+              }
+            })
+            .catch(err => console.error('[auto-trade] error:', (err as Error).message));
+        } else {
+          console.warn('[auto-trade] skipped — no entry in trade_plan or HPT');
+        }
       }
       if (getSettings().autoDraw) autoDrawResult(result);
     },
@@ -319,8 +386,46 @@ app.on('ready', () => {
       const result = await runAnalysis();
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'complete');
-      if (getSettings().notifications) {
-        notifyVerdict(result.commentary.setup_verdict, result.commentary.headline);
+      const sv2 = result.commentary.setup_verdict;
+      const willTrade2 = getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short');
+      if (getSettings().notifications && !willTrade2) {
+        notifyVerdict(sv2, result.commentary.headline);
+      }
+      if (getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short')) {
+        const bracket2 = resolveTradePlanNumbers(result);
+        if (bracket2) {
+          const dir2 = sv2 === 'valid_long' ? 'long' : 'short';
+          const cb2  = configuredBracket(bracket2.entry, dir2);
+          submitMarketOrder(dir2, cb2.stop, cb2.target, bracket2.entry, getSettings().autoTradeTrailingStop)
+            .then(outcome => {
+              console.log('[auto-trade]', outcome);
+              if (outcome === 'submitted' && tradeStore) {
+                tradeStore.recordEntry({
+                  symbol:        result.symbol,
+                  timeframe:     result.timeframe,
+                  direction:     dir2,
+                  entry_price:   bracket2.entry,
+                  stop_price:    cb2.stop,
+                  target_price:  cb2.target,
+                  trailing_stop: getSettings().autoTradeTrailingStop,
+                  rr_planned:    result.commentary.trade_plan?.rr ?? null,
+                  verdict:       sv2 as 'valid_long' | 'valid_short',
+                  headline:      result.commentary.headline ?? null,
+                  objective:     result.commentary.objective ?? null,
+                  steps_json:    JSON.stringify(result.commentary.steps_what_happened ?? []),
+                  structure:     result.commentary.structure_read ?? null,
+                  rationale:     result.commentary.trade_plan?.rationale ?? null,
+                  patterns_json: JSON.stringify(
+                    result.commentary.candlestick_patterns?.map(p => p.name) ?? []
+                  ),
+                  confidence:    result.commentary.confidence ?? null,
+                });
+              }
+            })
+            .catch(e2 => console.error('[auto-trade] error:', (e2 as Error).message));
+        } else {
+          console.warn('[auto-trade] skipped — no entry in trade_plan or HPT');
+        }
       }
       if (getSettings().autoDraw) autoDrawResult(result);
       return result;
@@ -406,6 +511,26 @@ app.on('ready', () => {
 
   // IPC: remove a local price-crossing alert
   ipcMain.handle(IPC.ALERT_REMOVE, (_e, price: number) => { clearAlertForPrice(price); });
+
+  // IPC: manual test trigger for order-executor (bypasses autoTrade setting)
+  ipcMain.handle(IPC.AUTO_TRADE_TEST, (_e, direction: 'long' | 'short', stop: number, target: number, entry: number) =>
+    submitMarketOrder(direction, stop, target, entry, getSettings().autoTradeTrailingStop, true)
+  );
+
+  // IPC: delete cooldown file so the next trade can fire immediately
+  ipcMain.handle(IPC.COOLDOWN_STATUS, () => getCooldownStatus());
+  ipcMain.handle(IPC.TRADE_WINDOW_STATUS, () => getTradeWindowStatus());
+
+  ipcMain.handle(IPC.COOLDOWN_DELETE, () => {
+    const cooldownPath = path.join(app.getPath('userData'), 'order-cooldown.json');
+    try {
+      fs.unlinkSync(cooldownPath);
+      console.log('[cooldown] deleted', cooldownPath);
+      return { deleted: true };
+    } catch {
+      return { deleted: false };
+    }
+  });
 
   // IPC: force CDP reconnect
   ipcMain.handle(IPC.BRIDGE_RECONNECT, () => { resetConnection(); invalidateStudyCache(); resetNotifier(); });
