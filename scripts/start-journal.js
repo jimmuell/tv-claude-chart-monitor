@@ -57,6 +57,10 @@ function dbRun(db, sql, params) {
   db.run(sql, params || []);
 }
 
+function stripFences(s) {
+  return s.replace(/^```(?:json)?\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+}
+
 function lastInsertId(db) {
   const row = queryOne(db, 'SELECT last_insert_rowid() AS id');
   return row ? row.id : null;
@@ -369,7 +373,7 @@ async function main() {
 
       const first = message.content[0];
       if (first.type !== 'text') throw new Error('Unexpected Anthropic response type');
-      const critiqueText = first.text;
+      const critiqueText = stripFences(first.text);
 
       // Persist
       const critique = { text: critiqueText, created_at: Date.now() };
@@ -529,7 +533,7 @@ Respond with ONLY a raw JSON object (no markdown, no code fences). Shape:
         messages: [{ role: 'user', content: prompt }],
       });
       const text = msg.content[0].type === 'text' ? msg.content[0].text : '';
-      const review = JSON.parse(text);
+      const review = JSON.parse(stripFences(text));
       res.json({ ...review, generated_at: Date.now() });
     } catch (e) {
       res.status(500).json({ error: 'review_failed', detail: e.message });
@@ -556,9 +560,22 @@ Respond with ONLY a raw JSON object (no markdown, no code fences). Shape:
       for (const key of allowedKeys) {
         if (key in incoming) {
           if (key === 'fireOn' && typeof incoming[key] === 'object') {
-            updatedFilter.fireOn = { ...current.filter?.fireOn, ...incoming[key] };
-          } else {
-            updatedFilter[key] = incoming[key];
+            // deep merge fireOn, coercing values to booleans and stripping unknown keys
+            const validFireOnKeys = ['notablePatterns', 'zoneInteractions', 'trendOrMaEvents', 'everyCandleIfActionable'];
+            const mergedFireOn = { ...current.filter?.fireOn };
+            for (const fk of validFireOnKeys) {
+              if (fk in incoming.fireOn) mergedFireOn[fk] = Boolean(incoming.fireOn[fk]);
+            }
+            updatedFilter.fireOn = mergedFireOn;
+          } else if (key === 'minConfidence') {
+            const v = Number(incoming[key]);
+            updatedFilter[key] = isFinite(v) ? Math.max(0, Math.min(1, v)) : (current.filter?.[key] ?? 0);
+          } else if (key === 'zoneProximityTicks') {
+            const v = Number(incoming[key]);
+            updatedFilter[key] = isFinite(v) && v >= 0 ? Math.round(v) : (current.filter?.[key] ?? 4);
+          } else if (key === 'perZoneCooldownSec' || key === 'globalCooldownSec') {
+            const v = Number(incoming[key]);
+            updatedFilter[key] = isFinite(v) && v >= 0 ? Math.round(v) : (current.filter?.[key] ?? 20);
           }
         }
       }

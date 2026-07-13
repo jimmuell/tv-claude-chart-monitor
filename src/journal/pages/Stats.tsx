@@ -59,9 +59,9 @@ export function Stats() {
   // Pattern win rate chart data
   const patternData = (stats.byPattern ?? []).map(p => ({
     label: p.pattern,
-    value: p.winRate,
+    value: p.winRate * 100,
     maxValue: 100,
-    color: p.winRate >= 50 ? 'var(--accent)' : 'var(--bearish)',
+    color: p.winRate >= 0.5 ? 'var(--accent)' : 'var(--bearish)',
   }));
 
   // By-hour chart data
@@ -86,8 +86,8 @@ export function Stats() {
         </div>
         <div className="stat-chip">
           <div className="chip-label">Win Rate</div>
-          <div className={`chip-value ${stats.winRate >= 50 ? 'pos' : 'neg'}`}>
-            {fmtPct(stats.winRate)}
+          <div className={`chip-value ${stats.winRate >= 0.5 ? 'pos' : 'neg'}`}>
+            {fmtPct(stats.winRate * 100)}
           </div>
         </div>
         <div className="stat-chip">
