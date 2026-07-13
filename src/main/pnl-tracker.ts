@@ -60,9 +60,10 @@ export class PnlTracker {
     // Session date rollover check
     const today = todayCST();
     if (today !== this.sessionDate) {
-      this.sessionDate  = today;
-      this.tradeCount   = 0;
-      this.lastGrossPnl = null;
+      this.sessionDate    = today;
+      this.tradeCount     = 0;
+      this.prevTradeCount = 0;
+      this.lastGrossPnl   = null;
     }
 
     const cfg  = this.getConfig();
