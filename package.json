@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.main.json && vite build && npm run build:journal",
     "build:journal": "vite build --config vite.journal.config.ts",
     "dev:journal": "vite --config vite.journal.config.ts",
+    "journal": "tsc -p tsconfig.main.json && node scripts/start-journal.js",
     "package": "npm run build && electron-builder",
     "test": "node --test 'tests/shared/**/*.test.js'"
   },

@@ -11,7 +11,6 @@ import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
 import { TradeStore } from './trade-store';
-import { startJournalServer } from './journal-server';
 import type { AnalysisResult, PatternMarker, AlertCreatePayload } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
@@ -294,12 +293,8 @@ app.on('ready', () => {
 
   rebuildMenu();
 
-  // Trade journal (created first so pnlTracker can reference it)
+  // Trade journal store (standalone journal server runs separately via `pnpm journal`)
   tradeStore = new TradeStore(app.getPath('userData'));
-  startJournalServer(
-    tradeStore,
-    () => getSettings().apiKeyOverride || process.env.ANTHROPIC_API_KEY || '',
-  );
 
   // P&L tracker
   pnlTracker = new PnlTracker(
