@@ -168,6 +168,50 @@ function computeStats(db) {
     return { date: r.date, cumulativeNet: cumulative };
   });
 
+  // byConfidenceBucket
+  const bucketRows = queryAll(db, `
+    SELECT
+      CASE
+        WHEN confidence < 0.2 THEN '0-20%'
+        WHEN confidence < 0.4 THEN '20-40%'
+        WHEN confidence < 0.6 THEN '40-60%'
+        WHEN confidence < 0.8 THEN '60-80%'
+        ELSE '80-100%'
+      END as bucket,
+      COUNT(*) as count,
+      SUM(CASE WHEN r_multiple > 0 THEN 1 ELSE 0 END) as wins,
+      AVG(r_multiple) as avgR
+    FROM trades
+    WHERE exit_at IS NOT NULL AND confidence IS NOT NULL
+    GROUP BY bucket ORDER BY bucket
+  `);
+  const byConfidenceBucket = bucketRows.map(r => ({
+    bucket: r.bucket,
+    count: r.count,
+    wins: r.wins ?? 0,
+    winRate: r.count > 0 ? (r.wins ?? 0) / r.count : 0,
+    avgR: r.avgR ?? 0,
+  }));
+
+  // byDayOfWeek
+  const dowRows = queryAll(db, `
+    SELECT
+      CAST(strftime('%w', datetime(created_at/1000, 'unixepoch', 'localtime')) AS INTEGER) as dow,
+      COUNT(*) as count,
+      AVG(pnl_net) as avgNetPnl,
+      SUM(CASE WHEN r_multiple > 0 THEN 1 ELSE 0 END) as wins
+    FROM trades WHERE exit_at IS NOT NULL
+    GROUP BY dow ORDER BY dow
+  `);
+  const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const byDayOfWeek = dowRows.map(r => ({
+    dow: r.dow,
+    label: DOW_LABELS[r.dow] ?? '?',
+    count: r.count,
+    avgNetPnl: r.avgNetPnl ?? 0,
+    winRate: r.count > 0 ? (r.wins ?? 0) / r.count : 0,
+  }));
+
   return {
     totalTrades:  counts ? (counts.totalTrades ?? 0) : 0,
     winCount,
@@ -179,6 +223,8 @@ function computeStats(db) {
     byPattern,
     byHour: hourRows.map(r => ({ hour: r.hour, count: r.count, avgNetPnl: r.avgNetPnl ?? 0 })),
     equityCurve,
+    byConfidenceBucket,
+    byDayOfWeek,
   };
 }
 
@@ -188,6 +234,8 @@ const EMPTY_STATS = {
   totalTrades: 0, winCount: 0, lossCount: 0, openCount: 0,
   winRate: 0, avgR: 0, totalNetPnl: 0,
   byPattern: [], byHour: [], equityCurve: [],
+  byConfidenceBucket: [],
+  byDayOfWeek: [],
 };
 
 // ─── Critique prompt ──────────────────────────────────────────────────────────

@@ -128,6 +128,37 @@ export function Stats() {
         </div>
       )}
 
+      {/* Confidence calibration */}
+      {(stats.byConfidenceBucket ?? []).length > 0 && (
+        <div className="chart-card">
+          <div className="chart-title">Win Rate by Confidence Level</div>
+          <BarChart
+            data={(stats.byConfidenceBucket ?? []).map(b => ({
+              label: b.bucket,
+              value: b.winRate * 100,
+              color: b.winRate >= 0.5 ? 'var(--accent)' : 'var(--bearish)',
+            }))}
+            height={Math.max(80, (stats.byConfidenceBucket ?? []).length * 28)}
+            formatValue={fmtPct}
+          />
+        </div>
+      )}
+
+      {/* Day-of-week P&L */}
+      {(stats.byDayOfWeek ?? []).length > 0 && (
+        <div className="chart-card">
+          <div className="chart-title">Avg Net P&L by Day of Week</div>
+          <BarChart
+            data={(stats.byDayOfWeek ?? []).map(d => ({
+              label: d.label,
+              value: d.avgNetPnl,
+            }))}
+            height={Math.max(80, (stats.byDayOfWeek ?? []).length * 28)}
+            formatValue={fmt$}
+          />
+        </div>
+      )}
+
       {/* Equity curve */}
       {equityData.length >= 2 && (
         <div className="chart-card">

@@ -38,4 +38,18 @@ export interface TradeStats {
   byPattern:     Array<{ pattern: string; count: number; wins: number; winRate: number; avgR: number }>;
   byHour:        Array<{ hour: number; count: number; avgNetPnl: number }>;
   equityCurve:   Array<{ date: string; cumulativeNet: number }>;
+  byConfidenceBucket: Array<{
+    bucket: string;
+    count: number;
+    wins: number;
+    winRate: number;
+    avgR: number;
+  }>;
+  byDayOfWeek: Array<{
+    dow: number;
+    label: string;
+    count: number;
+    avgNetPnl: number;
+    winRate: number;
+  }>;
 }
