@@ -17,6 +17,20 @@ import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import { formatAsHtml, docName } from './google-doc-formatter';
 
+// ── Confidence gate ───────────────────────────────────────────────────────
+
+function readMinConfidence(): number {
+  try {
+    const raw = fs.readFileSync(
+      path.join(app.getAppPath(), 'config', 'config.json'), 'utf-8'
+    );
+    const cfg = JSON.parse(raw) as { filter?: { minConfidence?: number } };
+    return cfg.filter?.minConfidence ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 // ── Window state persistence ──────────────────────────────────────────────
 
 interface WindowState {
@@ -318,11 +332,16 @@ app.on('ready', () => {
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYSIS_PUSH, result);
       const sv = result.commentary.setup_verdict;
-      const willTrade = getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short');
+      const minConf = readMinConfidence();
+      const confOk = (result.commentary.confidence ?? 1) >= minConf;
+      if (!confOk && minConf > 0) {
+        console.log(`[auto-trade] skipped — confidence ${((result.commentary.confidence ?? 0) * 100).toFixed(0)}% < min ${(minConf * 100).toFixed(0)}%`);
+      }
+      const willTrade = getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short') && confOk;
       if (getSettings().notifications && !willTrade) {
         notifyVerdict(sv, result.commentary.headline);
       }
-      if (getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short')) {
+      if (getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short') && confOk) {
         const bracket = resolveTradePlanNumbers(result);
         if (bracket) {
           const dir = sv === 'valid_long' ? 'long' : 'short';
@@ -383,11 +402,16 @@ app.on('ready', () => {
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'complete');
       const sv2 = result.commentary.setup_verdict;
-      const willTrade2 = getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short');
+      const minConf2 = readMinConfidence();
+      const confOk2 = (result.commentary.confidence ?? 1) >= minConf2;
+      if (!confOk2 && minConf2 > 0) {
+        console.log(`[auto-trade] skipped — confidence ${((result.commentary.confidence ?? 0) * 100).toFixed(0)}% < min ${(minConf2 * 100).toFixed(0)}%`);
+      }
+      const willTrade2 = getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short') && confOk2;
       if (getSettings().notifications && !willTrade2) {
         notifyVerdict(sv2, result.commentary.headline);
       }
-      if (getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short')) {
+      if (getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short') && confOk2) {
         const bracket2 = resolveTradePlanNumbers(result);
         if (bracket2) {
           const dir2 = sv2 === 'valid_long' ? 'long' : 'short';

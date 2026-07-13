@@ -21,6 +21,7 @@
     "zoneProximityTicks": 4,
     "perZoneCooldownSec": 90,
     "globalCooldownSec": 20,
+    "minConfidence": 0,
     "fireOn": {
       "notablePatterns": true,
       "zoneInteractions": true,
