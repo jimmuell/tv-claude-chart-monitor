@@ -9,8 +9,8 @@ const os   = require('os');
 const userDataPath = process.env.JOURNAL_DB_PATH ||
   path.join(os.homedir(), 'Library', 'Application Support', 'trading-analyzer');
 
-const { TradeStore }       = require('../dist/main/trade-store');
-const { startJournalServer } = require('../dist/main/journal-server');
+const { TradeStore }         = require('../dist/main/main/trade-store');
+const { startJournalServer } = require('../dist/main/main/journal-server');
 
 const store    = new TradeStore(userDataPath);
 const getApiKey = () => process.env.ANTHROPIC_API_KEY || '';
