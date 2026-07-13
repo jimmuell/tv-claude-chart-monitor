@@ -166,7 +166,7 @@ export function Config() {
           </button>
         )}
         {savedAt && (
-          <span style={{ fontSize: 12, color: 'var(--accent)' }}>Saved</span>
+          <span style={{ fontSize: 12, color: 'var(--accent)' }}>Saved ✓</span>
         )}
       </div>
       {error && <div className="error-msg" style={{ marginTop: '0.75rem' }}>{error}</div>}
