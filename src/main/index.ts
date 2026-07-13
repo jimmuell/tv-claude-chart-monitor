@@ -294,6 +294,13 @@ app.on('ready', () => {
 
   rebuildMenu();
 
+  // Trade journal (created first so pnlTracker can reference it)
+  tradeStore = new TradeStore(app.getPath('userData'));
+  startJournalServer(
+    tradeStore,
+    () => getSettings().apiKeyOverride || process.env.ANTHROPIC_API_KEY || '',
+  );
+
   // P&L tracker
   pnlTracker = new PnlTracker(
     (snap) => { mainWindow?.webContents.send(IPC.PNL_PUSH, snap); },
@@ -306,15 +313,9 @@ app.on('ready', () => {
         tradingDaysPerMonth: s.feeTradingDays,
       } satisfies FeeConfig;
     },
+    tradeStore,
   );
   pnlTracker.start();
-
-  // Trade journal
-  tradeStore = new TradeStore(app.getPath('userData'));
-  startJournalServer(
-    tradeStore,
-    () => getSettings().apiKeyOverride || process.env.ANTHROPIC_API_KEY || '',
-  );
 
   // Scheduler
   scheduler = new Scheduler(

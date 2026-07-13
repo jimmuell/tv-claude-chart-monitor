@@ -1,6 +1,8 @@
 import { readAccountData } from './pnl-reader';
 import { calculateFees, getBreakevenPoints, dailyFixedFee, type FeeConfig } from './fee-calculator';
 import type { PnlSnapshot, FeeBreakdown } from '../shared/types';
+import type { TradeStore } from './trade-store';
+import { getSettings } from './settings';
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -24,15 +26,17 @@ function emptySnapshot(date: string, cfg: FeeConfig): PnlSnapshot {
 }
 
 export class PnlTracker {
-  private timer:         ReturnType<typeof setInterval> | null = null;
-  private current:       PnlSnapshot;
-  private sessionDate:   string;
-  private lastGrossPnl:  number | null = null;
-  private tradeCount     = 0;
+  private timer:          ReturnType<typeof setInterval> | null = null;
+  private current:        PnlSnapshot;
+  private sessionDate:    string;
+  private lastGrossPnl:   number | null = null;
+  private tradeCount      = 0;
+  private prevTradeCount  = 0;
 
   constructor(
-    private readonly onUpdate:  (snap: PnlSnapshot) => void,
-    private readonly getConfig: () => FeeConfig,
+    private readonly onUpdate:   (snap: PnlSnapshot) => void,
+    private readonly getConfig:  () => FeeConfig,
+    private readonly tradeStore?: TradeStore,
   ) {
     this.sessionDate = todayCST();
     this.current     = emptySnapshot(this.sessionDate, this.getConfig());
@@ -80,12 +84,33 @@ export class PnlTracker {
 
         // Prefer round-trips counted directly from Order History (most accurate).
         // Fall back to tracking P/L changes between polls if Order History isn't visible.
+        const prevGross = this.lastGrossPnl;
+
         if (data.roundTrips > 0) {
           this.tradeCount = data.roundTrips;
         } else if (this.lastGrossPnl !== null && gross !== this.lastGrossPnl) {
           this.tradeCount++;
         }
         this.lastGrossPnl = gross;
+
+        // Detect position close: tradeCount incremented + no open position
+        if (
+          this.tradeStore &&
+          this.tradeCount > this.prevTradeCount &&
+          unrealized === 0
+        ) {
+          const pnlGross   = gross - (prevGross ?? gross);
+          const exitFee    = cfg.perContractFee; // variable fee for 1 round-trip
+          this.tradeStore.recordExitForOpenTrade({
+            exit_at:    Date.now(),
+            pnl_gross:  pnlGross,
+            pnl_net:    pnlGross - exitFee,
+            r_multiple: getSettings().autoTradeStopDollars > 0
+              ? pnlGross / getSettings().autoTradeStopDollars
+              : 0,
+          });
+        }
+        this.prevTradeCount = this.tradeCount;
 
         const fees: FeeBreakdown = calculateFees(this.tradeCount, cfg);
         const netPnl = gross - fees.totalFees;
