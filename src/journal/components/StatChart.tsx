@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 
 // ─── Bar Chart (horizontal) ────────────────────────────────────────────────
 
@@ -109,6 +109,8 @@ interface LineChartProps {
 }
 
 export function LineChart({ data, height = 150, color = 'var(--accent)', formatValue }: LineChartProps) {
+  const gradientId = useId();
+
   if (data.length < 2) {
     return <div style={{ color: 'var(--text-secondary)', fontSize: 12, padding: '0.5rem 0' }}>Not enough data</div>;
   }
@@ -184,14 +186,14 @@ export function LineChart({ data, height = 150, color = 'var(--accent)', formatV
 
       {/* Fill under line */}
       <defs>
-        <linearGradient id="fill-gradient" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.2" />
           <stop offset="100%" stopColor={color} stopOpacity="0.02" />
         </linearGradient>
       </defs>
       <polygon
         points={`${padL},${padT + plotH} ${points} ${svgW - padR},${padT + plotH}`}
-        fill="url(#fill-gradient)"
+        fill={`url(#${gradientId})`}
       />
 
       {/* Line */}
