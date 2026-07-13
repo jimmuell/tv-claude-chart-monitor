@@ -34,6 +34,10 @@ export const IPC = {
   ANNOTATE_PATTERN_MARKERS:  'annotate:patternMarkers',
   ALERT_CREATE:              'alert:create',
   ALERT_REMOVE:              'alert:remove',
+  AUTO_TRADE_TEST:           'autoTrade:test',
+  COOLDOWN_DELETE:           'cooldown:delete',
+  COOLDOWN_STATUS:           'cooldown:status',
+  TRADE_WINDOW_STATUS:       'tradeWindow:status',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -173,11 +177,19 @@ export interface PnlSnapshot {
 
 export type KeyStatus = 'env' | 'override' | 'missing';
 
+export type TradeSession = 'number' | 'full' | 'all';
+
 export interface AppSettings {
   autoDraw:            boolean;
   autoRefresh:         boolean;
   persistLevels:       boolean;
   notifications:       boolean;
+  autoTrade:           boolean;  // auto-submit market order on valid_long / valid_short
+  autoTradeTestMode:   boolean;  // show Long/Short quick-fire buttons in panel header
+  autoTradeStopDollars:   number;  // stop loss in $ per contract (default 15.00)
+  autoTradeTargetDollars: number;  // take profit in $ per contract (default 30.00)
+  autoTradeTrailingStop:  boolean; // use trailing stop instead of static SL (default false)
+  tradeSession:           TradeSession; // auto-trade time window: 'number' | 'full' | 'all'
   cdpPort:             number;
   lineThickness:       1 | 2 | 3;
   labelSize:           'small' | 'normal' | 'large';
@@ -265,4 +277,93 @@ export interface ElectronAPI {
   writePatternMarkers(markers: PatternMarker[]): Promise<void>;
   createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
   removeAlert(price: number): Promise<void>;
+  testAutoTrade(direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<'submitted' | 'skipped' | 'error'>;
+}
+
+// ---------------------------------------------------------------------------
+// Trade Journal — trade record persisted to userData/trades.db
+// ---------------------------------------------------------------------------
+
+/** Data captured at the moment a market order is submitted */
+export interface TradeEntry {
+  symbol:        string;         // "MES", "ES", etc.
+  timeframe:     string;         // "1", "5", "15", "60", "1D"
+  direction:     'long' | 'short';
+  entry_price:   number | null;  // intended entry price (live price from order executor)
+  stop_price:    number | null;  // computed stop in dollars
+  target_price:  number | null;  // computed target in dollars
+  trailing_stop: boolean;
+  rr_planned:    number | null;  // risk:reward ratio from TradePlan.rr
+
+  // From CommentaryResult
+  verdict:       'valid_long' | 'valid_short';
+  headline:      string | null;  // ~90-char Claude summary
+  objective:     string | null;  // 2-4 sentence context
+  steps_json:    string | null;  // JSON-encoded string[] (steps_what_happened)
+  structure:     string | null;  // structure_read
+  rationale:     string | null;  // TradePlan.rationale
+  patterns_json: string | null;  // JSON-encoded string[] (candlestick pattern names)
+  confidence:    number | null;  // 0–1
+}
+
+/** Data captured when a position closes */
+export interface TradeExit {
+  exit_at:    number;        // Unix ms
+  pnl_gross:  number;        // gross P&L in dollars
+  pnl_net:    number;        // net P&L (after fees)
+  r_multiple: number;        // pnl_gross / autoTradeStopDollars
+}
+
+/** A critique returned from Claude on demand */
+export interface TradeCritique {
+  text:       string;
+  created_at: number;  // Unix ms
+}
+
+/** Full trade record as stored and returned by TradeStore */
+export interface TradeRecord extends TradeEntry {
+  id:           number;   // SQLite autoincrement
+  created_at:   number;   // Unix ms — when order was submitted
+
+  // Exit fields (null until position closes)
+  exit_at:      number | null;
+  exit_price:   number | null;
+  pnl_gross:    number | null;
+  pnl_net:      number | null;
+  r_multiple:   number | null;
+
+  // User-added fields
+  notes:        string | null;
+  tags_json:    string | null;   // JSON-encoded string[]
+  critique_json: string | null;  // JSON-encoded TradeCritique
+}
+
+/** Stats returned by GET /api/stats */
+export interface TradeStats {
+  totalTrades:   number;
+  winCount:      number;
+  lossCount:     number;
+  openCount:     number;   // trades without exit_at
+  winRate:       number;   // 0–1, excludes open trades
+  avgR:          number;   // average r_multiple for closed trades
+  totalNetPnl:   number;   // sum of pnl_net
+
+  byPattern: Array<{
+    pattern:   string;
+    count:     number;
+    wins:      number;
+    winRate:   number;
+    avgR:      number;
+  }>;
+
+  byHour: Array<{
+    hour:      number;    // 0–23 (CST)
+    count:     number;
+    avgNetPnl: number;
+  }>;
+
+  equityCurve: Array<{
+    date:         string;  // 'YYYY-MM-DD'
+    cumulativeNet: number;
+  }>;
 }
