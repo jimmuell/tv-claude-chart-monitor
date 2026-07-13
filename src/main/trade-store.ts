@@ -165,7 +165,7 @@ export class TradeStore {
   /** All trades, newest first. */
   getAll(): TradeRecord[] {
     const rows = this.db.prepare(
-      `SELECT * FROM trades ORDER BY created_at DESC`
+      `SELECT * FROM trades ORDER BY created_at DESC, id DESC`
     ).all() as Record<string, unknown>[];
     return rows.map(rowToRecord);
   }
