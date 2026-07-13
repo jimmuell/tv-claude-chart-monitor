@@ -536,6 +536,42 @@ Respond with ONLY a raw JSON object (no markdown, no code fences). Shape:
     }
   });
 
+  // GET /api/config
+  app.get('/api/config', (_req, res) => {
+    try {
+      res.json(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')));
+    } catch (e) {
+      res.status(500).json({ error: 'config_read_failed', detail: e.message });
+    }
+  });
+
+  // POST /api/config — deep-merges only the filter subtree, atomic write
+  app.post('/api/config', (req, res) => {
+    try {
+      const current = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      const incoming = req.body.filter ?? {};
+      // Only allow merging known filter keys
+      const allowedKeys = ['zoneProximityTicks', 'perZoneCooldownSec', 'globalCooldownSec', 'minConfidence', 'fireOn'];
+      const updatedFilter = { ...current.filter };
+      for (const key of allowedKeys) {
+        if (key in incoming) {
+          if (key === 'fireOn' && typeof incoming[key] === 'object') {
+            updatedFilter.fireOn = { ...current.filter?.fireOn, ...incoming[key] };
+          } else {
+            updatedFilter[key] = incoming[key];
+          }
+        }
+      }
+      const updated = { ...current, filter: updatedFilter };
+      const tmp = CONFIG_PATH + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(updated, null, 2));
+      fs.renameSync(tmp, CONFIG_PATH);
+      res.json({ ok: true, config: updated });
+    } catch (e) {
+      res.status(500).json({ error: 'config_write_failed', detail: e.message });
+    }
+  });
+
   // SPA fallback
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });

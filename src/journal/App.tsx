@@ -3,7 +3,7 @@ import { Today } from './pages/Today';
 import { TradeList } from './pages/TradeList';
 import { Stats } from './pages/Stats';
 import { Analysis } from './pages/Analysis';
-// Config will be wired in next task — no import yet
+import { Config } from './pages/Config';
 
 type RouteKey = '#/' | '#/trades' | '#/stats' | '#/analysis' | '#/config';
 
@@ -12,7 +12,7 @@ const ROUTES: Record<RouteKey, React.ComponentType> = {
   '#/trades':   TradeList,
   '#/stats':    Stats,
   '#/analysis': Analysis,
-  '#/config':   Today,   // temporary stub until Config page exists
+  '#/config':   Config,
 };
 
 function normalizeHash(hash: string): RouteKey {
