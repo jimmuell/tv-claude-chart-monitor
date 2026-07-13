@@ -94,14 +94,19 @@ export class PnlTracker {
         }
         this.lastGrossPnl = gross;
 
-        // Detect position close: tradeCount incremented + no open position
+        // Detect position close: gross P&L changed this poll + OTE is now 0 + DB has an open trade.
+        // Using gross-change + hasOpenTrade() is more reliable than tradeCount delta because it
+        // doesn't require the Order History tab to be active, and isn't affected by stale counts
+        // after session resets or app restarts mid-trade.
+        const grossChanged = prevGross !== null && gross !== prevGross;
         if (
           this.tradeStore &&
-          this.tradeCount > this.prevTradeCount &&
-          unrealized === 0
+          unrealized === 0 &&
+          grossChanged &&
+          this.tradeStore.hasOpenTrade()
         ) {
-          const pnlGross   = gross - (prevGross ?? gross);
-          const exitFee    = cfg.perContractFee; // variable fee for 1 round-trip
+          const pnlGross   = gross - prevGross!;
+          const exitFee    = cfg.perContractFee;
           this.tradeStore.recordExitForOpenTrade({
             exit_at:    Date.now(),
             pnl_gross:  pnlGross,

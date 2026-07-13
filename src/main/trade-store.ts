@@ -147,6 +147,14 @@ export class TradeStore {
     return result.changes > 0;
   }
 
+  /** Returns true if any trade has no exit_at recorded. */
+  hasOpenTrade(): boolean {
+    const row = this.db.prepare(
+      `SELECT 1 FROM trades WHERE exit_at IS NULL LIMIT 1`
+    ).get();
+    return row !== undefined;
+  }
+
   /** Add or replace notes and tags on a trade. */
   addNotes(id: number, notes: string, tags: string[]): void {
     this.db.prepare(
