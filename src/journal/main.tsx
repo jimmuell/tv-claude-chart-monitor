@@ -1,10 +1,10 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import './styles.css';
+import { App } from './App';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <div style={{ color: '#d1d4dc', fontFamily: 'sans-serif', padding: '2rem' }}>
-      Trade Journal — Coming Soon
-    </div>
+    <App />
   </React.StrictMode>
 );
