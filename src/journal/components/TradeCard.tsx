@@ -238,7 +238,7 @@ export function TradeCard({ trade, onUpdated }: TradeCardProps) {
             )}
             {trade.confidence != null && (
               <p style={{ fontSize: 12, marginTop: '0.35rem', color: 'var(--text-secondary)' }}>
-                Confidence: <strong style={{ color: 'var(--text-primary)' }}>{trade.confidence}%</strong>
+                Confidence: <strong style={{ color: 'var(--text-primary)' }}>{((trade.confidence ?? 0) * 100).toFixed(0)}%</strong>
               </p>
             )}
           </div>

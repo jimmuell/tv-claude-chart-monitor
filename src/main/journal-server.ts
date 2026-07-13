@@ -31,7 +31,7 @@ export function startJournalServer(
   app.get('/api/trades', (_req, res) => {
     try {
       const trades: TradeRecord[] = store.getAll();
-      res.json({ trades });
+      res.json(trades);
     } catch (err) {
       console.error('[journal-server] GET /api/trades error:', err);
       res.status(500).json({ error: 'Failed to load trades', detail: String(err) });
@@ -111,7 +111,7 @@ export function startJournalServer(
       if (trade.critique_json) {
         try {
           const critique = JSON.parse(trade.critique_json) as TradeCritique;
-          res.json({ critique });
+          res.json(critique);
           return;
         } catch {
           // Corrupt cache — fall through to regenerate
@@ -182,7 +182,7 @@ In 3-5 sentences of plain English:
         ? (JSON.parse(saved.critique_json) as TradeCritique)
         : { text: critiqueText, created_at: Date.now() };
 
-      res.json({ critique });
+      res.json(critique);
     } catch (err) {
       console.error('[journal-server] POST /api/trades/:id/critique error:', err);
       res.status(500).json({ error: 'Critique failed', detail: String(err) });
@@ -219,7 +219,7 @@ In 3-5 sentences of plain English:
   // ---------------------------------------------------------------------------
   // Start listening
   // ---------------------------------------------------------------------------
-  const server = app.listen(3001, () => {
+  const server = app.listen(3001, '127.0.0.1', () => {
     console.log('Journal server listening on http://localhost:3001');
   });
 
