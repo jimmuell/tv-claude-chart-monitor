@@ -63,7 +63,7 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
 
   const pnlClass = isOpen ? 'open' : (trade.pnl_net ?? 0) >= 0 ? 'pos' : 'neg';
   const outcomeClass = isOpen ? 'open' : isWin ? 'win' : 'loss';
-  const outcomeSymbol = isOpen ? '○' : isWin ? '✓' : '✗';
+  const outcomeSymbol = isOpen ? '—' : isWin ? 'W' : 'L';
 
   const handleNotesBlur = async () => {
     setSaveStatus('saving');
