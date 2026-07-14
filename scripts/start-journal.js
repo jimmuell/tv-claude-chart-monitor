@@ -276,15 +276,54 @@ In 3-5 sentences of plain English:
 3. One specific improvement for future similar setups.`;
 }
 
+// ─── SSE broadcast ────────────────────────────────────────────────────────────
+
+const sseClients = new Set();
+
+function broadcastRefresh(reason) {
+  const payload = `data: ${JSON.stringify({ type: 'refresh', reason, ts: Date.now() })}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(payload); } catch { sseClients.delete(res); }
+  }
+}
+
+// Watch DB file for changes written by the Electron main process.
+// Debounced so a single write doesn't fire multiple broadcasts.
+let dbWatchTimer = null;
+function watchDb() {
+  if (!fs.existsSync(DB_PATH)) return;
+  try {
+    fs.watch(DB_PATH, () => {
+      clearTimeout(dbWatchTimer);
+      dbWatchTimer = setTimeout(() => broadcastRefresh('db_change'), 250);
+    });
+  } catch (e) {
+    console.warn('[journal] fs.watch failed:', e.message);
+  }
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const initSqlJs = require('sql.js');
   SQL = await initSqlJs();
 
+  watchDb();
+
   const app = express();
   app.use(express.json());
   app.use(express.static(STATIC_DIR));
+
+  // GET /api/events — SSE stream; clients subscribe and receive 'refresh' events
+  app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    sseClients.add(res);
+    req.on('close', () => sseClients.delete(res));
+    res.write('data: {"type":"connected"}\n\n');
+  });
 
   // GET /api/trades
   app.get('/api/trades', (_req, res) => {
@@ -332,6 +371,7 @@ async function main() {
     try {
       dbRun(db, 'UPDATE trades SET notes=?, tags_json=? WHERE id=?', [notes, JSON.stringify(tags), id]);
       saveAndClose(db);
+      broadcastRefresh('notes_updated');
       res.json({ ok: true });
     } catch (e) {
       console.error('[journal] POST /api/trades/:id/notes:', e);
@@ -392,6 +432,36 @@ async function main() {
     }
   });
 
+  // POST /api/trades — manually log a trade entry (open position)
+  app.post('/api/trades', (req, res) => {
+    const { symbol, direction, entry_price, stop_price, created_at } = req.body;
+    if (!symbol || !direction || typeof entry_price !== 'number') {
+      return res.status(400).json({ error: 'symbol, direction, entry_price required' });
+    }
+    if (direction !== 'long' && direction !== 'short') {
+      return res.status(400).json({ error: 'direction must be long or short' });
+    }
+    const db = openDb();
+    if (!db) return res.status(500).json({ error: 'db_unavailable' });
+    try {
+      dbRun(db,
+        `INSERT INTO trades (created_at, symbol, timeframe, direction, entry_price, stop_price, verdict)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [created_at ?? Date.now(), symbol, '1', direction, entry_price,
+         typeof stop_price === 'number' ? stop_price : null, 'manual']
+      );
+      const id = queryOne(db, 'SELECT last_insert_rowid() as id').id;
+      const row = queryOne(db, 'SELECT * FROM trades WHERE id=?', [id]);
+      saveAndClose(db);
+      broadcastRefresh('trade_logged');
+      res.json(rowToRecord(row));
+    } catch (e) {
+      console.error('[journal] POST /api/trades:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // DELETE /api/trades — wipe all trades (paper trading reset)
   app.delete('/api/trades', (_req, res) => {
     const db = openDb();
@@ -401,7 +471,12 @@ async function main() {
       const count = row ? (row.n ?? 0) : 0;
       dbRun(db, 'DELETE FROM trades');
       saveAndClose(db);
+      // Write a signal file so the Electron main process clears its own better-sqlite3
+      // connection (sql.js bypasses SQLite's file-locking protocol, so we cannot rely on
+      // the main process's page cache seeing our raw file write).
+      try { fs.writeFileSync(DB_PATH + '.reset', String(Date.now())); } catch { /* ignore */ }
       console.log(`[journal] Trade journal reset — ${count} trade(s) deleted`);
+      broadcastRefresh('journal_reset');
       res.json({ ok: true, deleted: count });
     } catch (e) {
       console.error('[journal] DELETE /api/trades:', e);
@@ -452,6 +527,7 @@ async function main() {
       );
       const updated = queryOne(db, 'SELECT * FROM trades WHERE id=?', [id]);
       saveAndClose(db);
+      broadcastRefresh('trade_closed');
       res.json(rowToRecord(updated));
     } catch (e) {
       console.error('[journal] POST /api/trades/:id/close:', e);

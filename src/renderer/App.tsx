@@ -278,6 +278,14 @@ const PnlBar: React.FC<{ snap: PnlSnapshot; expanded: boolean; onToggle: () => v
                 </span>
               </>
             )}
+            {snap.accountType && (
+              <>
+                <span className="pnl-sep">│</span>
+                <span className="pnl-account-type">
+                  {snap.accountType === 'amp_live' ? 'AMP Live' : 'Paper'}
+                </span>
+              </>
+            )}
           </div>
           {expanded && (
             <div className="pnl-breakdown">
@@ -710,6 +718,12 @@ const App: React.FC = () => {
   const [annotateError, setAnnotateError]     = useState<string | null>(null);
   const [autoDraw, setAutoDraw]               = useState(false);
   const [persistLevels, setPersistLevels]     = useState(false);
+  const [autoTrade, setAutoTrade]             = useState(false);
+  const [autoTradeTestMode, setAutoTradeTestMode] = useState(false);
+  const [autoTradeStopDollars, setAutoTradeStopDollars]     = useState(15.00);
+  const [autoTradeTargetDollars, setAutoTradeTargetDollars] = useState(30.00);
+  const [cooldownActive, setCooldownActive] = useState(false);
+  const [atWindow, setAtWindow] = useState<{ inWindow: boolean; remainingSecs: number; opensInSecs: number } | null>(null);
   const [isAnnotationStale, setIsAnnotationStale] = useState(false);
   const [tpDrawn, setTpDrawn]                 = useState(false);
   const [tpPending, setTpPending]             = useState(false);
@@ -726,6 +740,8 @@ const App: React.FC = () => {
   const [pendingAlertPrices, setPendingAlertPrices] = useState<Set<number>>(new Set());
   const [alertErrorPrices, setAlertErrorPrices]     = useState<Map<number, string>>(new Map());
   const prevSymbolRef                               = useRef<string | null>(null);
+  const [tradeToast, setTradeToast]                 = useState<{ msg: string; ok: boolean } | null>(null);
+  const tradeToastTimerRef                          = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -734,8 +750,29 @@ const App: React.FC = () => {
       autoDrawRef.current = s.autoDraw;
       setPersistLevels(s.persistLevels);
       persistLevelsRef.current = s.persistLevels;
+      setAutoTrade(s.autoTrade);
+      setAutoTradeTestMode(s.autoTradeTestMode);
+      setAutoTradeStopDollars(s.autoTradeStopDollars ?? 15);
+      setAutoTradeTargetDollars(s.autoTradeTargetDollars ?? 30);
     }).catch(() => {/* ignore */});
   }, []);
+
+  // Poll cooldown status every 5 s so the Del CD button colour stays current
+  useEffect(() => {
+    const check = () => window.api.getCooldownStatus().then(s => setCooldownActive(s.active)).catch(() => {});
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // 1-second AT window countdown — only runs when autoTrade is on
+  useEffect(() => {
+    if (!autoTrade) { setAtWindow(null); return; }
+    const tick = () => window.api.getTradeWindowStatus().then(setAtWindow).catch(() => {});
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [autoTrade]);
 
   // Keep refs in sync so stale closures (onAnalysis) see current values
   useEffect(() => { autoDrawRef.current = autoDraw; }, [autoDraw]);
@@ -845,9 +882,61 @@ const App: React.FC = () => {
         persistLevelsRef.current = s.persistLevels;
         if (!s.persistLevels) setIsAnnotationStale(false);
         setPnlVisible(s.pnlVisible ?? true);
+        setAutoTrade(s.autoTrade);
+        setAutoTradeTestMode(s.autoTradeTestMode);
+        setAutoTradeStopDollars(s.autoTradeStopDollars ?? 15);
+        setAutoTradeTargetDollars(s.autoTradeTargetDollars ?? 30);
       }).catch(() => {});
     }
   }, [view]);
+
+  const fmtSecs = (s: number) => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+      : `${m}:${String(sec).padStart(2,'0')}`;
+  };
+
+  const showTradeToast = (msg: string, ok: boolean) => {
+    setTradeToast({ msg, ok });
+    if (tradeToastTimerRef.current) clearTimeout(tradeToastTimerRef.current);
+    tradeToastTimerRef.current = setTimeout(() => {
+      setTradeToast(null);
+      tradeToastTimerRef.current = null;
+    }, 5000);
+  };
+
+  const handleTestTrade = async (direction: 'long' | 'short') => {
+    const price = result?.closedBarPrice;
+    console.log('[test-trade] click:', direction, '| closedBarPrice:', price);
+    if (!price) {
+      console.warn('[test-trade] no price available — result state:', result);
+      showTradeToast('No price available — run an analysis first', false);
+      return;
+    }
+    // Convert dollar amounts to price offsets: MES tick value = $1.25, tick size = 0.25 pts
+    const TICK_VALUE = 1.25;
+    const TICK_SIZE  = 0.25;
+    const stopOffset   = Math.round(autoTradeStopDollars   / TICK_VALUE) * TICK_SIZE;
+    const targetOffset = Math.round(autoTradeTargetDollars / TICK_VALUE) * TICK_SIZE;
+    const stop   = direction === 'long'
+      ? Math.round((price - stopOffset)   * 4) / 4
+      : Math.round((price + stopOffset)   * 4) / 4;
+    const target = direction === 'long'
+      ? Math.round((price + targetOffset) * 4) / 4
+      : Math.round((price - targetOffset) * 4) / 4;
+    console.log('[test-trade] computed — stop:', stop, 'target:', target, `(SL=$${autoTradeStopDollars} TP=$${autoTradeTargetDollars})`);
+    try {
+      const outcome = await window.api.testAutoTrade(direction, stop, target, price);
+      console.log('[test-trade] outcome:', outcome);
+      showTradeToast(`[auto-trade] ${direction} → ${outcome}`, outcome === 'submitted');
+    } catch (err) {
+      console.error('[test-trade] IPC error:', err);
+      showTradeToast(`[auto-trade] IPC error: ${err instanceof Error ? err.message : String(err)}`, false);
+    }
+  };
 
   const handleRefresh = async () => {
     setUiStatus('loading');
@@ -1128,6 +1217,35 @@ const App: React.FC = () => {
           <div className="header-row1">
             <h1 className="title">Trading Analyzer</h1>
             <div className="header-actions">
+              {autoTrade && autoTradeTestMode && result && (
+                <>
+                  <button
+                    className="trade-btn trade-btn-long"
+                    title={`Test Long: stop −$${autoTradeStopDollars} / target +$${autoTradeTargetDollars}`}
+                    onClick={() => handleTestTrade('long')}
+                  >
+                    Long
+                  </button>
+                  <button
+                    className="trade-btn trade-btn-short"
+                    title={`Test Short: stop +$${autoTradeStopDollars} / target −$${autoTradeTargetDollars}`}
+                    onClick={() => handleTestTrade('short')}
+                  >
+                    Short
+                  </button>
+                  <button
+                    className={`trade-btn trade-btn-cd${cooldownActive ? ' trade-btn-cd-active' : ''}`}
+                    title={cooldownActive ? 'Cooldown active — click to clear' : 'No active cooldown'}
+                    onClick={async () => {
+                      const r = await window.api.deleteCooldown();
+                      setCooldownActive(false);
+                      showTradeToast(r.deleted ? 'Cooldown cleared' : 'No cooldown file', r.deleted);
+                    }}
+                  >
+                    Del CD
+                  </button>
+                </>
+              )}
               {result && (
                 <GDriveButton
                   onError={showAnnotateError}
@@ -1165,6 +1283,13 @@ const App: React.FC = () => {
               ? <span className="countdown-chip"><span className="countdown-label">Next:</span><span className="countdown-value">{countdown}</span></span>
               : <span />
             }
+            {autoTrade && atWindow && (
+              atWindow.inWindow
+                ? <span className="at-window-chip at-window-open" title="Auto-trade window open">
+                    AT {atWindow.remainingSecs > 0 ? fmtSecs(atWindow.remainingSecs) : '24h'}
+                  </span>
+                : <span className="at-window-chip at-window-closed" title="Auto-trade window closed">AT closed</span>
+            )}
           </div>
         )}
       </header>
@@ -1195,6 +1320,11 @@ const App: React.FC = () => {
       )}
 
       {annotateError && <div className="toast toast-error">{annotateError}</div>}
+      {tradeToast && (
+        <div className={`toast ${tradeToast.ok ? 'toast-trade-ok' : 'toast-error'}`}>
+          {tradeToast.msg}
+        </div>
+      )}
     </div>
   );
 };

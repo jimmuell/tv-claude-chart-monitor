@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 
 interface FilterConfig {
   zoneProximityTicks: number;
@@ -20,6 +20,7 @@ export function Config() {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     fetch('/api/config')
@@ -66,6 +67,17 @@ export function Config() {
       setSaving(false);
     }
   };
+
+  const handleReset = useCallback(async () => {
+    if (!window.confirm('Reset the trade journal? This deletes ALL trades and cannot be undone.')) return;
+    setResetting(true);
+    try {
+      await fetch('/api/trades', { method: 'DELETE' });
+      window.location.reload();
+    } catch {
+      setResetting(false);
+    }
+  }, []);
 
   const setFireOn = (key: keyof FilterConfig['fireOn'], value: boolean) => {
     setDraft(d => d ? { ...d, fireOn: { ...d.fireOn, [key]: value } } : d);
@@ -173,6 +185,20 @@ export function Config() {
       <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: '0.75rem' }}>
         Changes take effect on next Electron analysis run.
       </p>
+
+      {/* Danger zone */}
+      <div style={{ marginTop: '2rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border)' }}>
+        <div className="section-heading" style={{ color: 'var(--bearish)' }}>DANGER ZONE</div>
+        <div className="chart-card" style={{ marginTop: '0.75rem' }}>
+          <div className="chart-title">Reset Trade Journal</div>
+          <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
+            Deletes all trades. Use when resetting your paper trading account.
+          </p>
+          <button className="btn-reset" onClick={handleReset} disabled={resetting}>
+            {resetting ? 'Resetting…' : 'Reset Journal'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

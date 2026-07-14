@@ -9,7 +9,7 @@ export interface TradeRecord {
   target_price:  number | null;
   trailing_stop: boolean;
   rr_planned:    number | null;
-  verdict:       'valid_long' | 'valid_short';
+  verdict:       'valid_long' | 'valid_short' | 'manual';
   headline:      string | null;
   objective:     string | null;
   steps_json:    string | null;   // JSON string[]

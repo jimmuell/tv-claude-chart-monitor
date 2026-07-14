@@ -52,7 +52,7 @@ function rowToRecord(row: Record<string, unknown>): TradeRecord {
     target_price:  row.target_price as number | null,
     trailing_stop: Boolean(row.trailing_stop),
     rr_planned:    row.rr_planned as number | null,
-    verdict:       row.verdict as 'valid_long' | 'valid_short',
+    verdict:       row.verdict as 'valid_long' | 'valid_short' | 'manual',
     headline:      row.headline as string | null,
     objective:     row.objective as string | null,
     steps_json:    row.steps_json as string | null,
@@ -293,6 +293,12 @@ export class TradeStore {
       byHour,
       equityCurve,
     };
+  }
+
+  /** Wipe all trades — called when the journal UI resets. */
+  clearAll(): void {
+    this.db.exec('DELETE FROM trades');
+    console.log('[trade-store] clearAll: all trades deleted via better-sqlite3');
   }
 
   /** Close the database connection (for testing cleanup). */

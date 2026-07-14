@@ -310,6 +310,18 @@ app.on('ready', () => {
   // Trade journal store (standalone journal server runs separately via `pnpm journal`)
   tradeStore = new TradeStore(app.getPath('userData'));
 
+  // Watch for journal-reset signal written by the journal server's DELETE /api/trades.
+  // The journal server uses sql.js (raw file I/O) which bypasses SQLite's lock protocol,
+  // so we must perform the actual DELETE through better-sqlite3's live connection here.
+  const resetSignalPath = path.join(app.getPath('userData'), 'trades.db.reset');
+  setInterval(() => {
+    if (fs.existsSync(resetSignalPath)) {
+      try { fs.unlinkSync(resetSignalPath); } catch { /* ignore race */ }
+      tradeStore?.clearAll();
+      console.log('[index] journal reset signal received — TradeStore cleared');
+    }
+  }, 2000);
+
   // P&L tracker
   pnlTracker = new PnlTracker(
     (snap) => { mainWindow?.webContents.send(IPC.PNL_PUSH, snap); },
@@ -332,10 +344,12 @@ app.on('ready', () => {
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYSIS_PUSH, result);
       const sv = result.commentary.setup_verdict;
+      const conf = result.commentary.confidence ?? 1;
       const minConf = readMinConfidence();
-      const confOk = (result.commentary.confidence ?? 1) >= minConf;
+      const confOk = conf >= minConf;
+      console.log(`[auto-trade] verdict=${sv} conf=${(conf * 100).toFixed(0)}% confOk=${confOk} autoTrade=${getSettings().autoTrade}`);
       if (!confOk && minConf > 0) {
-        console.log(`[auto-trade] skipped — confidence ${((result.commentary.confidence ?? 0) * 100).toFixed(0)}% < min ${(minConf * 100).toFixed(0)}%`);
+        console.log(`[auto-trade] skipped — confidence ${(conf * 100).toFixed(0)}% < min ${(minConf * 100).toFixed(0)}%`);
       }
       const willTrade = getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short') && confOk;
       if (getSettings().notifications && !willTrade) {
@@ -346,7 +360,8 @@ app.on('ready', () => {
         if (bracket) {
           const dir = sv === 'valid_long' ? 'long' : 'short';
           const cb  = configuredBracket(bracket.entry, dir);
-          submitMarketOrder(dir, cb.stop, cb.target, bracket.entry, getSettings().autoTradeTrailingStop)
+          console.log(`[auto-trade] FIRING ${dir.toUpperCase()} entry=${bracket.entry} stop=${cb.stop} target=${cb.target}`);
+          submitMarketOrder(dir, cb.stop, cb.target, bracket.entry, false)
             .then(outcome => {
               console.log('[auto-trade]', outcome);
               if (outcome === 'submitted' && tradeStore) {
@@ -357,7 +372,7 @@ app.on('ready', () => {
                   entry_price:   bracket.entry,
                   stop_price:    cb.stop,
                   target_price:  cb.target,
-                  trailing_stop: getSettings().autoTradeTrailingStop,
+                  trailing_stop: false,
                   rr_planned:    result.commentary.trade_plan?.rr ?? null,
                   verdict:       sv as 'valid_long' | 'valid_short',
                   headline:      result.commentary.headline ?? null,
@@ -402,10 +417,12 @@ app.on('ready', () => {
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'complete');
       const sv2 = result.commentary.setup_verdict;
+      const conf2 = result.commentary.confidence ?? 1;
       const minConf2 = readMinConfidence();
-      const confOk2 = (result.commentary.confidence ?? 1) >= minConf2;
+      const confOk2 = conf2 >= minConf2;
+      console.log(`[auto-trade] verdict=${sv2} conf=${(conf2 * 100).toFixed(0)}% confOk=${confOk2} autoTrade=${getSettings().autoTrade}`);
       if (!confOk2 && minConf2 > 0) {
-        console.log(`[auto-trade] skipped — confidence ${((result.commentary.confidence ?? 0) * 100).toFixed(0)}% < min ${(minConf2 * 100).toFixed(0)}%`);
+        console.log(`[auto-trade] skipped — confidence ${(conf2 * 100).toFixed(0)}% < min ${(minConf2 * 100).toFixed(0)}%`);
       }
       const willTrade2 = getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short') && confOk2;
       if (getSettings().notifications && !willTrade2) {
@@ -416,7 +433,8 @@ app.on('ready', () => {
         if (bracket2) {
           const dir2 = sv2 === 'valid_long' ? 'long' : 'short';
           const cb2  = configuredBracket(bracket2.entry, dir2);
-          submitMarketOrder(dir2, cb2.stop, cb2.target, bracket2.entry, getSettings().autoTradeTrailingStop)
+          console.log(`[auto-trade] FIRING ${dir2.toUpperCase()} entry=${bracket2.entry} stop=${cb2.stop} target=${cb2.target}`);
+          submitMarketOrder(dir2, cb2.stop, cb2.target, bracket2.entry, false)
             .then(outcome => {
               console.log('[auto-trade]', outcome);
               if (outcome === 'submitted' && tradeStore) {
@@ -427,7 +445,7 @@ app.on('ready', () => {
                   entry_price:   bracket2.entry,
                   stop_price:    cb2.stop,
                   target_price:  cb2.target,
-                  trailing_stop: getSettings().autoTradeTrailingStop,
+                  trailing_stop: false,
                   rr_planned:    result.commentary.trade_plan?.rr ?? null,
                   verdict:       sv2 as 'valid_long' | 'valid_short',
                   headline:      result.commentary.headline ?? null,
@@ -534,7 +552,7 @@ app.on('ready', () => {
 
   // IPC: manual test trigger for order-executor (bypasses autoTrade setting)
   ipcMain.handle(IPC.AUTO_TRADE_TEST, (_e, direction: 'long' | 'short', stop: number, target: number, entry: number) =>
-    submitMarketOrder(direction, stop, target, entry, getSettings().autoTradeTrailingStop, true)
+    submitMarketOrder(direction, stop, target, entry, false, true)
   );
 
   // IPC: delete cooldown file so the next trade can fire immediately

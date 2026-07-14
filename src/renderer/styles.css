@@ -180,6 +180,24 @@ body {
   color: var(--text-primary);
 }
 
+.trade-btn {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: none;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  line-height: 1.6;
+  transition: opacity 0.15s;
+}
+.trade-btn:hover   { opacity: 0.85; }
+.trade-btn:active  { opacity: 0.7; }
+.trade-btn-long    { background: var(--accent);  color: #fff; }
+.trade-btn-short   { background: var(--bearish); color: #fff; }
+.trade-btn-cd      { background: var(--border);  color: var(--text-secondary); }
+.trade-btn-cd-active { background: var(--bearish); color: #fff; }
+
 /* ── Body ── */
 
 .body {
@@ -342,6 +360,20 @@ body {
 .countdown-value {
   color: var(--text-primary);
 }
+
+.at-window-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 0.03em;
+}
+.at-window-open   { background: rgba(38,166,154,0.18); color: var(--accent);  border: 1px solid var(--accent); }
+.at-window-closed { background: rgba(255,255,255,0.05); color: var(--text-secondary); border: 1px solid var(--border); }
 
 /* ── Result body wrap (scroll + fade) ── */
 .result-body-wrap {
@@ -752,6 +784,12 @@ body {
   border-color: var(--bearish);
   color: var(--bearish);
   animation: toast-in-out 3s ease forwards;
+}
+
+.toast-trade-ok {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: toast-in-out 5s ease forwards;
 }
 
 /* ── Active icon button (gear when settings open) ── */
@@ -1268,6 +1306,13 @@ body {
   color: var(--text-secondary);
 }
 .pnl-sep { font-size: 11px; color: var(--border); }
+.pnl-account-type {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 
 .pnl-breakdown {
   margin-top: 7px;

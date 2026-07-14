@@ -168,6 +168,7 @@ export interface PnlSnapshot {
   netPnl:          number;   // grossPnl − fees.totalFees
   breakevenPoints: number;   // points on next 1-RT trade to reach net zero
   dataAvailable:   boolean;
+  accountType:     'amp_live' | 'paper' | null;
   message?:        string;   // e.g. "trading panel not open"
 }
 
@@ -199,6 +200,7 @@ export interface AppSettings {
   feeLiquidationDaily: number;   // $/day, default 2.50
   feeDataMonthly:      number;   // $/month, default 45.00
   feeTradingDays:      number;   // trading days/month, default 21
+  subtractCommissions: boolean;  // deduct commissions from pnl_net; default false (off for paper trading)
   pnlVisible:          boolean;  // show P&L bar
 }
 
@@ -296,7 +298,7 @@ export interface TradeEntry {
   rr_planned:    number | null;  // risk:reward ratio from TradePlan.rr
 
   // From CommentaryResult
-  verdict:       'valid_long' | 'valid_short';
+  verdict:       'valid_long' | 'valid_short' | 'manual';
   headline:      string | null;  // ~90-char Claude summary
   objective:     string | null;  // 2-4 sentence context
   steps_json:    string | null;  // JSON-encoded string[] (steps_what_happened)

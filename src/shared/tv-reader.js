@@ -86,7 +86,10 @@ class TvReader {
       awaitPromise: true,
     });
     if (exceptionDetails) {
-      throw new Error(`CDP eval failed: ${exceptionDetails.text}`);
+      const desc = exceptionDetails.exception?.description
+        || exceptionDetails.exception?.value
+        || exceptionDetails.text;
+      throw new Error(`CDP eval failed: ${desc}`);
     }
     return result.value;
   }

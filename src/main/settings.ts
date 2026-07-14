@@ -8,6 +8,12 @@ const DEFAULTS: AppSettings = {
   autoRefresh:           true,
   persistLevels:         false,
   notifications:         true,
+  autoTrade:             false,
+  autoTradeTestMode:     false,
+  autoTradeStopDollars:   15.00,
+  autoTradeTargetDollars: 30.00,
+  autoTradeTrailingStop:  false,
+  tradeSession:          'number',
   cdpPort:               9222,
   lineThickness:         2,
   labelSize:             'large',
@@ -16,6 +22,7 @@ const DEFAULTS: AppSettings = {
   feeLiquidationDaily:   2.50,
   feeDataMonthly:        45.00,
   feeTradingDays:        21,
+  subtractCommissions:   false,
   pnlVisible:            true,
 };
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');

@@ -11,6 +11,7 @@ const dateKey = (ms: number) =>
   new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
 
 type OutcomeFilter = 'all' | 'win' | 'loss' | 'open';
+type SourceFilter  = 'all' | 'auto' | 'manual';
 
 export function TradeList() {
   const [trades, setTrades] = useState<TradeRecord[]>([]);
@@ -20,6 +21,7 @@ export function TradeList() {
   const [dateFilter, setDateFilter] = useState('');
   const [dirFilter, setDirFilter] = useState<'all' | 'long' | 'short'>('all');
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>('all');
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
   useEffect(() => {
     fetch('/api/trades')
@@ -45,9 +47,11 @@ export function TradeList() {
       if (outcomeFilter === 'win' && !(t.r_multiple != null && t.r_multiple > 0)) return false;
       if (outcomeFilter === 'loss' && !(t.r_multiple != null && t.r_multiple <= 0)) return false;
       if (outcomeFilter === 'open' && t.exit_price != null) return false;
+      if (sourceFilter === 'auto' && t.verdict === 'manual') return false;
+      if (sourceFilter === 'manual' && t.verdict !== 'manual') return false;
       return true;
     });
-  }, [trades, dateFilter, dirFilter, outcomeFilter]);
+  }, [trades, dateFilter, dirFilter, outcomeFilter, sourceFilter]);
 
   // Group by date
   const groups = useMemo(() => {
@@ -64,6 +68,7 @@ export function TradeList() {
     setDateFilter('');
     setDirFilter('all');
     setOutcomeFilter('all');
+    setSourceFilter('all');
   };
 
   if (loading) return <div className="loading">Loading…</div>;
@@ -100,7 +105,21 @@ export function TradeList() {
             </label>
           ))}
         </div>
-        {(dateFilter || dirFilter !== 'all' || outcomeFilter !== 'all') && (
+        <div className="radio-group">
+          {(['all', 'auto', 'manual'] as SourceFilter[]).map(v => (
+            <label key={v}>
+              <input
+                type="radio"
+                name="source"
+                value={v}
+                checked={sourceFilter === v}
+                onChange={() => setSourceFilter(v)}
+              />
+              {v === 'all' ? 'All' : v === 'auto' ? 'A — Auto' : 'M — Manual'}
+            </label>
+          ))}
+        </div>
+        {(dateFilter || dirFilter !== 'all' || outcomeFilter !== 'all' || sourceFilter !== 'all') && (
           <button className="btn-clear" onClick={clearFilters}>Clear</button>
         )}
       </div>

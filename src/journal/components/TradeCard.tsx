@@ -166,6 +166,19 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
           {trade.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
         </span>
 
+        {/* Source badge: A = auto-traded, M = manually placed */}
+        <span
+          title={trade.verdict === 'manual' ? 'Manually placed' : 'Auto-traded by Claude'}
+          style={{
+            fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
+            padding: '1px 5px', borderRadius: 3,
+            background: trade.verdict === 'manual' ? 'var(--text-secondary)' : 'var(--accent)',
+            color: '#1e222d', flexShrink: 0,
+          }}
+        >
+          {trade.verdict === 'manual' ? 'M' : 'A'}
+        </span>
+
         {/* Symbol + time */}
         <div className="trade-card-main">
           <div className="trade-symbol-line">
@@ -250,7 +263,7 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
                   <input
                     type="number"
                     step="0.25"
-                    placeholder="7588.00"
+                    placeholder="0.00"
                     value={closePrice}
                     onChange={e => setClosePrice(e.target.value)}
                     style={{ width: 90, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text-primary)', padding: '0.25rem 0.4rem', fontSize: 12, fontFamily: 'var(--font)' }}
@@ -261,7 +274,7 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
                   <input
                     type="number"
                     step="0.25"
-                    placeholder="-21.25"
+                    placeholder="+12.50 or -12.50"
                     value={closePnl}
                     onChange={e => setClosePnl(e.target.value)}
                     style={{ width: 90, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text-primary)', padding: '0.25rem 0.4rem', fontSize: 12, fontFamily: 'var(--font)' }}

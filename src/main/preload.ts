@@ -58,4 +58,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(IPC.ALERT_CREATE, payload),
   removeAlert: (price: number): Promise<void> =>
     ipcRenderer.invoke(IPC.ALERT_REMOVE, price),
+  testAutoTrade: (direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<'submitted' | 'skipped' | 'error'> =>
+    ipcRenderer.invoke(IPC.AUTO_TRADE_TEST, direction, stop, target, entry),
+  getCooldownStatus: (): Promise<{ active: boolean; remainingMs: number }> =>
+    ipcRenderer.invoke(IPC.COOLDOWN_STATUS),
+  getTradeWindowStatus: (): Promise<{ inWindow: boolean; remainingSecs: number; opensInSecs: number }> =>
+    ipcRenderer.invoke(IPC.TRADE_WINDOW_STATUS),
+  deleteCooldown: (): Promise<{ deleted: boolean }> =>
+    ipcRenderer.invoke(IPC.COOLDOWN_DELETE),
 });

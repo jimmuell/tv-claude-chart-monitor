@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import type { AppSettings, KeyStatus } from '../shared/types';
+import type { AppSettings, KeyStatus, TradeSession } from '../shared/types';
 
 const SettingsPanel: React.FC = () => {
   const [settings, setSettings]       = useState<AppSettings | null>(null);
@@ -107,6 +107,81 @@ const SettingsPanel: React.FC = () => {
           />
         </div>
         <div className="settings-row">
+          <span className="settings-label">
+            Auto Trade
+            {settings.autoTrade && (
+              <span style={{ color: 'var(--bearish)', marginLeft: 6, fontSize: '0.75em', fontWeight: 700 }}>
+                LIVE
+              </span>
+            )}
+          </span>
+          <SettingsToggle
+            checked={settings.autoTrade}
+            onChange={v => update({ autoTrade: v })}
+          />
+        </div>
+        {settings.autoTrade && (
+          <>
+            <div className="settings-row">
+              <span className="settings-label">Test Buttons</span>
+              <SettingsToggle
+                checked={settings.autoTradeTestMode}
+                onChange={v => update({ autoTradeTestMode: v })}
+              />
+            </div>
+            <div className="settings-row">
+              <span className="settings-label">
+                Trailing Stop
+                <span style={{ marginLeft: 6, fontSize: '0.7em', color: 'var(--text-secondary)', fontWeight: 400 }}>soon</span>
+              </span>
+              <SettingsToggle
+                checked={false}
+                onChange={() => {}}
+                disabled
+              />
+            </div>
+            {([
+              ['number', 'Morning 8:45–11:30'],
+              ['full',   'Full 8:45–3:00 PM'],
+              ['all',    '24 h — all sessions'],
+            ] as [TradeSession, string][]).map(([s, label]) => (
+              <div className="settings-row" key={s}>
+                <span className="settings-label">{label}</span>
+                <label className="settings-toggle-wrap">
+                  <input
+                    type="checkbox"
+                    checked={(settings.tradeSession ?? 'number') === s}
+                    onChange={() => update({ tradeSession: s })}
+                  />
+                  <span className="switch-track" />
+                </label>
+              </div>
+            ))}
+            <div className="settings-row">
+              <span className="settings-label">Stop Loss $</span>
+              <input
+                type="number"
+                className="settings-input settings-input-sm"
+                value={settings.autoTradeStopDollars}
+                step={1.25}
+                min={1.25}
+                onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v) && v > 0) update({ autoTradeStopDollars: v }); }}
+              />
+            </div>
+            <div className="settings-row">
+              <span className="settings-label">Take Profit $</span>
+              <input
+                type="number"
+                className="settings-input settings-input-sm"
+                value={settings.autoTradeTargetDollars}
+                step={1.25}
+                min={1.25}
+                onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v) && v > 0) update({ autoTradeTargetDollars: v }); }}
+              />
+            </div>
+          </>
+        )}
+        <div className="settings-row">
           <span className="settings-label">P&amp;L Bar</span>
           <SettingsToggle
             checked={settings.pnlVisible}
@@ -118,6 +193,13 @@ const SettingsPanel: React.FC = () => {
       {/* Fees */}
       <div className="settings-section">
         <div className="settings-section-title">Fees (MES / AMP)</div>
+        <div className="settings-row">
+          <span className="settings-label">Subtract commissions</span>
+          <SettingsToggle
+            checked={settings.subtractCommissions ?? false}
+            onChange={v => update({ subtractCommissions: v })}
+          />
+        </div>
         <div className="settings-row">
           <span className="settings-label">Per-contract (RT)</span>
           <input
@@ -235,9 +317,9 @@ const SettingsPanel: React.FC = () => {
   );
 };
 
-const SettingsToggle: React.FC<{ checked: boolean; onChange: (v: boolean) => void }> = ({ checked, onChange }) => (
-  <label className="settings-toggle-wrap">
-    <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
+const SettingsToggle: React.FC<{ checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }> = ({ checked, onChange, disabled }) => (
+  <label className="settings-toggle-wrap" style={disabled ? { opacity: 0.35, pointerEvents: 'none' } : undefined}>
+    <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} disabled={disabled} />
     <span className="switch-track" />
   </label>
 );
