@@ -1,6 +1,6 @@
 import { readAccountData } from './pnl-reader';
 import { calculateFees, getBreakevenPoints, dailyFixedFee, type FeeConfig } from './fee-calculator';
-import type { PnlSnapshot, FeeBreakdown } from '../shared/types';
+import type { PnlSnapshot, FeeBreakdown, TradeEntry } from '../shared/types';
 import type { TradeStore } from './trade-store';
 import { getSettings } from './settings';
 
@@ -35,6 +35,8 @@ export class PnlTracker {
   private prevTradeCount      = 0;
   private prevUnrealized:     number | null = null;
   private lastKnownDirection: 'long' | 'short' | null = null;
+  private lastSymbol         = 'CME_MINI:MES1!';
+  private lastAccountType:   'amp_live' | 'paper' | null = null;
 
   constructor(
     private readonly onUpdate:   (snap: PnlSnapshot) => void,
@@ -68,6 +70,7 @@ export class PnlTracker {
       this.prevTradeCount     = 0;
       this.lastGrossPnl       = null;
       this.lastKnownDirection = null;
+      // Do NOT reset lastSymbol/lastAccountType — carry forward for cross-midnight cleanup
     }
 
     const cfg  = this.getConfig();
@@ -104,76 +107,108 @@ export class PnlTracker {
         // Compute direction early — needed by both rescue and entry paths.
         // Priority 1: Positions panel row (ground truth, gives direction + entry price).
         // Priority 2: Order history net fills (buyFills vs sellFills, unbalanced = open position).
-        // Priority 3: openingFillDirection — inferred from the newest (closing) fill,
-        //             useful when fills are balanced (round-trip complete, order history still visible).
+        // Priority 3: openingFillDirection — inferred from oldest fill in DOM.
         const posFromPanel      = data.openPosition;
         let detectedDirection: 'long' | 'short' | null = posFromPanel?.direction ?? null;
-        if (detectedDirection === null && data.buyFills !== data.sellFills) {
+        let directionSource: 'positions_panel' | 'order_history' | 'cached' | 'unknown' | null = null;
+        if (detectedDirection !== null) {
+          directionSource = 'positions_panel';
+        } else if (data.buyFills !== data.sellFills) {
           detectedDirection = data.buyFills > data.sellFills ? 'long' : 'short';
-        }
-        if (detectedDirection === null) {
+          directionSource   = 'order_history';
+        } else if (data.openingFillDirection !== null) {
           detectedDirection = data.openingFillDirection;
+          directionSource   = 'order_history';
         }
         // Cache the most recent non-null direction for use when all signals go dark.
         if (detectedDirection !== null) {
           this.lastKnownDirection = detectedDirection;
         }
 
+        // Update symbol and account type cache when available
+        const currentSymbol = posFromPanel?.symbol ?? this.lastSymbol;
+        if (posFromPanel?.symbol) this.lastSymbol = posFromPanel.symbol;
+        if (data.accountType)    this.lastAccountType = data.accountType;
+
         // Detect position close or missed complete trade.
         // "Flat" = unrealized is 0 OR null (OTE absent from DOM = null when no position).
         const grossChanged = prevGross !== null && gross !== prevGross;
         const isFlat = unrealized === 0 || unrealized === null;
         if (this.tradeStore && isFlat && grossChanged) {
-          const pnlGross = gross - prevGross!;
-          const exitFee  = getSettings().subtractCommissions ? cfg.perContractFee : 0;
-          if (this.tradeStore.hasOpenTrade()) {
+          const pnlGross  = gross - prevGross!;
+          const exitFee   = getSettings().subtractCommissions ? cfg.perContractFee : 0;
+          const acctType  = data.accountType ?? this.lastAccountType;
+          const exitSymbol = this.lastSymbol;
+          const exitPayload = {
+            exit_at:   Date.now(),
+            pnl_gross: pnlGross,
+            pnl_net:   pnlGross - exitFee,
+          };
+
+          if (this.tradeStore.hasOpenTrade(exitSymbol, acctType)) {
             // Normal exit: an entry is already in the DB — close it.
-            console.log(`[pnl-tracker] EXIT detected: pnlGross=${pnlGross} exitFee=${exitFee} accountType=${data.accountType}`);
-            this.tradeStore.recordExitForOpenTrade({
-              exit_at:    Date.now(),
-              pnl_gross:  pnlGross,
-              pnl_net:    pnlGross - exitFee,
-              r_multiple: getSettings().autoTradeStopDollars > 0
-                ? pnlGross / getSettings().autoTradeStopDollars
-                : 0,
-            });
+            console.log(`[pnl-tracker] EXIT detected: pnlGross=${pnlGross} symbol=${exitSymbol} acctType=${acctType}`);
+            this.tradeStore.recordExitForOpenTrade(exitPayload, exitSymbol, acctType);
           } else {
-            // Rescue: no entry in DB — trade opened and closed between polls.
-            const rescueDir = detectedDirection ?? this.lastKnownDirection ?? 'long';
-            const rescueSrc = detectedDirection ? 'from signals' : this.lastKnownDirection ? 'from cache' : 'guessed long';
-            console.log(`[pnl-tracker] RESCUE: missed trade pnlGross=${pnlGross} dir=${rescueDir} (${rescueSrc}) — signals: detected=${detectedDirection} lastKnown=${this.lastKnownDirection} openingFill=${data.openingFillDirection} buys=${data.buyFills} sells=${data.sellFills} tabCount=${data.positionsTabCount}`);
-            this.tradeStore.recordEntry({
-              symbol:        posFromPanel?.symbol ?? 'CME_MINI:MES1!',
-              timeframe:     '1',
-              direction:     rescueDir,
-              entry_price:   null,
-              stop_price:    null,
-              target_price:  null,
-              trailing_stop: false,
-              rr_planned:    null,
-              verdict:       'manual',
-              headline:      'Auto-recovered — trade completed between polls',
-              objective:     null,
-              steps_json:    null,
-              structure:     null,
-              rationale:     null,
-              patterns_json: null,
-              confidence:    null,
-            });
-            this.tradeStore.recordExitForOpenTrade({
-              exit_at:    Date.now(),
-              pnl_gross:  pnlGross,
-              pnl_net:    pnlGross - exitFee,
-              r_multiple: getSettings().autoTradeStopDollars > 0
-                ? pnlGross / getSettings().autoTradeStopDollars
-                : 0,
-            });
+            // Rescue: trade opened and closed between polls.
+            const rescueDir = detectedDirection ?? this.lastKnownDirection;
+            if (rescueDir === null) {
+              // All signals dark — never guess; flag for manual review.
+              console.warn(`[pnl-tracker] RESCUE: direction unknown (all signals null) pnlGross=${pnlGross} buys=${data.buyFills} sells=${data.sellFills} — recording 'unknown', needs_review=1`);
+              this.tradeStore.recordEntry({
+                symbol:           exitSymbol,
+                timeframe:        '1',
+                direction:        'unknown',
+                entry_price:      null,
+                stop_price:       null,
+                target_price:     null,
+                trailing_stop:    false,
+                rr_planned:       null,
+                verdict:          'manual',
+                headline:         'Auto-recovered — direction unknown (Balances tab was active)',
+                objective:        null,
+                steps_json:       null,
+                structure:        null,
+                rationale:        null,
+                patterns_json:    null,
+                confidence:       null,
+                account_type:     acctType,
+                direction_source: 'unknown',
+                entry_source:     'rescued',
+                needs_review:     true,
+              });
+            } else {
+              const rescueSrc = detectedDirection ? directionSource! : 'cached';
+              console.log(`[pnl-tracker] RESCUE: missed trade pnlGross=${pnlGross} dir=${rescueDir} src=${rescueSrc}`);
+              this.tradeStore.recordEntry({
+                symbol:           exitSymbol,
+                timeframe:        '1',
+                direction:        rescueDir,
+                entry_price:      null,
+                stop_price:       null,
+                target_price:     null,
+                trailing_stop:    false,
+                rr_planned:       null,
+                verdict:          'manual',
+                headline:         'Auto-recovered — trade completed between polls',
+                objective:        null,
+                steps_json:       null,
+                structure:        null,
+                rationale:        null,
+                patterns_json:    null,
+                confidence:       null,
+                account_type:     acctType,
+                direction_source: rescueSrc,
+                entry_source:     'rescued',
+                needs_review:     false,
+              });
+            }
+            this.tradeStore.recordExitForOpenTrade(exitPayload, exitSymbol, acctType);
           }
         }
 
         // Detect position opened.
-        // OTE signals confirm a position exists; both position panel and OTE required together.
-        // positionsTabCount is always visible regardless of active tab — use it as tie-breaker
+        // OTE signals confirm a position exists; positionsTabCount as tie-breaker
         // when OTE is zero (paper trade at breakeven) and Ka-Table rows are lazy-unrendered.
         const hasNonZeroOte   = unrealized !== null && unrealized !== 0;
         const flatToNonFlat   = this.prevUnrealized === null && unrealized !== null && unrealized !== 0;
@@ -181,31 +216,35 @@ export class PnlTracker {
         const hasLivePosition = posFromPanel !== null || hasNonZeroOte || flatToNonFlat || tabHasPosition;
 
         // Effective direction: current signals OR last-known cache.
-        // This lets entry fire when Ka-Table data is absent (Balances tab active),
-        // as long as we've seen the direction at least once since the position opened.
         const effectiveDirection = detectedDirection ?? this.lastKnownDirection;
+        const effectiveDirSrc = (detectedDirection ? directionSource : 'cached') as TradeEntry['direction_source'];
 
-        console.log(`[pnl-tracker] entry-check: posFromPanel=${JSON.stringify(posFromPanel)} hasNonZeroOte=${hasNonZeroOte} flatToNonFlat=${flatToNonFlat} tabCount=${data.positionsTabCount} hasLivePosition=${hasLivePosition} dir=${detectedDirection} effectiveDir=${effectiveDirection} buys=${data.buyFills} sells=${data.sellFills} hasOpenTrade=${this.tradeStore?.hasOpenTrade()}`);
-        if (this.tradeStore && hasLivePosition && effectiveDirection !== null && !this.tradeStore.hasOpenTrade()) {
+        const acctType = data.accountType ?? this.lastAccountType;
+        console.log(`[pnl-tracker] entry-check: posFromPanel=${JSON.stringify(posFromPanel)} hasNonZeroOte=${hasNonZeroOte} flatToNonFlat=${flatToNonFlat} tabCount=${data.positionsTabCount} hasLivePosition=${hasLivePosition} dir=${detectedDirection} effectiveDir=${effectiveDirection} buys=${data.buyFills} sells=${data.sellFills} hasOpenTrade=${this.tradeStore?.hasOpenTrade(currentSymbol, acctType)}`);
+        if (this.tradeStore && hasLivePosition && effectiveDirection !== null && !this.tradeStore.hasOpenTrade(currentSymbol, acctType)) {
           const src = posFromPanel ? 'positions panel' : detectedDirection ? 'order history net' : 'cached direction';
           console.log(`[pnl-tracker] ENTRY detected — direction=${effectiveDirection} (${src}) entry=${posFromPanel?.entryPrice ?? null}`);
           this.tradeStore.recordEntry({
-            symbol:        posFromPanel?.symbol ?? 'CME_MINI:MES1!',
-            timeframe:     '1',
-            direction:     effectiveDirection,
-            entry_price:   posFromPanel?.entryPrice ?? null,
-            stop_price:    null,
-            target_price:  null,
-            trailing_stop: false,
-            rr_planned:    null,
-            verdict:       'manual',
-            headline:      'Manually placed trade',
-            objective:     null,
-            steps_json:    null,
-            structure:     null,
-            rationale:     null,
-            patterns_json: null,
-            confidence:    null,
+            symbol:           currentSymbol,
+            timeframe:        '1',
+            direction:        effectiveDirection,
+            entry_price:      posFromPanel?.entryPrice ?? null,
+            stop_price:       null,
+            target_price:     null,
+            trailing_stop:    false,
+            rr_planned:       null,
+            verdict:          'manual',
+            headline:         'Manually placed trade',
+            objective:        null,
+            steps_json:       null,
+            structure:        null,
+            rationale:        null,
+            patterns_json:    null,
+            confidence:       null,
+            account_type:     acctType,
+            direction_source: effectiveDirSrc,
+            entry_source:     'observed',
+            needs_review:     false,
           });
         }
         this.prevUnrealized = unrealized;

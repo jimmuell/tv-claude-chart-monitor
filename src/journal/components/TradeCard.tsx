@@ -57,13 +57,14 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
     catch { return []; }
   })();
 
-  const isOpen = trade.exit_price == null;
-  const isWin = !isOpen && trade.r_multiple != null && trade.r_multiple > 0;
-  const isLoss = !isOpen && trade.r_multiple != null && trade.r_multiple <= 0;
+  const isOpen   = trade.exit_price == null && trade.exit_at == null;
+  const isWin    = !isOpen && (trade.pnl_net ?? 0) > 0;
+  const isLoss   = !isOpen && trade.pnl_net != null && trade.pnl_net < 0;
+  const isScratch = !isOpen && trade.pnl_net != null && trade.pnl_net === 0;
 
   const pnlClass = isOpen ? 'open' : (trade.pnl_net ?? 0) >= 0 ? 'pos' : 'neg';
-  const outcomeClass = isOpen ? 'open' : isWin ? 'win' : 'loss';
-  const outcomeSymbol = isOpen ? '—' : isWin ? 'W' : 'L';
+  const outcomeClass = isOpen ? 'open' : isWin ? 'win' : isLoss ? 'loss' : 'scratch';
+  const outcomeSymbol = isOpen ? '—' : isWin ? 'W' : isLoss ? 'L' : isScratch ? '=' : '?';
 
   const handleNotesBlur = async () => {
     setSaveStatus('saving');
@@ -161,9 +162,22 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
     <div className="trade-card">
       {/* ── Summary row ─────────────────────────────────────── */}
       <div className="trade-card-summary" onClick={() => setExpanded(e => !e)}>
+        {/* Needs-review flag */}
+        {trade.needs_review && (
+          <span
+            title="Direction unknown or data incomplete — review this trade"
+            style={{
+              fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+              background: '#f59e0b', color: '#1e222d', flexShrink: 0,
+            }}
+          >
+            REVIEW
+          </span>
+        )}
+
         {/* Direction badge */}
-        <span className={`direction-badge ${trade.direction}`}>
-          {trade.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
+        <span className={`direction-badge ${trade.direction === 'unknown' ? 'unknown' : trade.direction}`}>
+          {trade.direction === 'long' ? '▲ LONG' : trade.direction === 'short' ? '▼ SHORT' : '? UNKNOWN'}
         </span>
 
         {/* Source badge: A = auto-traded, M = manually placed */}

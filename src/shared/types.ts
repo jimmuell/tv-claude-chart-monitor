@@ -290,7 +290,7 @@ export interface ElectronAPI {
 export interface TradeEntry {
   symbol:        string;         // "MES", "ES", etc.
   timeframe:     string;         // "1", "5", "15", "60", "1D"
-  direction:     'long' | 'short';
+  direction:     'long' | 'short' | 'unknown';  // 'unknown' when all signals dark
   entry_price:   number | null;  // intended entry price (live price from order executor)
   stop_price:    number | null;  // computed stop in dollars
   target_price:  number | null;  // computed target in dollars
@@ -306,14 +306,22 @@ export interface TradeEntry {
   rationale:     string | null;  // TradePlan.rationale
   patterns_json: string | null;  // JSON-encoded string[] (candlestick pattern names)
   confidence:    number | null;  // 0–1
+
+  // Provenance — optional so existing callers (auto-trade path) can omit
+  account_type?:     'amp_live' | 'paper' | null;
+  qty?:              number | null;
+  direction_source?: 'positions_panel' | 'order_history' | 'cached' | 'unknown' | null;
+  entry_source?:     'observed' | 'rescued' | null;
+  needs_review?:     boolean;
 }
 
-/** Data captured when a position closes */
+/** Data captured when a position closes.
+ *  r_multiple is NOT included — it is computed internally by TradeStore
+ *  from the trade's own entry_price, stop_price, and pnl_gross. */
 export interface TradeExit {
-  exit_at:    number;        // Unix ms
-  pnl_gross:  number;        // gross P&L in dollars
-  pnl_net:    number;        // net P&L (after fees)
-  r_multiple: number;        // pnl_gross / autoTradeStopDollars
+  exit_at:    number;   // Unix ms
+  pnl_gross:  number;   // gross P&L in dollars
+  pnl_net:    number;   // net P&L (after fees)
 }
 
 /** A critique returned from Claude on demand */
@@ -327,12 +335,20 @@ export interface TradeRecord extends TradeEntry {
   id:           number;   // SQLite autoincrement
   created_at:   number;   // Unix ms — when order was submitted
 
+  // Provenance — always present in stored records
+  account_type:     'amp_live' | 'paper' | null;
+  qty:              number | null;
+  direction_source: 'positions_panel' | 'order_history' | 'cached' | 'unknown' | null;
+  entry_source:     'observed' | 'rescued' | null;
+  needs_review:     boolean;
+
   // Exit fields (null until position closes)
   exit_at:      number | null;
   exit_price:   number | null;
+  exit_source:  'derived' | null;  // how exit_price was computed
   pnl_gross:    number | null;
   pnl_net:      number | null;
-  r_multiple:   number | null;
+  r_multiple:   number | null;     // computed from entry/stop; null when either unknown
 
   // User-added fields
   notes:        string | null;
@@ -342,13 +358,14 @@ export interface TradeRecord extends TradeEntry {
 
 /** Stats returned by GET /api/stats */
 export interface TradeStats {
-  totalTrades:   number;
-  winCount:      number;
-  lossCount:     number;
-  openCount:     number;   // trades without exit_at
-  winRate:       number;   // 0–1, excludes open trades
-  avgR:          number;   // average r_multiple for closed trades
-  totalNetPnl:   number;   // sum of pnl_net
+  totalTrades:      number;
+  winCount:         number;   // pnl_net > 0
+  lossCount:        number;   // pnl_net < 0
+  openCount:        number;   // trades without exit_at
+  winRate:          number;   // 0–1, wins/(wins+losses), excludes scratches and open
+  avgR:             number;   // average non-null r_multiple for closed trades
+  totalNetPnl:      number;   // sum of pnl_net
+  needsReviewCount: number;   // trades with needs_review=1 OR direction='unknown'
 
   byPattern: Array<{
     pattern:   string;

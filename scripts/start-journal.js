@@ -88,8 +88,14 @@ function rowToRecord(row) {
     rationale:     row.rationale     ?? null,
     patterns_json: row.patterns_json ?? null,
     confidence:    row.confidence    ?? null,
+    account_type:     row.account_type     ?? null,
+    qty:              row.qty              ?? null,
+    direction_source: row.direction_source ?? null,
+    entry_source:     row.entry_source     ?? null,
+    needs_review:     Boolean(row.needs_review),
     exit_at:       row.exit_at       ?? null,
     exit_price:    row.exit_price    ?? null,
+    exit_source:   row.exit_source   ?? null,
     pnl_gross:     row.pnl_gross     ?? null,
     pnl_net:       row.pnl_net       ?? null,
     r_multiple:    row.r_multiple    ?? null,
@@ -102,15 +108,24 @@ function rowToRecord(row) {
 // ─── Stats (mirrors TradeStore.getStats) ─────────────────────────────────────
 
 function computeStats(db) {
+  const FILTER = `needs_review = 0 AND direction != 'unknown'`;
+
+  const reviewRow = queryOne(db, `SELECT COUNT(*) as count FROM trades WHERE NOT (${FILTER})`);
+  const needsReviewCount = reviewRow ? (reviewRow.count ?? 0) : 0;
+
   const counts = queryOne(db, `
     SELECT
       COUNT(*) as totalTrades,
-      SUM(CASE WHEN exit_at IS NOT NULL AND r_multiple > 0 THEN 1 ELSE 0 END) as winCount,
-      SUM(CASE WHEN exit_at IS NOT NULL AND r_multiple IS NOT NULL AND r_multiple <= 0 THEN 1 ELSE 0 END) as lossCount,
+      SUM(CASE WHEN exit_at IS NOT NULL AND pnl_net > 0 THEN 1 ELSE 0 END) as winCount,
+      SUM(CASE WHEN exit_at IS NOT NULL AND pnl_net IS NOT NULL AND pnl_net < 0 THEN 1 ELSE 0 END) as lossCount,
       SUM(CASE WHEN exit_at IS NULL THEN 1 ELSE 0 END) as openCount,
-      AVG(CASE WHEN exit_at IS NOT NULL AND r_multiple IS NOT NULL THEN r_multiple END) as avgR,
       SUM(CASE WHEN exit_at IS NOT NULL THEN pnl_net ELSE 0 END) as totalNetPnl
     FROM trades
+    WHERE ${FILTER}
+  `);
+  const avgRRow = queryOne(db, `
+    SELECT AVG(r_multiple) as avgR FROM trades
+    WHERE exit_at IS NOT NULL AND r_multiple IS NOT NULL AND ${FILTER}
   `);
 
   const winCount   = counts ? (counts.winCount  ?? 0) : 0;
@@ -124,7 +139,7 @@ function computeStats(db) {
       COUNT(*) as count,
       AVG(pnl_net) as avgNetPnl
     FROM trades
-    WHERE exit_at IS NOT NULL
+    WHERE exit_at IS NOT NULL AND ${FILTER}
     GROUP BY hour
     ORDER BY hour
   `);
@@ -132,7 +147,7 @@ function computeStats(db) {
   const patternRows = queryAll(db, `
     SELECT patterns_json, r_multiple
     FROM trades
-    WHERE exit_at IS NOT NULL AND patterns_json IS NOT NULL
+    WHERE exit_at IS NOT NULL AND patterns_json IS NOT NULL AND ${FILTER}
   `);
 
   const patternMap = new Map();
@@ -163,7 +178,7 @@ function computeStats(db) {
       date(created_at / 1000, 'unixepoch', 'localtime') as date,
       SUM(pnl_net) as dailyNet
     FROM trades
-    WHERE exit_at IS NOT NULL AND pnl_net IS NOT NULL
+    WHERE exit_at IS NOT NULL AND pnl_net IS NOT NULL AND ${FILTER}
     GROUP BY date
     ORDER BY date
   `);
@@ -185,10 +200,10 @@ function computeStats(db) {
         ELSE '80-100%'
       END as bucket,
       COUNT(*) as count,
-      SUM(CASE WHEN r_multiple > 0 THEN 1 ELSE 0 END) as wins,
+      SUM(CASE WHEN pnl_net > 0 THEN 1 ELSE 0 END) as wins,
       AVG(r_multiple) as avgR
     FROM trades
-    WHERE exit_at IS NOT NULL AND confidence IS NOT NULL
+    WHERE exit_at IS NOT NULL AND confidence IS NOT NULL AND ${FILTER}
     GROUP BY bucket ORDER BY bucket
   `);
   const byConfidenceBucket = bucketRows.map(r => ({
@@ -205,8 +220,8 @@ function computeStats(db) {
       CAST(strftime('%w', datetime(created_at/1000, 'unixepoch', 'localtime')) AS INTEGER) as dow,
       COUNT(*) as count,
       AVG(pnl_net) as avgNetPnl,
-      SUM(CASE WHEN r_multiple > 0 THEN 1 ELSE 0 END) as wins
-    FROM trades WHERE exit_at IS NOT NULL
+      SUM(CASE WHEN pnl_net > 0 THEN 1 ELSE 0 END) as wins
+    FROM trades WHERE exit_at IS NOT NULL AND ${FILTER}
     GROUP BY dow ORDER BY dow
   `);
   const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -219,13 +234,14 @@ function computeStats(db) {
   }));
 
   return {
-    totalTrades:  counts ? (counts.totalTrades ?? 0) : 0,
+    totalTrades:      counts ? (counts.totalTrades ?? 0) : 0,
     winCount,
     lossCount,
-    openCount:    counts ? (counts.openCount ?? 0) : 0,
+    openCount:        counts ? (counts.openCount ?? 0) : 0,
     winRate,
-    avgR:         counts ? (counts.avgR ?? 0) : 0,
-    totalNetPnl:  counts ? (counts.totalNetPnl ?? 0) : 0,
+    avgR:             avgRRow ? (avgRRow.avgR ?? 0) : 0,
+    totalNetPnl:      counts ? (counts.totalNetPnl ?? 0) : 0,
+    needsReviewCount,
     byPattern,
     byHour: hourRows.map(r => ({ hour: r.hour, count: r.count, avgNetPnl: r.avgNetPnl ?? 0 })),
     equityCurve,
@@ -238,7 +254,7 @@ function computeStats(db) {
 
 const EMPTY_STATS = {
   totalTrades: 0, winCount: 0, lossCount: 0, openCount: 0,
-  winRate: 0, avgR: 0, totalNetPnl: 0,
+  winRate: 0, avgR: 0, totalNetPnl: 0, needsReviewCount: 0,
   byPattern: [], byHour: [], equityCurve: [],
   byConfidenceBucket: [],
   byDayOfWeek: [],
@@ -438,8 +454,8 @@ async function main() {
     if (!symbol || !direction || typeof entry_price !== 'number') {
       return res.status(400).json({ error: 'symbol, direction, entry_price required' });
     }
-    if (direction !== 'long' && direction !== 'short') {
-      return res.status(400).json({ error: 'direction must be long or short' });
+    if (direction !== 'long' && direction !== 'short' && direction !== 'unknown') {
+      return res.status(400).json({ error: 'direction must be long, short, or unknown' });
     }
     const db = openDb();
     if (!db) return res.status(500).json({ error: 'db_unavailable' });
@@ -516,14 +532,29 @@ async function main() {
       if (!row) { closeDb(db); return res.status(404).json({ error: 'trade_not_found' }); }
       if (row.exit_at) { closeDb(db); return res.status(400).json({ error: 'already_closed' }); }
 
-      const entryPrice = row.entry_price ?? 0;
-      const stopPrice  = row.stop_price  ?? 0;
-      const rRisk = Math.abs(entryPrice - stopPrice) * 5; // MES: $5/point
-      const rMultiple = rRisk > 0 ? pnl_gross / rRisk : 0;
+      // exit_price: only derive when entry is known and direction is not unknown
+      let computedExitPrice = exit_price ?? null;
+      let exitSrc = null;
+      if (computedExitPrice === null && row.entry_price !== null && row.direction !== 'unknown') {
+        const qty   = row.qty ?? 1;
+        const delta = pnl_gross / (5.0 * qty);
+        computedExitPrice = row.direction === 'long'
+          ? row.entry_price + delta
+          : row.entry_price - delta;
+        exitSrc = 'derived';
+      }
+
+      // r_multiple: only compute when stop and entry are both known
+      let rMultiple = null;
+      if (row.entry_price !== null && row.stop_price !== null && row.direction !== 'unknown') {
+        const qty  = row.qty ?? 1;
+        const risk = Math.abs(row.entry_price - row.stop_price) * 5 * qty;
+        rMultiple  = risk > 0 ? pnl_gross / risk : null;
+      }
 
       dbRun(db,
-        'UPDATE trades SET exit_at=?, exit_price=?, pnl_gross=?, pnl_net=?, r_multiple=? WHERE id=?',
-        [Date.now(), exit_price ?? null, pnl_gross, pnl_gross, rMultiple, id]
+        'UPDATE trades SET exit_at=?, exit_price=?, exit_source=?, pnl_gross=?, pnl_net=?, r_multiple=? WHERE id=?',
+        [Date.now(), computedExitPrice, exitSrc, pnl_gross, pnl_gross, rMultiple, id]
       );
       const updated = queryOne(db, 'SELECT * FROM trades WHERE id=?', [id]);
       saveAndClose(db);

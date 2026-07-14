@@ -54,10 +54,10 @@ function makeEntry(overrides = {}) {
 
 function makeExit(overrides = {}) {
   return {
-    exit_at:    Date.now(),
-    pnl_gross:  150.0,   // $150 profit
-    pnl_net:    148.76,
-    r_multiple: 2.0,
+    exit_at:   Date.now(),
+    pnl_gross: 150.0,   // $150 profit
+    pnl_net:   148.76,
+    // r_multiple is NOT in TradeExit — computed internally by TradeStore
     ...overrides,
   };
 }
@@ -94,19 +94,21 @@ test('recordExitForOpenTrade — updates exit fields on the open trade', () => {
   const dir = makeTmpDir();
   const store = new TradeStore(dir);
   try {
-    const id = store.recordEntry(makeEntry());
-    const exit = makeExit();
-    const updated = store.recordExitForOpenTrade(exit);
+    const id = store.recordEntry(makeEntry()); // symbol='MES', long, entry=5000, stop=4985
+    const exit = makeExit();                   // pnl_gross=150
+    const updated = store.recordExitForOpenTrade(exit, 'MES');
     assert.strictEqual(updated, true);
 
     const record = store.getById(id);
     assert.ok(record, 'record should exist');
     assert.strictEqual(record.pnl_gross, exit.pnl_gross);
     assert.strictEqual(record.pnl_net, exit.pnl_net);
-    assert.strictEqual(record.r_multiple, exit.r_multiple);
+    // r_multiple computed from entry/stop: 150 / (|5000-4985| * 5 * 1) = 150/75 = 2.0
+    assert.ok(Math.abs(record.r_multiple - 2.0) < 0.001, `r_multiple should be 2.0, got ${record.r_multiple}`);
     assert.ok(record.exit_at != null, 'exit_at should be set');
-    // exit_price: entry_price + pnl_gross / 5.0 = 5000 + 150/5 = 5030
+    // exit_price: entry_price + pnl_gross / (POINT_VALUE * qty) = 5000 + 150/5 = 5030
     assert.strictEqual(record.exit_price, 5000 + 150 / 5.0);
+    assert.strictEqual(record.exit_source, 'derived');
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true });
@@ -119,7 +121,7 @@ test('recordExitForOpenTrade — SHORT direction: exit_price = entry - pnl/point
   try {
     const id = store.recordEntry(makeEntry({ direction: 'short', verdict: 'valid_short' }));
     const exit = makeExit({ pnl_gross: 100.0 });
-    store.recordExitForOpenTrade(exit);
+    store.recordExitForOpenTrade(exit, 'MES');
     const record = store.getById(id);
     // exit_price: 5000 - 100/5 = 4980
     assert.strictEqual(record.exit_price, 5000 - 100 / 5.0);
@@ -134,10 +136,10 @@ test('recordExitForOpenTrade — returns false when no open trade exists', () =>
   const store = new TradeStore(dir);
   try {
     // Close the only trade first
-    store.recordEntry(makeEntry());
-    store.recordExitForOpenTrade(makeExit());
-    // Now try again — no open trade
-    const result = store.recordExitForOpenTrade(makeExit());
+    store.recordEntry(makeEntry()); // symbol='MES'
+    store.recordExitForOpenTrade(makeExit(), 'MES');
+    // Now try again — no open trade for 'MES'
+    const result = store.recordExitForOpenTrade(makeExit(), 'MES');
     assert.strictEqual(result, false);
   } finally {
     store.close();
@@ -149,7 +151,7 @@ test('recordExitForOpenTrade — returns false on empty table', () => {
   const dir = makeTmpDir();
   const store = new TradeStore(dir);
   try {
-    const result = store.recordExitForOpenTrade(makeExit());
+    const result = store.recordExitForOpenTrade(makeExit(), 'MES');
     assert.strictEqual(result, false);
   } finally {
     store.close();
@@ -267,29 +269,30 @@ test('getStats — basic sanity: counts, winRate, totalNetPnl', () => {
     const id3 = store.recordEntry(makeEntry({ patterns_json: JSON.stringify(['Inside Bar']) }));
     const id4 = store.recordEntry(makeEntry()); // open trade
 
-    // Win
-    store.recordExitForOpenTrade(makeExit({ pnl_net: 100, r_multiple: 2.0 }));
-    // Win
-    store.recordExitForOpenTrade(makeExit({ pnl_net: 75, r_multiple: 1.5 }));
-    // Loss
-    store.recordExitForOpenTrade(makeExit({ pnl_gross: -50, pnl_net: -51.24, r_multiple: -1.0 }));
+    // Win (pnl_net=100, pnl_gross=150 default → r = 150/75 = 2.0)
+    store.recordExitForOpenTrade(makeExit({ pnl_net: 100 }), 'MES');
+    // Win (pnl_net=75, pnl_gross=150 default → r = 150/75 = 2.0)
+    store.recordExitForOpenTrade(makeExit({ pnl_net: 75 }), 'MES');
+    // Loss (pnl_gross=-50 → r = -50/75 ≈ -0.667)
+    store.recordExitForOpenTrade(makeExit({ pnl_gross: -50, pnl_net: -51.24 }), 'MES');
     // id4 stays open
 
     const stats = store.getStats();
 
     assert.strictEqual(stats.totalTrades, 4);
-    assert.strictEqual(stats.winCount, 2);
-    assert.strictEqual(stats.lossCount, 1);
+    assert.strictEqual(stats.winCount, 2);   // pnl_net > 0
+    assert.strictEqual(stats.lossCount, 1);  // pnl_net < 0
     assert.strictEqual(stats.openCount, 1);
 
-    // winRate = 2 / (2 + 1) ≈ 0.667
+    // winRate = 2 / (2 + 1) ≈ 0.667 (scratches not counted)
     assert.ok(Math.abs(stats.winRate - 2 / 3) < 0.001, `winRate should be ~0.667, got ${stats.winRate}`);
 
     // totalNetPnl = 100 + 75 + (-51.24) = 123.76
     assert.ok(Math.abs(stats.totalNetPnl - 123.76) < 0.01, `totalNetPnl should be ~123.76, got ${stats.totalNetPnl}`);
 
-    // avgR = (2.0 + 1.5 + -1.0) / 3 ≈ 0.833
-    assert.ok(Math.abs(stats.avgR - (2.0 + 1.5 - 1.0) / 3) < 0.001, `avgR should be ~0.833, got ${stats.avgR}`);
+    // avgR computed from entry/stop: (2.0 + 2.0 + (-50/75)) / 3
+    const expectedAvgR = (2.0 + 2.0 + (-50 / 75)) / 3;
+    assert.ok(Math.abs(stats.avgR - expectedAvgR) < 0.001, `avgR should be ~${expectedAvgR.toFixed(3)}, got ${stats.avgR}`);
 
     // byPattern: should include 'Bullish Engulfing' and 'Inside Bar'
     assert.ok(Array.isArray(stats.byPattern));
@@ -321,9 +324,112 @@ test('getStats — empty database returns zeros', () => {
     assert.strictEqual(stats.winRate, 0);
     assert.strictEqual(stats.avgR, 0);
     assert.strictEqual(stats.totalNetPnl, 0);
+    assert.strictEqual(stats.needsReviewCount, 0);
     assert.deepStrictEqual(stats.byPattern, []);
     assert.deepStrictEqual(stats.byHour, []);
     assert.deepStrictEqual(stats.equityCurve, []);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ── New tests for Task 2 truth guarantees ──────────────────────────────────────
+
+test('recordExitForOpenTrade — exit_price is NULL when entry_price is NULL', () => {
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    store.recordEntry(makeEntry({ entry_price: null, stop_price: null }));
+    store.recordExitForOpenTrade(makeExit(), 'MES');
+    const all = store.getAll();
+    assert.strictEqual(all.length, 1);
+    assert.strictEqual(all[0].exit_price, null, 'exit_price must be NULL when entry_price is NULL');
+    assert.strictEqual(all[0].exit_source, null, 'exit_source must be NULL when exit_price not derived');
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('recordExitForOpenTrade — r_multiple is NULL when stop_price is NULL', () => {
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    store.recordEntry(makeEntry({ stop_price: null }));
+    store.recordExitForOpenTrade(makeExit(), 'MES');
+    const all = store.getAll();
+    assert.strictEqual(all[0].r_multiple, null, 'r_multiple must be NULL when stop_price is NULL');
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('getStats — excludes needs_review=true trades', () => {
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    // 1 good closed trade (win)
+    store.recordEntry(makeEntry());
+    store.recordExitForOpenTrade(makeExit({ pnl_net: 100 }), 'MES');
+
+    // 1 needs_review closed trade
+    store.recordEntry(makeEntry({ needs_review: true }));
+    store.recordExitForOpenTrade(makeExit({ pnl_net: 200 }), 'MES');
+
+    const stats = store.getStats();
+    assert.strictEqual(stats.totalTrades, 1, 'needs_review trade must be excluded from totalTrades');
+    assert.strictEqual(stats.winCount, 1);
+    assert.strictEqual(stats.needsReviewCount, 1);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test("getStats — direction='unknown' trade is excluded from stats", () => {
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    store.recordEntry(makeEntry({ direction: 'unknown', needs_review: true }));
+    store.recordExitForOpenTrade(makeExit({ pnl_net: 100 }), 'MES');
+
+    const stats = store.getStats();
+    assert.strictEqual(stats.totalTrades, 0, "direction='unknown' trade must be excluded");
+    assert.strictEqual(stats.needsReviewCount, 1);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('getStats — scratch (pnl_net=0) is neither a win nor a loss', () => {
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    store.recordEntry(makeEntry());
+    store.recordExitForOpenTrade(makeExit({ pnl_gross: 0, pnl_net: 0 }), 'MES');
+
+    const stats = store.getStats();
+    assert.strictEqual(stats.winCount, 0, 'scratch should not be a win');
+    assert.strictEqual(stats.lossCount, 0, 'scratch should not be a loss');
+    assert.strictEqual(stats.winRate, 0);
+    assert.strictEqual(stats.totalNetPnl, 0);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('recordExitForOpenTrade — scoped by symbol: does not close trade for different symbol', () => {
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    store.recordEntry(makeEntry({ symbol: 'MES' }));
+    const result = store.recordExitForOpenTrade(makeExit(), 'ES'); // wrong symbol
+    assert.strictEqual(result, false, 'should not close MES trade when ES symbol given');
+    assert.strictEqual(store.hasOpenTrade('MES'), true, 'MES trade should still be open');
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true });

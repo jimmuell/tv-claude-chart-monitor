@@ -2,8 +2,12 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import type { TradeRecord, TradeEntry, TradeExit, TradeStats } from '../shared/types';
 
-// MES point value: $5/point (used for approximate exit_price calculation)
+// MES point value: $5/point
 const POINT_VALUE = 5.0;
+
+// Schema version — increment when columns are added or types change.
+// On version mismatch, the table is dropped and recreated (old rows are known-bad).
+const SCHEMA_VERSION = 2;
 
 const CREATE_TABLE = `
   CREATE TABLE IF NOT EXISTS trades (
@@ -28,11 +32,19 @@ const CREATE_TABLE = `
     patterns_json TEXT,
     confidence    REAL,
 
+    account_type     TEXT,
+    qty              INTEGER,
+    direction_source TEXT,
+    entry_source     TEXT,
+
     exit_at       INTEGER,
     exit_price    REAL,
+    exit_source   TEXT,
     pnl_gross     REAL,
     pnl_net       REAL,
     r_multiple    REAL,
+
+    needs_review  INTEGER NOT NULL DEFAULT 0,
 
     notes         TEXT,
     tags_json     TEXT,
@@ -42,32 +54,38 @@ const CREATE_TABLE = `
 
 function rowToRecord(row: Record<string, unknown>): TradeRecord {
   return {
-    id:            row.id as number,
-    created_at:    row.created_at as number,
-    symbol:        row.symbol as string,
-    timeframe:     row.timeframe as string,
-    direction:     row.direction as 'long' | 'short',
-    entry_price:   row.entry_price as number | null,
-    stop_price:    row.stop_price as number | null,
-    target_price:  row.target_price as number | null,
-    trailing_stop: Boolean(row.trailing_stop),
-    rr_planned:    row.rr_planned as number | null,
-    verdict:       row.verdict as 'valid_long' | 'valid_short' | 'manual',
-    headline:      row.headline as string | null,
-    objective:     row.objective as string | null,
-    steps_json:    row.steps_json as string | null,
-    structure:     row.structure as string | null,
-    rationale:     row.rationale as string | null,
-    patterns_json: row.patterns_json as string | null,
-    confidence:    row.confidence as number | null,
-    exit_at:       row.exit_at as number | null,
-    exit_price:    row.exit_price as number | null,
-    pnl_gross:     row.pnl_gross as number | null,
-    pnl_net:       row.pnl_net as number | null,
-    r_multiple:    row.r_multiple as number | null,
-    notes:         row.notes as string | null,
-    tags_json:     row.tags_json as string | null,
-    critique_json: row.critique_json as string | null,
+    id:               row.id as number,
+    created_at:       row.created_at as number,
+    symbol:           row.symbol as string,
+    timeframe:        row.timeframe as string,
+    direction:        row.direction as 'long' | 'short' | 'unknown',
+    entry_price:      row.entry_price as number | null,
+    stop_price:       row.stop_price as number | null,
+    target_price:     row.target_price as number | null,
+    trailing_stop:    Boolean(row.trailing_stop),
+    rr_planned:       row.rr_planned as number | null,
+    verdict:          row.verdict as 'valid_long' | 'valid_short' | 'manual',
+    headline:         row.headline as string | null,
+    objective:        row.objective as string | null,
+    steps_json:       row.steps_json as string | null,
+    structure:        row.structure as string | null,
+    rationale:        row.rationale as string | null,
+    patterns_json:    row.patterns_json as string | null,
+    confidence:       row.confidence as number | null,
+    account_type:     (row.account_type as 'amp_live' | 'paper' | null) ?? null,
+    qty:              row.qty as number | null,
+    direction_source: (row.direction_source as 'positions_panel' | 'order_history' | 'cached' | 'unknown' | null) ?? null,
+    entry_source:     (row.entry_source as 'observed' | 'rescued' | null) ?? null,
+    needs_review:     Boolean(row.needs_review),
+    exit_at:          row.exit_at as number | null,
+    exit_price:       row.exit_price as number | null,
+    exit_source:      (row.exit_source as 'derived' | null) ?? null,
+    pnl_gross:        row.pnl_gross as number | null,
+    pnl_net:          row.pnl_net as number | null,
+    r_multiple:       row.r_multiple as number | null,
+    notes:            row.notes as string | null,
+    tags_json:        row.tags_json as string | null,
+    critique_json:    row.critique_json as string | null,
   };
 }
 
@@ -77,7 +95,14 @@ export class TradeStore {
   constructor(userDataPath: string) {
     const dbPath = path.join(userDataPath, 'trades.db');
     this.db = new Database(dbPath);
+
+    const { user_version: version } = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
+    if (version < SCHEMA_VERSION) {
+      console.log(`[trade-store] schema v${version} < v${SCHEMA_VERSION} — dropping and recreating`);
+      this.db.exec('DROP TABLE IF EXISTS trades');
+    }
     this.db.exec(CREATE_TABLE);
+    this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
   /** Record a new trade entry. Returns the new trade's id. */
@@ -90,10 +115,12 @@ export class TradeStore {
         trailing_stop, rr_planned,
         verdict, headline, objective,
         steps_json, structure, rationale,
-        patterns_json, confidence
+        patterns_json, confidence,
+        account_type, qty, direction_source, entry_source, needs_review
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?
       )
     `);
 
@@ -115,43 +142,87 @@ export class TradeStore {
       entry.rationale ?? null,
       entry.patterns_json ?? null,
       entry.confidence ?? null,
+      entry.account_type ?? null,
+      entry.qty ?? null,
+      entry.direction_source ?? null,
+      entry.entry_source ?? null,
+      entry.needs_review ? 1 : 0,
     );
 
     return result.lastInsertRowid as number;
   }
 
   /**
-   * Update the most recent trade WHERE exit_at IS NULL.
-   * Computes exit_price as entry_price ± pnl_gross/POINT_VALUE (approximation).
-   * Returns true if a row was updated, false if no open trade found.
+   * Close the most recent open trade for the given symbol + account type.
+   * Scoped by symbol AND account_type — will not close a trade for a different instrument.
+   * Refuses to close trades opened >12 h ago (marks needs_review instead).
+   * Computes exit_price only when entry_price IS NOT NULL AND direction != 'unknown'.
+   * Computes r_multiple only when stop_price IS NOT NULL AND entry_price IS NOT NULL.
    */
-  recordExitForOpenTrade(exit: TradeExit): boolean {
-    const open = this.db.prepare(
-      `SELECT id, entry_price, direction FROM trades WHERE exit_at IS NULL ORDER BY created_at DESC LIMIT 1`
-    ).get() as { id: number; entry_price: number | null; direction: string } | undefined;
+  recordExitForOpenTrade(
+    exit: TradeExit,
+    symbol: string,
+    accountType?: 'amp_live' | 'paper' | null,
+  ): boolean {
+    const acctType = accountType ?? null;
+    const open = this.db.prepare(`
+      SELECT id, entry_price, stop_price, direction, qty, created_at
+      FROM trades
+      WHERE exit_at IS NULL
+        AND symbol = ?
+        AND account_type IS ?
+      ORDER BY created_at DESC LIMIT 1
+    `).get(symbol, acctType) as {
+      id: number;
+      entry_price: number | null;
+      stop_price:  number | null;
+      direction:   string;
+      qty:         number | null;
+      created_at:  number;
+    } | undefined;
 
     if (!open) return false;
 
-    const entryPrice = open.entry_price ?? 0;
-    let exitPrice: number;
-    if (open.direction === 'long') {
-      exitPrice = entryPrice + exit.pnl_gross / POINT_VALUE;
-    } else {
-      exitPrice = entryPrice - exit.pnl_gross / POINT_VALUE;
+    // Refuse to close stale trades — position may have been lost across midnight / app restart
+    if (Date.now() - open.created_at > 12 * 60 * 60 * 1000) {
+      console.warn(`[trade-store] stale open trade id=${open.id} (>12h old) — marking needs_review, leaving open`);
+      this.db.prepare('UPDATE trades SET needs_review=1 WHERE id=?').run(open.id);
+      return false;
+    }
+
+    // exit_price: only derive when we have reliable entry and direction
+    let exitPrice: number | null = null;
+    let exitSource: 'derived' | null = null;
+    if (open.entry_price !== null && open.direction !== 'unknown') {
+      const qty   = open.qty ?? 1;
+      const delta = exit.pnl_gross / (POINT_VALUE * qty);
+      exitPrice   = open.direction === 'long'
+        ? open.entry_price + delta
+        : open.entry_price - delta;
+      exitSource  = 'derived';
+    }
+
+    // r_multiple: only compute when stop and entry are both known
+    let rMultiple: number | null = null;
+    if (open.entry_price !== null && open.stop_price !== null && open.direction !== 'unknown') {
+      const qty  = open.qty ?? 1;
+      const risk = Math.abs(open.entry_price - open.stop_price) * POINT_VALUE * qty;
+      rMultiple  = risk > 0 ? exit.pnl_gross / risk : null;
     }
 
     const result = this.db.prepare(
-      `UPDATE trades SET exit_at=?, pnl_gross=?, pnl_net=?, r_multiple=?, exit_price=? WHERE id=?`
-    ).run(exit.exit_at, exit.pnl_gross, exit.pnl_net, exit.r_multiple, exitPrice, open.id);
+      `UPDATE trades SET exit_at=?, pnl_gross=?, pnl_net=?, r_multiple=?, exit_price=?, exit_source=? WHERE id=?`
+    ).run(exit.exit_at, exit.pnl_gross, exit.pnl_net, rMultiple, exitPrice, exitSource, open.id);
 
     return result.changes > 0;
   }
 
-  /** Returns true if any trade has no exit_at recorded. */
-  hasOpenTrade(): boolean {
+  /** Returns true if an open (no exit_at) trade exists for this symbol + account type. */
+  hasOpenTrade(symbol: string, accountType?: 'amp_live' | 'paper' | null): boolean {
+    const acctType = accountType ?? null;
     const row = this.db.prepare(
-      `SELECT 1 FROM trades WHERE exit_at IS NULL LIMIT 1`
-    ).get();
+      `SELECT 1 FROM trades WHERE exit_at IS NULL AND symbol = ? AND account_type IS ? LIMIT 1`
+    ).get(symbol, acctType);
     return row !== undefined;
   }
 
@@ -186,30 +257,47 @@ export class TradeStore {
     return row ? rowToRecord(row) : undefined;
   }
 
-  /** Aggregate stats. */
+  /** Aggregate stats.
+   *  Excludes trades with needs_review=1 OR direction='unknown'.
+   *  Win/loss classified by pnl_net (not r_multiple); scratches (pnl_net=0) are neither.
+   *  winRate denominator = wins + losses (scratches excluded). */
   getStats(): TradeStats {
-    // Basic counts
+    const FILTER = `needs_review = 0 AND direction != 'unknown'`;
+
+    // Count trades excluded from stats
+    const reviewRow = this.db.prepare(
+      `SELECT COUNT(*) as count FROM trades WHERE NOT (${FILTER})`
+    ).get() as { count: number };
+    const needsReviewCount = reviewRow.count ?? 0;
+
+    // Basic counts — excluded rows not counted
     const counts = this.db.prepare(`
       SELECT
         COUNT(*) as totalTrades,
-        SUM(CASE WHEN exit_at IS NOT NULL AND r_multiple > 0 THEN 1 ELSE 0 END) as winCount,
-        SUM(CASE WHEN exit_at IS NOT NULL AND r_multiple IS NOT NULL AND r_multiple <= 0 THEN 1 ELSE 0 END) as lossCount,
+        SUM(CASE WHEN exit_at IS NOT NULL AND pnl_net > 0 THEN 1 ELSE 0 END) as winCount,
+        SUM(CASE WHEN exit_at IS NOT NULL AND pnl_net IS NOT NULL AND pnl_net < 0 THEN 1 ELSE 0 END) as lossCount,
         SUM(CASE WHEN exit_at IS NULL THEN 1 ELSE 0 END) as openCount,
-        AVG(CASE WHEN exit_at IS NOT NULL AND r_multiple IS NOT NULL THEN r_multiple END) as avgR,
         SUM(CASE WHEN exit_at IS NOT NULL THEN pnl_net ELSE 0 END) as totalNetPnl
       FROM trades
+      WHERE ${FILTER}
     `).get() as {
-      totalTrades: number;
-      winCount: number;
-      lossCount: number;
-      openCount: number;
-      avgR: number | null;
-      totalNetPnl: number | null;
+      totalTrades:  number;
+      winCount:     number;
+      lossCount:    number;
+      openCount:    number;
+      totalNetPnl:  number | null;
     };
 
-    const winCount = counts.winCount ?? 0;
+    // avgR: only non-null r_multiple values
+    const avgRRow = this.db.prepare(`
+      SELECT AVG(r_multiple) as avgR
+      FROM trades
+      WHERE exit_at IS NOT NULL AND r_multiple IS NOT NULL AND ${FILTER}
+    `).get() as { avgR: number | null };
+
+    const winCount  = counts.winCount  ?? 0;
     const lossCount = counts.lossCount ?? 0;
-    const closedForRate = winCount + lossCount;
+    const closedForRate = winCount + lossCount; // scratches not counted
     const winRate = closedForRate > 0 ? winCount / closedForRate : 0;
 
     // byHour
@@ -219,7 +307,7 @@ export class TradeStore {
         COUNT(*) as count,
         AVG(pnl_net) as avgNetPnl
       FROM trades
-      WHERE exit_at IS NOT NULL
+      WHERE exit_at IS NOT NULL AND ${FILTER}
       GROUP BY hour
       ORDER BY hour
     `).all() as Array<{ hour: number; count: number; avgNetPnl: number | null }>;
@@ -230,47 +318,43 @@ export class TradeStore {
       avgNetPnl: r.avgNetPnl ?? 0,
     }));
 
-    // byPattern — parse patterns_json for each closed trade
+    // byPattern
     const patternRows = this.db.prepare(`
       SELECT patterns_json, r_multiple
       FROM trades
-      WHERE exit_at IS NOT NULL AND patterns_json IS NOT NULL
+      WHERE exit_at IS NOT NULL AND patterns_json IS NOT NULL AND ${FILTER}
     `).all() as Array<{ patterns_json: string; r_multiple: number | null }>;
 
-    const patternMap = new Map<string, { count: number; wins: number; totalR: number }>();
+    const patternMap = new Map<string, { count: number; wins: number; totalR: number; rCount: number }>();
     for (const row of patternRows) {
       let names: string[] = [];
-      try {
-        names = JSON.parse(row.patterns_json);
-      } catch {
-        continue;
-      }
+      try { names = JSON.parse(row.patterns_json); } catch { continue; }
       if (!Array.isArray(names)) continue;
       for (const name of names) {
         if (typeof name !== 'string') continue;
-        const existing = patternMap.get(name) ?? { count: 0, wins: 0, totalR: 0 };
-        existing.count++;
-        if ((row.r_multiple ?? 0) > 0) existing.wins++;
-        existing.totalR += row.r_multiple ?? 0;
-        patternMap.set(name, existing);
+        const s = patternMap.get(name) ?? { count: 0, wins: 0, totalR: 0, rCount: 0 };
+        s.count++;
+        if ((row.r_multiple ?? 0) > 0) s.wins++;
+        if (row.r_multiple !== null) { s.totalR += row.r_multiple; s.rCount++; }
+        patternMap.set(name, s);
       }
     }
 
-    const byPattern = Array.from(patternMap.entries()).map(([pattern, stats]) => ({
+    const byPattern = Array.from(patternMap.entries()).map(([pattern, s]) => ({
       pattern,
-      count:   stats.count,
-      wins:    stats.wins,
-      winRate: stats.count > 0 ? stats.wins / stats.count : 0,
-      avgR:    stats.count > 0 ? stats.totalR / stats.count : 0,
+      count:   s.count,
+      wins:    s.wins,
+      winRate: s.count > 0 ? s.wins / s.count : 0,
+      avgR:    s.rCount > 0 ? s.totalR / s.rCount : 0,
     }));
 
-    // equityCurve — cumulative sum of pnl_net grouped by date
+    // equityCurve
     const curveRows = this.db.prepare(`
       SELECT
         date(created_at / 1000, 'unixepoch', 'localtime') as date,
         SUM(pnl_net) as dailyNet
       FROM trades
-      WHERE exit_at IS NOT NULL AND pnl_net IS NOT NULL
+      WHERE exit_at IS NOT NULL AND pnl_net IS NOT NULL AND ${FILTER}
       GROUP BY date
       ORDER BY date
     `).all() as Array<{ date: string; dailyNet: number }>;
@@ -282,13 +366,14 @@ export class TradeStore {
     });
 
     return {
-      totalTrades:  counts.totalTrades ?? 0,
+      totalTrades:      counts.totalTrades ?? 0,
       winCount,
       lossCount,
-      openCount:    counts.openCount ?? 0,
+      openCount:        counts.openCount ?? 0,
       winRate,
-      avgR:         counts.avgR ?? 0,
-      totalNetPnl:  counts.totalNetPnl ?? 0,
+      avgR:             avgRRow.avgR ?? 0,
+      totalNetPnl:      counts.totalNetPnl ?? 0,
+      needsReviewCount,
       byPattern,
       byHour,
       equityCurve,
@@ -298,7 +383,7 @@ export class TradeStore {
   /** Wipe all trades — called when the journal UI resets. */
   clearAll(): void {
     this.db.exec('DELETE FROM trades');
-    console.log('[trade-store] clearAll: all trades deleted via better-sqlite3');
+    console.log('[trade-store] clearAll: all trades deleted');
   }
 
   /** Close the database connection (for testing cleanup). */

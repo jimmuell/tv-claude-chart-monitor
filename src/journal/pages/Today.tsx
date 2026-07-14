@@ -138,10 +138,13 @@ export function Today() {
     return () => { es.close(); clearInterval(interval); };
   }, []);
 
-  const totalNet = trades.reduce((s, t) => s + (t.pnl_net ?? 0), 0);
-  const wins = trades.filter(t => t.r_multiple != null && t.r_multiple > 0).length;
-  const closed = trades.filter(t => t.exit_price != null).length;
-  const winRate = closed > 0 ? Math.round((wins / closed) * 100) : null;
+  const totalNet      = trades.reduce((s, t) => s + (t.pnl_net ?? 0), 0);
+  const closedTrades  = trades.filter(t => t.exit_at != null && !t.needs_review);
+  const wins          = closedTrades.filter(t => (t.pnl_net ?? 0) > 0).length;
+  const losses        = closedTrades.filter(t => (t.pnl_net ?? 0) < 0).length;
+  const closedForRate = wins + losses; // scratches not counted
+  const winRate       = closedForRate > 0 ? Math.round((wins / closedForRate) * 100) : null;
+  const needsReview   = trades.filter(t => t.needs_review).length;
 
   const todayLabel = new Date().toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/Chicago',
@@ -173,6 +176,16 @@ export function Today() {
           <span className="chip-value">{winRate != null ? `${winRate}%` : '—'}</span>
         </div>
       </div>
+
+      {needsReview > 0 && (
+        <div style={{
+          background: '#92400e', border: '1px solid #f59e0b', borderRadius: 'var(--radius)',
+          padding: '0.5rem 0.75rem', marginBottom: '0.75rem',
+          fontSize: 12, color: '#fef3c7',
+        }}>
+          <strong>{needsReview} trade{needsReview > 1 ? 's' : ''} need review</strong> — direction was unknown when recorded. Check the REVIEW badge.
+        </div>
+      )}
 
       <LogTradeForm onLogged={handleLogged} />
 
