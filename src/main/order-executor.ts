@@ -17,7 +17,7 @@
  *
  * Guards:
  *  1. Cooldown (5 min, persisted to disk across restarts)
- *  2. Open-position check via pnl-reader (null = allow)
+ *  2. Open-position check via pnl-reader (null = SKIPPED — fail-closed)
  *  3. Qty check: abort + notify if qty ≠ 1
  */
 
@@ -132,9 +132,29 @@ function buildOrderExpr(direction: 'long' | 'short', stop: number, target: numbe
       // ── Select Buy / Sell side ─────────────────────────────────────────────
       const sideDn   = isBuy ? 'side-control-buy' : 'side-control-sell';
       const sideEl   = document.querySelector('[data-name="' + sideDn + '"]');
-      if (sideEl && !sideEl.classList.contains('active-OnZ1FRe5')) {
+      if (sideEl) {
         sideEl.click();
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 250));
+      }
+      // Verify the correct side is active via aria attributes (class names are obfuscated/unstable)
+      function isSideActive(el) {
+        if (!el) return false;
+        return el.getAttribute('aria-checked')  === 'true' ||
+               el.getAttribute('aria-selected') === 'true' ||
+               el.getAttribute('aria-pressed')  === 'true';
+      }
+      const buyCtrl  = document.querySelector('[data-name="side-control-buy"]');
+      const sellCtrl = document.querySelector('[data-name="side-control-sell"]');
+      const intendedActive = isSideActive(isBuy ? buyCtrl : sellCtrl);
+      const oppositeActive = isSideActive(isBuy ? sellCtrl : buyCtrl);
+      if (!intendedActive || oppositeActive) {
+        if (panelOpened && isPanelOpen()) {
+          const closeTrade = [...document.querySelectorAll('button')].find(b =>
+            (b.textContent || '').trim() === 'Trade' && (b.className || '').includes('activeArea-')
+          );
+          if (closeTrade) closeTrade.click();
+        }
+        return JSON.stringify({ ok: false, error: 'side-not-confirmed', isBuy, intendedActive, oppositeActive, panelOpened });
       }
 
       // Helper: force-reset a bracket checkbox so React reinitialises the input
@@ -211,6 +231,28 @@ function buildOrderExpr(direction: 'long' | 'short', stop: number, target: numbe
         }
       }
       await new Promise(r => setTimeout(r, 300));
+
+      // ── Verify bracket values took before submitting ───────────────────────
+      const tpCheckEl = document.querySelector('[data-qa-id="ui-lib-Input-input order-ticket-take-profit-input"]');
+      const tpRead    = tpCheckEl ? parseFloat(tpCheckEl.value) : NaN;
+      const tpOk      = Number.isFinite(tpRead) && Math.round(tpRead) === targetTicks;
+
+      const slCheckEl = trailingStop
+        ? (document.querySelector('[data-qa-id*="trailing"][data-qa-id*="input"]') ||
+           document.querySelector('[data-qa-id="ui-lib-Input-input order-ticket-stop-loss-input"]'))
+        : document.querySelector('[data-qa-id="ui-lib-Input-input order-ticket-stop-loss-input"]');
+      const slRead    = slCheckEl ? parseFloat(slCheckEl.value) : NaN;
+      const slOk      = Number.isFinite(slRead) && Math.round(slRead) === stopTicks;
+
+      if (!tpOk || !slOk) {
+        if (panelOpened && isPanelOpen()) {
+          const closeTrade = [...document.querySelectorAll('button')].find(b =>
+            (b.textContent || '').trim() === 'Trade' && (b.className || '').includes('activeArea-')
+          );
+          if (closeTrade) closeTrade.click();
+        }
+        return JSON.stringify({ ok: false, error: 'bracket-not-confirmed', tpRead, slRead, targetTicks, stopTicks, panelOpened });
+      }
 
       // ── Submit via the ORDER PANEL button (not the compact header button) ──
       const placeBtn = document.querySelector('[data-name="place-and-modify-button"]');
@@ -310,18 +352,26 @@ export async function submitMarketOrder(
   }
   console.log('[order-executor] ✓ guard-1: cooldown clear');
 
-  // Guard 2: open position check.
-  // null = panel not visible = allow (cooldown is the primary anti-stacking guard).
-  // Only block when we can positively confirm an open position exists.
+  // Guard 2: open position check — fails CLOSED.
+  // null (panel unreadable) = do not trade blind.
   try {
     const acct = await readAccountData();
-    console.log('[order-executor] guard-2: OTE =', acct?.unrealizedPnl ?? 'null');
-    if (acct && acct.unrealizedPnl !== null && acct.unrealizedPnl !== 0) {
+    if (!acct) {
+      console.log('[order-executor] ✗ guard-2: panel unreadable — skipping (fail-closed)');
+      return 'skipped';
+    }
+    console.log('[order-executor] guard-2: OTE =', acct.unrealizedPnl ?? 'null', 'posTab =', acct.positionsTabCount ?? 'null', 'openPos =', JSON.stringify(acct.openPosition));
+    const hasOpenPos =
+      acct.openPosition !== null ||
+      (acct.positionsTabCount ?? 0) > 0 ||
+      (acct.unrealizedPnl !== null && acct.unrealizedPnl !== 0);
+    if (hasOpenPos) {
       console.log('[order-executor] ✗ guard-2: position already open — skipping');
       return 'skipped';
     }
   } catch (err) {
-    console.warn('[order-executor] guard-2: pnl read failed (continuing):', (err as Error).message);
+    console.warn('[order-executor] guard-2: pnl read failed — skipping (fail-closed):', (err as Error).message);
+    return 'skipped';
   }
 
   // CDP interaction
@@ -341,9 +391,14 @@ export async function submitMarketOrder(
     entryPrice?: number;
     stopTicks?: number;
     targetTicks?: number;
+    tpRead?: number;
+    slRead?: number;
     tpSet?: boolean;
     slSet?: boolean;
     panelOpened?: boolean;
+    isBuy?: boolean;
+    intendedActive?: boolean;
+    oppositeActive?: boolean;
   };
   try {
     result = typeof raw === 'string' ? JSON.parse(raw) : { ok: false, error: 'non-string result' };
@@ -358,13 +413,21 @@ export async function submitMarketOrder(
     return 'skipped';
   }
 
-  if (!result.ok) {
-    console.error('[order-executor] ✗ CDP error:', result.error);
+  // Side did not confirm → hard abort, no order placed
+  if (!result.ok && result.error === 'side-not-confirmed') {
+    notifyWarn('Auto-trade ABORTED', 'Side control did not set — no order was placed');
     return 'error';
   }
 
-  if (!result.tpSet || !result.slSet) {
-    console.warn(`[order-executor] ⚠ bracket partial: tpSet=${result.tpSet} slSet=${result.slSet}`);
+  // Bracket did not confirm → hard abort, no order placed
+  if (!result.ok && result.error === 'bracket-not-confirmed') {
+    notifyWarn('Auto-trade ABORTED', 'Stop/target did not set — no order was placed');
+    return 'error';
+  }
+
+  if (!result.ok) {
+    console.error('[order-executor] ✗ CDP error:', result.error);
+    return 'error';
   }
 
   writeLastSubmittedAt(Date.now());
