@@ -32,18 +32,22 @@ import { getSettings }       from './settings';
 // Cooldown — persisted so server restarts don't reset the window
 // ---------------------------------------------------------------------------
 
-const COOLDOWN_MS   = 5 * 60 * 1000;
-const COOLDOWN_FILE = path.join(app.getPath('userData'), 'order-cooldown.json');
+const COOLDOWN_MS = 5 * 60 * 1000;
+
+// Deferred: app.getPath('userData') throws if called before app is ready.
+function cooldownFile(): string {
+  return path.join(app.getPath('userData'), 'order-cooldown.json');
+}
 
 function readLastSubmittedAt(): number {
   try {
-    const raw = fs.readFileSync(COOLDOWN_FILE, 'utf8');
+    const raw = fs.readFileSync(cooldownFile(), 'utf8');
     return (JSON.parse(raw) as { ts: number }).ts ?? 0;
   } catch { return 0; }
 }
 
 function writeLastSubmittedAt(ts: number): void {
-  try { fs.writeFileSync(COOLDOWN_FILE, JSON.stringify({ ts }), 'utf8'); }
+  try { fs.writeFileSync(cooldownFile(), JSON.stringify({ ts }), 'utf8'); }
   catch (err) { console.warn('[order-executor] could not persist cooldown:', (err as Error).message); }
 }
 
