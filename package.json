@@ -7,7 +7,7 @@
   "scripts": {
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "dev": "tsc -p tsconfig.main.json && concurrently -k -n \"MAIN,VITE,APP\" -c \"cyan,yellow,green\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "dev:all": "tsc -p tsconfig.main.json && concurrently -k -n \"MAIN,VITE,APP,JOURNAL\" -c \"cyan,yellow,green,magenta\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"wait-on http://localhost:5173 && electron .\" \"node scripts/start-journal.js\"",
+    "dev:all": "tsc -p tsconfig.main.json && concurrently --kill-others-on-fail -n \"MAIN,VITE,APP,JOURNAL\" -c \"cyan,yellow,green,magenta\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"wait-on http://localhost:5173 && electron .\" \"node scripts/start-journal.js\"",
     "build": "tsc -p tsconfig.main.json && vite build && npm run build:journal",
     "build:journal": "vite build --config vite.journal.config.ts",
     "dev:journal": "vite --config vite.journal.config.ts",

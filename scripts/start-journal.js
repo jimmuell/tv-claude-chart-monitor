@@ -819,12 +819,19 @@ Respond with ONLY a raw JSON object (no markdown, no code fences). Shape:
     });
   });
 
-  app.listen(3001, '127.0.0.1', () => {
+  const server = app.listen(3001, '127.0.0.1', () => {
     console.log('Journal server listening on http://localhost:3001');
     if (!fs.existsSync(DB_PATH)) {
       console.log(`No database yet at: ${DB_PATH}`);
       console.log('Trades will appear once the Electron app executes auto-trades.');
     }
+  });
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log('[journal] Port 3001 already in use — journal server already running. Exiting cleanly.');
+      process.exit(0);
+    }
+    throw err;
   });
 }
 
