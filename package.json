@@ -5,6 +5,7 @@
   "main": "dist/main/main/index.js",
   "private": true,
   "scripts": {
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
     "dev": "tsc -p tsconfig.main.json && concurrently -k -n \"MAIN,VITE,APP\" -c \"cyan,yellow,green\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "tsc -p tsconfig.main.json && vite build && npm run build:journal",
     "build:journal": "vite build --config vite.journal.config.ts",
