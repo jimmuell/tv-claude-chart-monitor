@@ -435,3 +435,68 @@ test('recordExitForOpenTrade — scoped by symbol: does not close trade for diff
     fs.rmSync(dir, { recursive: true });
   }
 });
+
+// ── clearAll tests — each goes RED if clearAll reverts to DELETE-only ─────────
+
+test('clearAll — leaves 0 rows', () => {
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    store.recordEntry(makeEntry());
+    store.recordEntry(makeEntry());
+    assert.strictEqual(store.getAll().length, 2, 'pre-condition: 2 rows inserted');
+    store.clearAll();
+    assert.strictEqual(store.getAll().length, 0, 'clearAll must leave 0 rows');
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('clearAll — rebuilds stale schema: insert succeeds with all current columns', () => {
+  // Simulates the production bug: PRAGMA user_version = 2 but columns missing.
+  // If clearAll only DELETEs rows, the schema stays broken and the insert below fails.
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    // Corrupt the schema via the internal db connection (JS has no private enforcement)
+    const rawDb = store.db;
+    rawDb.exec('DROP TABLE IF EXISTS trades');
+    rawDb.exec(`CREATE TABLE trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      direction TEXT NOT NULL
+    )`);
+    // Leave PRAGMA user_version = 2 so constructor check won't trigger on a fresh open
+
+    // clearAll must rebuild the table using the shared initSchema path
+    store.clearAll();
+
+    // Insert a trade that requires v2 columns (needs_review, direction_source, etc.)
+    // This throws if clearAll left the old schema intact.
+    const id = store.recordEntry(makeEntry({ needs_review: false, direction_source: null, entry_source: 'observed', account_type: 'paper' }));
+    assert.strictEqual(typeof id, 'number', 'insert after clearAll must return a numeric id');
+    assert.strictEqual(store.getAll().length, 1);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('clearAll — id counter restarts at 1 after reset', () => {
+  // If clearAll only DELETEs rows (no DROP TABLE), sqlite_sequence retains the old
+  // max id and the next insert gets id=2, not 1. The test fails on DELETE-only.
+  const dir = makeTmpDir();
+  const store = new TradeStore(dir);
+  try {
+    const first = store.recordEntry(makeEntry());
+    assert.strictEqual(first, 1, 'first id must be 1');
+    store.clearAll();
+    const afterReset = store.recordEntry(makeEntry());
+    assert.strictEqual(afterReset, 1, 'id must restart at 1 after clearAll');
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+});

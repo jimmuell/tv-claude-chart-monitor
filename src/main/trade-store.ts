@@ -95,7 +95,10 @@ export class TradeStore {
   constructor(userDataPath: string) {
     const dbPath = path.join(userDataPath, 'trades.db');
     this.db = new Database(dbPath);
+    this.initSchema();
+  }
 
+  private initSchema(): void {
     const { user_version: version } = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
     if (version < SCHEMA_VERSION) {
       console.log(`[trade-store] schema v${version} < v${SCHEMA_VERSION} — dropping and recreating`);
@@ -380,10 +383,17 @@ export class TradeStore {
     };
   }
 
-  /** Wipe all trades — called when the journal UI resets. */
+  /**
+   * Reset the journal: drop and rebuild the trades table at the current schema,
+   * then reset the AUTOINCREMENT counter so the next id starts at 1.
+   * This is the single source of truth for table shape — no second CREATE TABLE.
+   */
   clearAll(): void {
-    this.db.exec('DELETE FROM trades');
-    console.log('[trade-store] clearAll: all trades deleted');
+    this.db.exec('DROP TABLE IF EXISTS trades');
+    this.initSchema();
+    // sqlite_sequence is cleared by DROP TABLE; this guard handles edge cases
+    try { this.db.exec("DELETE FROM sqlite_sequence WHERE name='trades'"); } catch { /* absent before first insert */ }
+    console.log(`[trade-store] clearAll: table rebuilt at schema v${SCHEMA_VERSION}, id counter reset`);
   }
 
   /** Close the database connection (for testing cleanup). */

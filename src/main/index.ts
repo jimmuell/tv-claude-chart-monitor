@@ -318,7 +318,9 @@ app.on('ready', () => {
     if (fs.existsSync(resetSignalPath)) {
       try { fs.unlinkSync(resetSignalPath); } catch { /* ignore race */ }
       tradeStore?.clearAll();
-      console.log('[index] journal reset signal received — TradeStore cleared');
+      // Notify the journal server that drop+recreate is complete
+      try { fs.writeFileSync(resetSignalPath + '.done', '1'); } catch { /* ignore */ }
+      console.log('[index] journal reset complete — schema rebuilt, done signal written');
     }
   }, 2000);
 

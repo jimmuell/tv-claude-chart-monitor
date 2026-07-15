@@ -478,27 +478,46 @@ async function main() {
     }
   });
 
-  // DELETE /api/trades — wipe all trades (paper trading reset)
-  app.delete('/api/trades', (_req, res) => {
+  // DELETE /api/trades — wipe all trades (paper trading reset).
+  // The Electron main process (better-sqlite3) is the single writer: it performs the
+  // drop+recreate and signals completion. The server only reads the count and signals.
+  app.delete('/api/trades', async (_req, res) => {
+    const SIGNAL = DB_PATH + '.reset';
+    const DONE   = DB_PATH + '.reset.done';
+
+    // Read count without writing (sql.js must NOT write during reset)
+    let count = 0;
     const db = openDb();
-    if (!db) return res.json({ ok: true, deleted: 0 });
-    try {
-      const row = queryOne(db, 'SELECT COUNT(*) as n FROM trades');
-      const count = row ? (row.n ?? 0) : 0;
-      dbRun(db, 'DELETE FROM trades');
-      saveAndClose(db);
-      // Write a signal file so the Electron main process clears its own better-sqlite3
-      // connection (sql.js bypasses SQLite's file-locking protocol, so we cannot rely on
-      // the main process's page cache seeing our raw file write).
-      try { fs.writeFileSync(DB_PATH + '.reset', String(Date.now())); } catch { /* ignore */ }
-      console.log(`[journal] Trade journal reset — ${count} trade(s) deleted`);
-      broadcastRefresh('journal_reset');
-      res.json({ ok: true, deleted: count });
-    } catch (e) {
-      console.error('[journal] DELETE /api/trades:', e);
-      try { closeDb(db); } catch {}
-      res.status(500).json({ error: String(e) });
+    if (db) {
+      try {
+        const row = queryOne(db, 'SELECT COUNT(*) as n FROM trades');
+        count = row ? (row.n ?? 0) : 0;
+      } finally {
+        closeDb(db); // close WITHOUT saveAndClose — Electron owns the file
+      }
     }
+
+    // Remove stale done signal from any prior reset
+    try { fs.unlinkSync(DONE); } catch { /* ok */ }
+
+    // Tell Electron to drop+recreate the table
+    try { fs.writeFileSync(SIGNAL, String(Date.now())); } catch { /* ignore */ }
+
+    // Wait for Electron to confirm completion (polls every 100ms, up to 4s)
+    await new Promise(resolve => {
+      const deadline = Date.now() + 4000;
+      const check = setInterval(() => {
+        if (fs.existsSync(DONE) || Date.now() >= deadline) {
+          clearInterval(check);
+          try { fs.unlinkSync(DONE); } catch { /* ok */ }
+          resolve(undefined);
+        }
+      }, 100);
+    });
+
+    console.log(`[journal] Trade journal reset — ${count} trade(s) removed, schema rebuilt by Electron`);
+    broadcastRefresh('journal_reset');
+    res.json({ ok: true, deleted: count });
   });
 
   // DELETE /api/trades/:id — delete a single trade
