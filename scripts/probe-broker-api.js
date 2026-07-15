@@ -4,15 +4,20 @@
 /**
  * probe-broker-api.js
  *
- * Second-pass probe after probe-order-ticket.js:
- *  1. Lists ALL CDP targets so we know if a separate window holds the order form
- *  2. Walks up from [data-name="buy-order-button"] to dump the order panel's
- *     full DOM structure (outerHTML + all children with data-name + all numerics)
- *  3. Deep-probes ChartApiInstance, _exposed_chartWidgetCollection, widgetbar
- *     with prototype-chain key enumeration and placeOrder search
+ * Task 3 probe: Does getBroker() expose position side/qty/entry and fill
+ * history WITHOUT requiring the Positions/Order-History Ka-Table to be active?
  *
- * Run with TradingView's order panel OPEN:
+ * Run with TradingView open, an active position (or one just closed today),
+ * and the Balances tab active (the failing case for pnl-reader):
+ *
  *   node scripts/probe-broker-api.js
+ *
+ * Questions answered:
+ *   Q1: Does window._exposed_chartWidgetCollection exist?
+ *   Q2: Does getBroker() expose position side/qty/entry?
+ *   Q3: Does getBroker() expose fill history with timestamps?
+ *   Q4: Does all of the above work when the Balances tab is active?
+ *   Q5: Does it behave differently on paper vs AMP Live?
  */
 
 const CDP = require('../node_modules/chrome-remote-interface');
@@ -21,70 +26,15 @@ const PORT = parseInt(process.env.CDP_PORT || '9222', 10);
 const PROBE = `
 (() => {
   const out = {
-    orderPanelHtml:      null,
-    orderPanelDataNames: [],
-    orderPanelNumerics:  [],
-    qtyElShadow:         null,
-    unitSelectorShadow:  null,
-    apiDeepScan:         {},
-    placeOrderPaths:     [],
+    collectionExists:   false,
+    collectionType:     null,
+    collectionLength:   0,
+    widgets:            [],
+    activeTabLabel:     null,
+    errors:             [],
   };
 
-  // ── 1. Walk up from buy-order-button to find the order panel container ────
-  const buyBtn = document.querySelector('[data-name="buy-order-button"]');
-  if (buyBtn) {
-    let el = buyBtn.parentElement;
-    let panelEl = null;
-    for (let i = 0; i < 20 && el; i++) {
-      const rect = el.getBoundingClientRect();
-      // Look for a container ≥150 wide, ≥80 tall, but not the body/full page
-      if (rect.width >= 150 && rect.width <= 1000 && rect.height >= 80) {
-        panelEl = el;
-        break;
-      }
-      el = el.parentElement;
-    }
-    if (panelEl) {
-      out.orderPanelHtml = panelEl.outerHTML.slice(0, 10000);
-      out.orderPanelDataNames = [...panelEl.querySelectorAll('[data-name]')].map(e => ({
-        tag:       e.tagName,
-        dn:        e.getAttribute('data-name'),
-        text:      (e.textContent || '').trim().slice(0, 50),
-        hasShadow: !!e.shadowRoot,
-      }));
-      out.orderPanelNumerics = [...panelEl.querySelectorAll('*')].filter(e => {
-        const t = (e.textContent || '').trim();
-        return /^\\d+(\\.\\d+)?$/.test(t) && e.children.length === 0;
-      }).map(e => ({
-        tag:  e.tagName,
-        cls:  (e.className || '').slice(0, 80),
-        text: (e.textContent || '').trim(),
-        dn:   e.getAttribute('data-name'),
-        id:   e.id || null,
-        role: e.getAttribute('role'),
-      })).slice(0, 40);
-    }
-
-    // Also inspect qtyEl and unit-label-selector shadow roots
-    const qtyEl = document.querySelector('[data-name="qtyEl"]');
-    if (qtyEl) {
-      out.qtyElShadow = {
-        outerHTML:  qtyEl.outerHTML.slice(0, 600),
-        hasShadow:  !!qtyEl.shadowRoot,
-        shadowHTML: qtyEl.shadowRoot ? qtyEl.shadowRoot.innerHTML.slice(0, 600) : null,
-      };
-    }
-    const unitSel = document.querySelector('[data-name="unit-label-selector"]');
-    if (unitSel) {
-      out.unitSelectorShadow = {
-        outerHTML:  unitSel.outerHTML.slice(0, 600),
-        hasShadow:  !!unitSel.shadowRoot,
-        shadowHTML: unitSel.shadowRoot ? unitSel.shadowRoot.innerHTML.slice(0, 600) : null,
-      };
-    }
-  }
-
-  // ── 2. Deep broker API scan ───────────────────────────────────────────────
+  // ── Helper: enumerate all keys up the prototype chain ─────────────────────
   function allKeys(obj) {
     const keys = new Set();
     let cur = obj;
@@ -97,105 +47,348 @@ const PROBE = `
     return [...keys];
   }
 
-  function findPlaceOrder(obj, path, depth) {
-    if (!obj || typeof obj !== 'object' || depth > 4) return;
+  // ── Helper: safely call a method and return shape of result ───────────────
+  function tryCall(obj, method, label) {
     try {
-      const keys = allKeys(obj).slice(0, 60);
-      for (const k of keys) {
+      if (typeof obj[method] !== 'function') return { exists: false };
+      const result = obj[method]();
+      if (result && typeof result.then === 'function') {
+        // Promise — can't await in a synchronous eval; note it
+        return { exists: true, isPromise: true };
+      }
+      if (result === null || result === undefined) {
+        return { exists: true, value: null };
+      }
+      if (Array.isArray(result)) {
+        return {
+          exists:  true,
+          isArray: true,
+          length:  result.length,
+          sample:  result.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') return item;
+            const k = allKeys(item).slice(0, 40);
+            const preview = {};
+            for (const key of k) {
+              try {
+                const v = item[key];
+                if (v !== null && typeof v !== 'function' && typeof v !== 'object') {
+                  preview[key] = v;
+                } else if (v === null) {
+                  preview[key] = null;
+                }
+              } catch (e) {}
+            }
+            return preview;
+          }),
+        };
+      }
+      const keys = allKeys(result).slice(0, 60);
+      const preview = {};
+      for (const key of keys.slice(0, 30)) {
         try {
-          const val = obj[k];
-          if (typeof val === 'function' && /placeOrder|modifyOrder|createOrder/i.test(k)) {
-            out.placeOrderPaths.push({ path: path + '.' + k, fn: val.toString().slice(0, 400) });
-          }
-          if (val && typeof val === 'object' && !Array.isArray(val) && depth < 3) {
-            findPlaceOrder(val, path + '.' + k, depth + 1);
+          const v = result[key];
+          if (v !== null && typeof v !== 'function' && typeof v !== 'object') {
+            preview[key] = v;
+          } else if (v === null) {
+            preview[key] = null;
+          } else if (typeof v === 'function') {
+            preview[key] = '[function]';
           }
         } catch (e) {}
       }
-    } catch (e) {}
+      return { exists: true, keys, preview };
+    } catch (e) {
+      return { exists: true, error: e.message };
+    }
   }
 
-  // --- ChartApiInstance ---
+  // ── Helper: look for position-relevant methods on broker object ────────────
+  function probeBroker(broker, widgetIdx) {
+    if (!broker) return { null: true };
+    const result = { allKeys: allKeys(broker).slice(0, 80) };
+
+    // Likely method names for positions, fills, orders
+    const positionMethods  = ['positions', 'openPositions', 'getPositions', 'currentAccount', 'accountSummary'];
+    const fillMethods      = ['executions', 'fills', 'trades', 'ordersHistory', 'getExecutions', 'orderHistory'];
+    const accountMethods   = ['accountInfo', 'accounts', 'getAccount', 'currentAccount'];
+
+    result.positionMethods = {};
+    for (const m of positionMethods) {
+      result.positionMethods[m] = tryCall(broker, m, 'broker.' + m);
+    }
+
+    result.fillMethods = {};
+    for (const m of fillMethods) {
+      result.fillMethods[m] = tryCall(broker, m, 'broker.' + m);
+    }
+
+    result.accountMethods = {};
+    for (const m of accountMethods) {
+      result.accountMethods[m] = tryCall(broker, m, 'broker.' + m);
+    }
+
+    // Check properties directly on the broker for any side/qty/price data
+    const interestingProps = ['position', 'side', 'qty', 'quantity', 'entryPrice',
+                              'unrealizedPnl', 'realizedPnl', 'account', 'accountId'];
+    result.directProps = {};
+    for (const p of interestingProps) {
+      try {
+        if (p in broker) {
+          const v = broker[p];
+          result.directProps[p] = typeof v === 'function' ? '[function]' : v;
+        }
+      } catch (e) {}
+    }
+
+    return result;
+  }
+
+  // ── Detect which bottom-panel tab is active ────────────────────────────────
   try {
-    const chai = window.ChartApiInstance;
-    if (chai) {
-      const keys = allKeys(chai);
-      out.apiDeepScan.ChartApiInstance = { type: typeof chai, keys: keys.slice(0, 60) };
-      for (const m of ['chart', 'activeChart', 'getChart', 'broker', 'getBroker', 'trading', 'getTrading', 'widget']) {
-        if (typeof chai[m] === 'function') {
-          try {
-            const res = chai[m]();
-            const rKeys = allKeys(res || {}).slice(0, 50);
-            out.apiDeepScan['ChartApiInstance.' + m + '()'] = { keys: rKeys };
-            findPlaceOrder(res, 'ChartApiInstance.' + m + '()', 0);
-          } catch (e) {
-            out.apiDeepScan['ChartApiInstance.' + m + '.error'] = e.message;
-          }
+    // TradingView bottom panel tab buttons
+    const tabBtns = document.querySelectorAll('[data-name="bottom-tab"]');
+    if (tabBtns.length === 0) {
+      // Alternate selector
+      const activeTabs = document.querySelectorAll('.tabs-hWoJB button[class*="active"], .footer-tab[class*="active"]');
+      out.activeTabLabel = activeTabs.length > 0
+        ? (activeTabs[0].textContent || '').trim().slice(0, 40)
+        : 'unknown (no tab selectors matched)';
+    } else {
+      for (const btn of tabBtns) {
+        const cls = btn.className || '';
+        if (/active|selected/i.test(cls)) {
+          out.activeTabLabel = (btn.textContent || '').trim().slice(0, 40);
+          break;
         }
       }
-      findPlaceOrder(chai, 'ChartApiInstance', 0);
     }
-  } catch (e) { out.apiDeepScan.ChartApiInstance_error = e.message; }
+    // Fallback: look for any tab-looking element that appears selected
+    if (!out.activeTabLabel) {
+      const anyActive = document.querySelector('[class*="tab"][class*="active"], [role="tab"][aria-selected="true"]');
+      out.activeTabLabel = anyActive ? (anyActive.textContent || '').trim().slice(0, 40) : 'unknown';
+    }
+  } catch (e) {
+    out.errors.push('tab-detect: ' + e.message);
+  }
 
-  // --- _exposed_chartWidgetCollection ---
+  // ── Q1: Does _exposed_chartWidgetCollection exist? ─────────────────────────
   try {
     const coll = window._exposed_chartWidgetCollection;
-    if (coll) {
-      const isArray = Array.isArray(coll);
-      const entries = isArray ? coll : Object.values(coll);
-      out.apiDeepScan._exposed_chartWidgetCollection = {
-        type:    typeof coll,
-        isArray,
-        length:  entries.length,
-      };
-      for (let i = 0; i < Math.min(entries.length, 3); i++) {
+    if (coll == null) {
+      out.collectionExists = false;
+    } else {
+      out.collectionExists = true;
+      out.collectionType   = Array.isArray(coll) ? 'array' : typeof coll;
+      const entries = Array.isArray(coll) ? coll : Object.values(coll);
+      out.collectionLength = entries.length;
+
+      // ── Q2/Q3/Q4: Probe each widget's getBroker() ─────────────────────────
+      // Scan ALL entries — find any that have getBroker or broker-like methods.
+      // The collection mixes reactive primitives with real widget objects.
+      const brokerEntries = [];
+      const scanMethods   = ['getBroker', 'broker', 'trading', 'getTrading', 'brokerApi',
+                             'activeChart', 'getActiveChart', 'chart', 'getChart'];
+
+      for (let i = 0; i < entries.length; i++) {
         const item = entries[i];
-        const keys = allKeys(item || {}).slice(0, 60);
-        out.apiDeepScan['_exposed_chartWidgetCollection[' + i + ']'] = { keys };
-        findPlaceOrder(item, '_exposed_chartWidgetCollection[' + i + ']', 0);
-        for (const m of ['activeChart', 'chart', 'getBroker', 'broker']) {
-          if (typeof item?.[m] === 'function') {
-            try {
-              const res = item[m]();
-              const rKeys = allKeys(res || {}).slice(0, 50);
-              out.apiDeepScan['_exposed_chartWidgetCollection[' + i + '].' + m + '()'] = { keys: rKeys };
-              findPlaceOrder(res, '_exposed_chartWidgetCollection[' + i + '].' + m + '()', 0);
-            } catch (e) {
-              out.apiDeepScan['_exposed_chartWidgetCollection[' + i + '].' + m + '.error'] = e.message;
+        if (!item || typeof item !== 'object') continue;
+        const keys = allKeys(item);
+        // Only catalogue entries that look like real widget objects
+        const interesting = scanMethods.filter(m => keys.includes(m));
+        if (interesting.length === 0) continue;
+
+        const info = {
+          index:          i,
+          matchedMethods: interesting,
+          widgetKeys:     keys.slice(0, 60),
+          getBroker:      null,
+          brokerProbe:    null,
+        };
+
+        if (typeof item.getBroker === 'function') {
+          try {
+            const broker = item.getBroker();
+            info.getBroker = broker != null ? 'returned object' : 'returned null';
+            if (broker) info.brokerProbe = probeBroker(broker, i);
+          } catch (e) {
+            info.getBroker = 'error: ' + e.message;
+          }
+        } else {
+          info.getBroker = 'method not present — trying alternates';
+          for (const alt of ['broker', 'trading', 'getTrading', 'brokerApi']) {
+            if (typeof item[alt] === 'function') {
+              try {
+                const broker = item[alt]();
+                info['alt_' + alt] = broker != null ? 'returned object' : 'returned null';
+                if (broker) info['brokerProbe_' + alt] = probeBroker(broker, i);
+              } catch (e) {
+                info['alt_' + alt + '_error'] = e.message;
+              }
+            } else if (item[alt] != null && typeof item[alt] !== 'function') {
+              info['prop_' + alt] = typeof item[alt];
             }
           }
         }
+
+        brokerEntries.push(info);
+        // Cap at 10 widget-like entries to keep output manageable
+        if (brokerEntries.length >= 10) break;
+      }
+      out.widgets = brokerEntries;
+      out.totalScanned = entries.length;
+      out.widgetLikeCount = brokerEntries.length;
+    }
+  } catch (e) {
+    out.errors.push('collection-probe: ' + e.message);
+  }
+
+  // ── Q5: Deep dive into TradingViewApi internals ───────────────────────────
+  out.tvApiDeep = {};
+  try {
+    const api = window.TradingViewApi;
+    if (!api) { out.tvApiDeep.missing = true; }
+    else {
+      // _activeChartWidgetWV — watched value holding the active chart widget
+      try {
+        const wv = api._activeChartWidgetWV;
+        if (wv != null) {
+          const wvKeys = allKeys(wv).slice(0, 40);
+          out.tvApiDeep._activeChartWidgetWV = { type: typeof wv, keys: wvKeys };
+          // Watched values expose .value() or ._value
+          let widget = null;
+          if (typeof wv.value === 'function') { try { widget = wv.value(); } catch (e) {} }
+          else if (wv._value !== undefined)   { widget = wv._value; }
+          else if (wv.getValue !== undefined)  { try { widget = wv.getValue(); } catch (e) {} }
+
+          if (widget) {
+            const wKeys = allKeys(widget).slice(0, 80);
+            out.tvApiDeep._activeChartWidget = {
+              type: typeof widget,
+              keys: wKeys,
+              hasBroker: wKeys.some(k => /broker|position|fill|execution/i.test(k)),
+            };
+            out.tvApiDeep._activeChartWidget.brokerProbe = probeBroker(widget, -10);
+            // Walk broker-sounding keys at depth 1
+            for (const k of wKeys) {
+              if (!/broker|position|fill|execution|trading/i.test(k)) continue;
+              try {
+                const v = widget[k];
+                if (v == null) continue;
+                if (typeof v === 'function') {
+                  const res = v.call(widget);
+                  out.tvApiDeep['_activeChartWidget.' + k + '()'] = probeBroker(res, -11);
+                } else if (typeof v === 'object') {
+                  out.tvApiDeep['_activeChartWidget.' + k] = { keys: allKeys(v).slice(0, 40) };
+                  out.tvApiDeep['_activeChartWidget.' + k + '_probe'] = probeBroker(v, -12);
+                }
+              } catch (e) {
+                out.tvApiDeep['_activeChartWidget.' + k + '_error'] = e.message;
+              }
+            }
+          } else {
+            out.tvApiDeep._activeChartWidget = null;
+          }
+        }
+      } catch (e) { out.tvApiDeep._activeChartWidgetWV_error = e.message; }
+
+      // _widgebarApi (typo in TV source — widgebar not widgetbar)
+      try {
+        const wa = api._widgebarApi;
+        if (wa != null) {
+          const waKeys = allKeys(wa).slice(0, 60);
+          out.tvApiDeep._widgebarApi = { type: typeof wa, keys: waKeys };
+          for (const k of waKeys) {
+            if (!/broker|position|fill|execution|trading/i.test(k)) continue;
+            try {
+              const v = wa[k];
+              if (typeof v === 'function') {
+                const res = v.call(wa);
+                out.tvApiDeep['_widgebarApi.' + k + '()'] = probeBroker(res, -20);
+              } else {
+                out.tvApiDeep['_widgebarApi.' + k] = { keys: allKeys(v || {}).slice(0, 40) };
+              }
+            } catch (e) { out.tvApiDeep['_widgebarApi.' + k + '_error'] = e.message; }
+          }
+        }
+      } catch (e) { out.tvApiDeep._widgebarApi_error = e.message; }
+
+      // _chartWidgets (different from _chartWidgetCollection?)
+      try {
+        const cw = api._chartWidgets;
+        if (cw != null) {
+          const isArr = Array.isArray(cw);
+          const entries = isArr ? cw : Object.values(cw);
+          out.tvApiDeep._chartWidgets = { type: typeof cw, isArray: isArr, length: entries.length };
+          for (let i = 0; i < Math.min(entries.length, 3); i++) {
+            const item = entries[i];
+            if (!item) continue;
+            const keys = allKeys(item).slice(0, 60);
+            out.tvApiDeep['_chartWidgets[' + i + ']'] = { keys };
+            out.tvApiDeep['_chartWidgets[' + i + ']_brokerProbe'] = probeBroker(item, -30 - i);
+            if (typeof item.getBroker === 'function') {
+              try {
+                const b = item.getBroker();
+                out.tvApiDeep['_chartWidgets[' + i + '].getBroker()'] = probeBroker(b, -40 - i);
+              } catch (e) { out.tvApiDeep['_chartWidgets[' + i + '].getBroker_error'] = e.message; }
+            }
+          }
+        }
+      } catch (e) { out.tvApiDeep._chartWidgets_error = e.message; }
+    }
+  } catch (e) { out.tvApiDeep.error = e.message; }
+
+  // ── ChartApiInstance.setBroker — can we read the registered broker back? ──
+  try {
+    const chai = window.ChartApiInstance;
+    out.chaiDeep = {};
+    if (chai) {
+      // _brokerId tells us which broker is registered
+      out.chaiDeep._brokerId = chai._brokerId ?? null;
+      // Look for any property that holds broker state
+      const brokerKeys = allKeys(chai).filter(k => /broker|session|trading/i.test(k));
+      out.chaiDeep.brokerRelatedKeys = brokerKeys;
+      for (const k of brokerKeys) {
+        try {
+          const v = chai[k];
+          if (v == null || typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number') {
+            out.chaiDeep[k] = v;
+          } else if (typeof v === 'function') {
+            // Don't call arbitrary functions on the live data socket
+            out.chaiDeep[k] = '[function]';
+          } else if (typeof v === 'object') {
+            out.chaiDeep[k + '_keys'] = allKeys(v).slice(0, 40);
+            out.chaiDeep[k + '_probe'] = probeBroker(v, -50);
+          }
+        } catch (e) {}
       }
     }
-  } catch (e) { out.apiDeepScan._exposed_chart_error = e.message; }
+  } catch (e) { out.chaiDeep = { error: e.message }; }
 
-  // --- widgetbar ---
-  try {
-    const wb = window.widgetbar;
-    if (wb) {
-      const keys = allKeys(wb).slice(0, 60);
-      out.apiDeepScan.widgetbar = { keys };
-      findPlaceOrder(wb, 'widgetbar', 0);
+  // ── Sweep known globals for broker/position access ─────────────────────────
+  const globalCandidates = ['tvWidget', '_tvWidget', 'tvWidgets', 'chartWidget',
+                             'widgetbar', 'footerWidget', 'brokerApi', 'brokerConnection',
+                             'TradingPlatformAdapter'];
+  out.globalSweep = {};
+  for (const name of globalCandidates) {
+    try {
+      const g = window[name];
+      if (g == null) { out.globalSweep[name] = null; continue; }
+      const keys = allKeys(g).slice(0, 60);
+      const hasBroker = keys.some(k => /broker|position|fill|execution|order/i.test(k));
+      out.globalSweep[name] = { type: typeof g, keyCount: keys.length, hasBrokerRelated: hasBroker, keys };
+      if (typeof g.getBroker === 'function') {
+        try {
+          const b = g.getBroker();
+          out.globalSweep[name].getBrokerResult = b != null ? 'object' : 'null';
+          if (b) out.globalSweep[name].brokerProbe = probeBroker(b, -1);
+        } catch (e) {
+          out.globalSweep[name].getBrokerError = e.message;
+        }
+      }
+    } catch (e) {
+      out.globalSweep[name] = { error: e.message };
     }
-  } catch (e) { out.apiDeepScan.widgetbar_error = e.message; }
-
-  // --- footerWidget ---
-  try {
-    const fw = window.footerWidget;
-    if (fw) {
-      const keys = allKeys(fw).slice(0, 60);
-      out.apiDeepScan.footerWidget = { keys };
-      findPlaceOrder(fw, 'footerWidget', 0);
-    }
-  } catch (e) { out.apiDeepScan.footerWidget_error = e.message; }
-
-  // --- WIDGET_HOST ---
-  try {
-    const wh = window.WIDGET_HOST;
-    if (wh) {
-      out.apiDeepScan.WIDGET_HOST = { type: typeof wh, value: String(wh).slice(0, 100) };
-    }
-  } catch (e) {}
+  }
 
   return JSON.stringify(out, null, 2);
 })()
@@ -206,15 +399,14 @@ async function run() {
   try {
     const targets = await CDP.List({ port: PORT });
     if (!targets.length) {
-      console.error('No CDP targets. Is TradingView running with --remote-debugging-port=' + PORT + '?');
+      console.error('No CDP targets. Start TradingView with --remote-debugging-port=' + PORT);
       process.exit(1);
     }
 
-    // Print all targets FIRST so we can see if the order form is a separate window
-    console.error('=== ALL CDP TARGETS ===');
-    targets.forEach((t, i) => {
-      console.error(`[${i}] type=${t.type} title=${JSON.stringify((t.title || '').slice(0, 60))} url=${(t.url || '').slice(0, 100)}`);
-    });
+    console.error('=== CDP TARGETS ===');
+    targets.forEach((t, i) =>
+      console.error(`[${i}] type=${t.type} title=${JSON.stringify((t.title || '').slice(0, 60))} url=${(t.url || '').slice(0, 80)}`)
+    );
     console.error('');
 
     const target = targets.find(t => t.type === 'page' && t.url.includes('tradingview'))
@@ -232,7 +424,7 @@ async function run() {
     });
 
     if (result.exceptionDetails) {
-      console.error('CDP threw:', JSON.stringify(result.exceptionDetails, null, 2));
+      console.error('CDP exception:', JSON.stringify(result.exceptionDetails, null, 2));
       process.exit(1);
     }
 
