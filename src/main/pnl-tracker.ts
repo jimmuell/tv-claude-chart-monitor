@@ -130,11 +130,18 @@ export class PnlTracker {
         if (posFromPanel?.symbol) this.lastSymbol = posFromPanel.symbol;
         if (data.accountType)    this.lastAccountType = data.accountType;
 
+        // Whether the Positions tab badge shows ≥1 open position.
+        // Always present in the DOM regardless of which tab is active —
+        // unlike Ka-Table rows which lazy-render only for the active tab.
+        // Used to suppress RESCUE when paper trading resets Realized PnL to 0
+        // at position open (OTE is 0 at entry, so isFlat is spuriously true).
+        const tabHasPosition = data.positionsTabCount !== null && data.positionsTabCount > 0;
+
         // Detect position close or missed complete trade.
         // "Flat" = unrealized is 0 OR null (OTE absent from DOM = null when no position).
         const grossChanged = prevGross !== null && gross !== prevGross;
         const isFlat = unrealized === 0 || unrealized === null;
-        if (this.tradeStore && isFlat && grossChanged) {
+        if (this.tradeStore && isFlat && grossChanged && !tabHasPosition) {
           const pnlGross  = gross - prevGross!;
           const exitFee   = getSettings().subtractCommissions ? cfg.perContractFee : 0;
           const acctType  = data.accountType ?? this.lastAccountType;
@@ -205,6 +212,8 @@ export class PnlTracker {
             }
             this.tradeStore.recordExitForOpenTrade(exitPayload, exitSymbol, acctType);
           }
+        } else if (isFlat && grossChanged && tabHasPosition) {
+          console.log(`[pnl-tracker] gross changed (${prevGross}→${gross}) but Positions tab shows ${data.positionsTabCount} — paper P&L reset on open, skipping RESCUE`);
         }
 
         // Detect position opened.
@@ -212,7 +221,6 @@ export class PnlTracker {
         // when OTE is zero (paper trade at breakeven) and Ka-Table rows are lazy-unrendered.
         const hasNonZeroOte   = unrealized !== null && unrealized !== 0;
         const flatToNonFlat   = this.prevUnrealized === null && unrealized !== null && unrealized !== 0;
-        const tabHasPosition  = data.positionsTabCount !== null && data.positionsTabCount > 0;
         const hasLivePosition = posFromPanel !== null || hasNonZeroOte || flatToNonFlat || tabHasPosition;
 
         // Effective direction: current signals OR last-known cache.
