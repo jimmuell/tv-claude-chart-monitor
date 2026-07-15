@@ -17,6 +17,7 @@ export function TradeList() {
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [connected, setConnected] = useState<boolean | null>(null);
 
   const [dateFilter, setDateFilter] = useState('');
   const [dirFilter, setDirFilter] = useState<'all' | 'long' | 'short'>('all');
@@ -30,10 +31,18 @@ export function TradeList() {
         return r.json();
       })
       .then((data: TradeRecord[]) => {
+        setConnected(true);
         data.sort((a, b) => b.created_at - a.created_at);
         setTrades(data);
       })
-      .catch(e => setError(e.message))
+      .catch(e => {
+        if (e instanceof TypeError) {
+          setConnected(false);
+        } else {
+          setConnected(true);
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -72,7 +81,8 @@ export function TradeList() {
   };
 
   if (loading) return <div className="loading">Loading…</div>;
-  if (error) return <div className="error-msg">Failed to load trades: {error}</div>;
+  if (connected === false) return <div className="error-msg">Trade monitor not connected — start the app to record trades.</div>;
+  if (error) return <div className="error-msg">Error loading trades: {error}</div>;
 
   return (
     <div className="page">

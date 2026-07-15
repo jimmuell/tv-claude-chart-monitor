@@ -105,6 +105,7 @@ export function Today() {
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [connected, setConnected] = useState<boolean | null>(null);
 
   useEffect(() => {
     const fetchTrades = () => {
@@ -114,6 +115,8 @@ export function Today() {
           return r.json();
         })
         .then((data: TradeRecord[]) => {
+          setConnected(true);
+          setError(null);
           const todayStr = todayCSTStr();
           const todayTrades = data.filter(t => {
             const d = new Date(t.created_at).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
@@ -122,7 +125,14 @@ export function Today() {
           todayTrades.sort((a, b) => b.created_at - a.created_at);
           setTrades(todayTrades);
         })
-        .catch(e => setError(e.message))
+        .catch(e => {
+          if (e instanceof TypeError) {
+            setConnected(false);
+          } else {
+            setConnected(true);
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        })
         .finally(() => setLoading(false));
     };
 
@@ -155,7 +165,8 @@ export function Today() {
   };
 
   if (loading) return <div className="loading">Loading…</div>;
-  if (error) return <div className="error-msg">Failed to load trades: {error}</div>;
+  if (connected === false) return <div className="error-msg">Trade monitor not connected — start the app to record trades.</div>;
+  if (error) return <div className="error-msg">Error loading trades: {error}</div>;
 
   return (
     <div className="page">
