@@ -47,6 +47,10 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
 
+  // Fix-direction state (unknown trades only)
+  const [fixingDir, setFixingDir] = useState(false);
+  const [fixDirError, setFixDirError] = useState<string | null>(null);
+
   const steps: string[] = (() => {
     try { return trade.steps_json ? JSON.parse(trade.steps_json) : []; }
     catch { return []; }
@@ -57,9 +61,9 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
     catch { return []; }
   })();
 
-  const isOpen   = trade.exit_price == null && trade.exit_at == null;
-  const isWin    = !isOpen && (trade.pnl_net ?? 0) > 0;
-  const isLoss   = !isOpen && trade.pnl_net != null && trade.pnl_net < 0;
+  const isOpen    = trade.exit_at == null;
+  const isWin     = !isOpen && (trade.pnl_net ?? 0) > 0;
+  const isLoss    = !isOpen && trade.pnl_net != null && trade.pnl_net < 0;
   const isScratch = !isOpen && trade.pnl_net != null && trade.pnl_net === 0;
 
   const pnlClass = isOpen ? 'open' : (trade.pnl_net ?? 0) >= 0 ? 'pos' : 'neg';
@@ -158,6 +162,28 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
     }
   };
 
+  const handleFixDirection = async (dir: 'long' | 'short') => {
+    setFixingDir(true);
+    setFixDirError(null);
+    try {
+      const res = await fetch(`/api/trades/${trade.id}/direction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction: dir }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error ?? `HTTP ${res.status}`);
+      }
+      const updated: TradeRecord = await res.json();
+      onUpdated?.(updated);
+    } catch (e: unknown) {
+      setFixDirError(e instanceof Error ? e.message : 'Update failed');
+    } finally {
+      setFixingDir(false);
+    }
+  };
+
   return (
     <div className="trade-card">
       {/* ── Summary row ─────────────────────────────────────── */}
@@ -177,7 +203,7 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
 
         {/* Direction badge */}
         <span className={`direction-badge ${trade.direction === 'unknown' ? 'unknown' : trade.direction}`}>
-          {trade.direction === 'long' ? '▲ LONG' : trade.direction === 'short' ? '▼ SHORT' : '? UNKNOWN'}
+          {trade.direction === 'long' ? '▲ LONG' : trade.direction === 'short' ? '▼ SHORT' : 'UNKNOWN — needs review'}
         </span>
 
         {/* Source badge: A = auto-traded, M = manually placed */}
@@ -305,6 +331,35 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
               </div>
               {closeError && (
                 <p style={{ fontSize: 11, color: 'var(--bearish)', marginTop: '0.35rem' }}>{closeError}</p>
+              )}
+            </div>
+          )}
+
+          {/* Fix unknown direction */}
+          {trade.direction === 'unknown' && (
+            <div>
+              <div className="section-divider">FIX DIRECTION</div>
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', alignItems: 'center' }}>
+                <button
+                  className="btn-critique"
+                  onClick={() => handleFixDirection('long')}
+                  disabled={fixingDir}
+                  style={{ background: 'var(--accent)' }}
+                >
+                  ▲ Long
+                </button>
+                <button
+                  className="btn-critique"
+                  onClick={() => handleFixDirection('short')}
+                  disabled={fixingDir}
+                  style={{ background: 'var(--bearish)', color: '#fff' }}
+                >
+                  ▼ Short
+                </button>
+                {fixingDir && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Saving…</span>}
+              </div>
+              {fixDirError && (
+                <p style={{ fontSize: 11, color: 'var(--bearish)', marginTop: '0.35rem' }}>{fixDirError}</p>
               )}
             </div>
           )}

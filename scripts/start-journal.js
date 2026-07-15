@@ -586,6 +586,52 @@ async function main() {
     }
   });
 
+  // POST /api/trades/:id/direction — fix direction on a needs_review trade
+  app.post('/api/trades/:id/direction', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid_id' });
+    const { direction } = req.body;
+    if (direction !== 'long' && direction !== 'short')
+      return res.status(400).json({ error: 'direction must be long or short' });
+
+    const db = openDb();
+    if (!db) return res.status(404).json({ error: 'not_found' });
+    try {
+      const row = queryOne(db, 'SELECT * FROM trades WHERE id=?', [id]);
+      if (!row) { closeDb(db); return res.status(404).json({ error: 'trade_not_found' }); }
+
+      // Re-derive exit_price and r_multiple now that direction is known
+      let exitPrice = row.exit_price ?? null;
+      let exitSrc = row.exit_source ?? null;
+      let rMultiple = row.r_multiple ?? null;
+
+      if (row.exit_at !== null && row.entry_price !== null && row.pnl_gross !== null && exitPrice === null) {
+        const qty = row.qty ?? 1;
+        const delta = row.pnl_gross / (5.0 * qty);
+        exitPrice = direction === 'long' ? row.entry_price + delta : row.entry_price - delta;
+        exitSrc = 'derived';
+      }
+      if (row.exit_at !== null && row.entry_price !== null && row.stop_price !== null && rMultiple === null) {
+        const qty = row.qty ?? 1;
+        const risk = Math.abs(row.entry_price - row.stop_price) * 5 * qty;
+        rMultiple = risk > 0 ? (row.pnl_gross ?? 0) / risk : null;
+      }
+
+      dbRun(db,
+        'UPDATE trades SET direction=?, needs_review=0, exit_price=?, exit_source=?, r_multiple=? WHERE id=?',
+        [direction, exitPrice, exitSrc, rMultiple, id]
+      );
+      const updated = queryOne(db, 'SELECT * FROM trades WHERE id=?', [id]);
+      saveAndClose(db);
+      broadcastRefresh('direction_fixed');
+      res.json(rowToRecord(updated));
+    } catch (e) {
+      console.error('[journal] POST /api/trades/:id/direction:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // GET /api/stats
   app.get('/api/stats', (_req, res) => {
     const db = openDb();

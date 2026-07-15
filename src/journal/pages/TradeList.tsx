@@ -55,7 +55,7 @@ export function TradeList() {
       if (dirFilter !== 'all' && t.direction !== dirFilter) return false;
       if (outcomeFilter === 'win' && !(t.r_multiple != null && t.r_multiple > 0)) return false;
       if (outcomeFilter === 'loss' && !(t.r_multiple != null && t.r_multiple <= 0)) return false;
-      if (outcomeFilter === 'open' && t.exit_price != null) return false;
+      if (outcomeFilter === 'open' && t.exit_at != null) return false;
       if (sourceFilter === 'auto' && t.verdict === 'manual') return false;
       if (sourceFilter === 'manual' && t.verdict !== 'manual') return false;
       return true;

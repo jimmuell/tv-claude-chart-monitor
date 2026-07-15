@@ -149,7 +149,7 @@ export function Today() {
   }, []);
 
   const totalNet      = trades.reduce((s, t) => s + (t.pnl_net ?? 0), 0);
-  const closedTrades  = trades.filter(t => t.exit_at != null && !t.needs_review);
+  const closedTrades  = trades.filter(t => t.exit_at != null);
   const wins          = closedTrades.filter(t => (t.pnl_net ?? 0) > 0).length;
   const losses        = closedTrades.filter(t => (t.pnl_net ?? 0) < 0).length;
   const closedForRate = wins + losses; // scratches not counted
