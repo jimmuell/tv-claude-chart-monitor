@@ -140,9 +140,12 @@ function buildOrderExpr(direction: 'long' | 'short', stop: number, target: numbe
         sideEl.click();
         await new Promise(r => setTimeout(r, 250));
       }
-      // Verify the correct side is active via aria attributes (class names are obfuscated/unstable)
+      // Verify the correct side is active.
+      // TradingView marks the selected side with an "active-<hash>" CSS class; no aria attributes.
       function isSideActive(el) {
         if (!el) return false;
+        const cls = el.className || '';
+        if (cls.split(' ').some(c => c.startsWith('active-'))) return true;
         return el.getAttribute('aria-checked')  === 'true' ||
                el.getAttribute('aria-selected') === 'true' ||
                el.getAttribute('aria-pressed')  === 'true';

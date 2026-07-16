@@ -363,7 +363,7 @@ app.on('ready', () => {
           const dir = sv === 'valid_long' ? 'long' : 'short';
           const cb  = configuredBracket(bracket.entry, dir);
           console.log(`[auto-trade] FIRING ${dir.toUpperCase()} entry=${bracket.entry} stop=${cb.stop} target=${cb.target}`);
-          submitMarketOrder(dir, cb.stop, cb.target, bracket.entry, false)
+          submitMarketOrder(dir, cb.stop, cb.target, bracket.entry, getSettings().autoTradeTrailingStop)
             .then(outcome => {
               console.log('[auto-trade]', outcome);
               if (outcome === 'submitted' && tradeStore) {
@@ -374,7 +374,7 @@ app.on('ready', () => {
                   entry_price:   bracket.entry,
                   stop_price:    cb.stop,
                   target_price:  cb.target,
-                  trailing_stop: false,
+                  trailing_stop: getSettings().autoTradeTrailingStop,
                   rr_planned:    result.commentary.trade_plan?.rr ?? null,
                   verdict:       sv as 'valid_long' | 'valid_short',
                   headline:      result.commentary.headline ?? null,
@@ -436,7 +436,7 @@ app.on('ready', () => {
           const dir2 = sv2 === 'valid_long' ? 'long' : 'short';
           const cb2  = configuredBracket(bracket2.entry, dir2);
           console.log(`[auto-trade] FIRING ${dir2.toUpperCase()} entry=${bracket2.entry} stop=${cb2.stop} target=${cb2.target}`);
-          submitMarketOrder(dir2, cb2.stop, cb2.target, bracket2.entry, false)
+          submitMarketOrder(dir2, cb2.stop, cb2.target, bracket2.entry, getSettings().autoTradeTrailingStop)
             .then(outcome => {
               console.log('[auto-trade]', outcome);
               if (outcome === 'submitted' && tradeStore) {
@@ -447,7 +447,7 @@ app.on('ready', () => {
                   entry_price:   bracket2.entry,
                   stop_price:    cb2.stop,
                   target_price:  cb2.target,
-                  trailing_stop: false,
+                  trailing_stop: getSettings().autoTradeTrailingStop,
                   rr_planned:    result.commentary.trade_plan?.rr ?? null,
                   verdict:       sv2 as 'valid_long' | 'valid_short',
                   headline:      result.commentary.headline ?? null,
