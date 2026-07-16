@@ -386,6 +386,7 @@ app.on('ready', () => {
                     result.commentary.candlestick_patterns?.map(p => p.name) ?? []
                   ),
                   confidence:    result.commentary.confidence ?? null,
+                  account_type:  pnlTracker?.getSnapshot().accountType ?? null,
                 });
               }
             })
@@ -459,6 +460,7 @@ app.on('ready', () => {
                     result.commentary.candlestick_patterns?.map(p => p.name) ?? []
                   ),
                   confidence:    result.commentary.confidence ?? null,
+                  account_type:  pnlTracker?.getSnapshot().accountType ?? null,
                 });
               }
             })
