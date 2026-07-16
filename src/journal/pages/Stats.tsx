@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { TradeStats } from '../types';
 import { BarChart, LineChart } from '../components/StatChart';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 const fmt$ = (n: number) =>
   `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
@@ -19,16 +20,19 @@ export function Stats() {
   const [error, setError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
 
-  useEffect(() => {
+  const fetchStats = useCallback(() => {
     fetch('/api/stats')
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then(setStats)
-      .catch(e => setError(e.message))
+      .catch(e => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { fetchStats(); }, [fetchStats]);
+  useAutoRefresh(fetchStats);
 
   const handleReset = async () => {
     if (!window.confirm('Reset the trade journal? This deletes all trades and cannot be undone.')) return;

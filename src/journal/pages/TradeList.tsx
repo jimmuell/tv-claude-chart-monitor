@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { TradeRecord } from '../types';
 import { TradeCard } from '../components/TradeCard';
+import { useAutoRefresh } from '../hooks/useAutoRefresh';
 
 const fmtDate = (ms: number) =>
   new Date(ms).toLocaleDateString('en-US', {
@@ -24,7 +25,7 @@ export function TradeList() {
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>('all');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
 
-  useEffect(() => {
+  const fetchTrades = useCallback(() => {
     fetch('/api/trades')
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -45,6 +46,9 @@ export function TradeList() {
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { fetchTrades(); }, [fetchTrades]);
+  useAutoRefresh(fetchTrades);
 
   const filtered = useMemo(() => {
     return trades.filter(t => {
