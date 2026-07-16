@@ -304,17 +304,39 @@ function broadcastRefresh(reason) {
 }
 
 // Watch DB file for changes written by the Electron main process.
-// Debounced so a single write doesn't fire multiple broadcasts.
+// fs.watch on macOS (FSEvents) is unreliable for cross-process writes, so we
+// use mtime polling as the primary detection mechanism (2 s interval).
+// fs.watch is kept as a fast-path supplement — it fires immediately when it
+// works, but missing events are caught by the next poll anyway.
+let lastDbMtime = 0;
 let dbWatchTimer = null;
+
+function broadcastRefreshDebounced() {
+  clearTimeout(dbWatchTimer);
+  dbWatchTimer = setTimeout(() => broadcastRefresh('db_change'), 250);
+}
+
 function watchDb() {
-  if (!fs.existsSync(DB_PATH)) return;
+  // Seed the baseline mtime so the first poll doesn't broadcast on startup.
+  try { lastDbMtime = fs.statSync(DB_PATH).mtimeMs; } catch { lastDbMtime = 0; }
+
+  // Reliable path: poll mtime every 2 s.
+  setInterval(() => {
+    try {
+      const mtime = fs.statSync(DB_PATH).mtimeMs;
+      if (mtime !== lastDbMtime) {
+        lastDbMtime = mtime;
+        broadcastRefreshDebounced();
+      }
+    } catch { /* DB doesn't exist yet */ }
+  }, 2000);
+
+  // Fast-path supplement: fs.watch fires immediately when the OS delivers the
+  // event (often works, not guaranteed on macOS).
   try {
-    fs.watch(DB_PATH, () => {
-      clearTimeout(dbWatchTimer);
-      dbWatchTimer = setTimeout(() => broadcastRefresh('db_change'), 250);
-    });
+    fs.watch(DB_PATH, broadcastRefreshDebounced);
   } catch (e) {
-    console.warn('[journal] fs.watch failed:', e.message);
+    console.warn('[journal] fs.watch failed (mtime poll still active):', e.message);
   }
 }
 

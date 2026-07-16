@@ -143,8 +143,8 @@ export function Today() {
     es.onmessage = () => fetchTrades();
     es.onerror = () => {}; // browser auto-reconnects
 
-    // Fallback poll every 60 s in case SSE is unavailable
-    const interval = setInterval(fetchTrades, 60_000);
+    // Fallback poll every 10 s in case SSE misses an event
+    const interval = setInterval(fetchTrades, 10_000);
     return () => { es.close(); clearInterval(interval); };
   }, []);
 

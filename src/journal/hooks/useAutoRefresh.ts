@@ -1,10 +1,9 @@
 import { useEffect } from 'react';
 
 /**
- * Subscribes to the journal server's SSE stream (/api/events).
- * Calls `onRefresh` whenever the server broadcasts a 'refresh' event
- * (triggered by any DB write — new trade, exit recorded, etc.).
- * EventSource reconnects automatically on network drops.
+ * Subscribes to the journal server's SSE stream (/api/events) and polls
+ * every 10 seconds as a fallback in case SSE misses an event.
+ * Calls `onRefresh` on any DB change notification.
  */
 export function useAutoRefresh(onRefresh: () => void): void {
   useEffect(() => {
@@ -15,6 +14,7 @@ export function useAutoRefresh(onRefresh: () => void): void {
         if (msg.type === 'refresh') onRefresh();
       } catch { /* ignore malformed messages */ }
     };
-    return () => es.close();
+    const poll = setInterval(onRefresh, 10_000);
+    return () => { es.close(); clearInterval(poll); };
   }, [onRefresh]);
 }
