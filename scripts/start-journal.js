@@ -35,6 +35,51 @@ function llmProvider() {
 
 const STATIC_DIR = path.join(__dirname, '..', 'dist', 'journal');
 
+// The journal lives at exactly one port. It never relocates on its own: a
+// dashboard whose URL moves is worse than one that refuses to start and says
+// why. JOURNAL_PORT overrides it for the rare case of a real conflict.
+const PORT = Number(process.env.JOURNAL_PORT) || 3001;
+
+// Identifies this server on /api/health so an EADDRINUSE can tell "the journal
+// is already running" apart from "some unrelated app owns our port".
+const JOURNAL_SERVICE_ID = 'tv-trade-journal';
+
+// ─── port guard ───────────────────────────────────────────────────────────────
+
+// Returns true only if `port` is served by another instance of THIS server.
+// Any other outcome — foreign app, HTML body, non-OK status, connection error —
+// is false, because we must not mistake a stranger's server for our own.
+async function probeJournalHealth(port, fetchImpl = globalThis.fetch, host = '127.0.0.1') {
+  try {
+    const res = await fetchImpl(`http://${host}:${port}/api/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return !!body && body.service === JOURNAL_SERVICE_ID;
+  } catch {
+    return false;
+  }
+}
+
+// Binding successfully is NOT proof we are reachable. This server listens on
+// IPv4 127.0.0.1, but browsers and dev-server proxies reach it via `localhost`,
+// which resolves to ::1 first on macOS. An unrelated IPv6 listener on the same
+// port therefore intercepts every request and never triggers EADDRINUSE — the
+// journal looks healthy in its own logs while the UI gets someone else's 404s.
+// Returns true when such a hijack is detected.
+async function detectHostnameHijack(port, fetchImpl, log = console.error) {
+  if (await probeJournalHealth(port, fetchImpl, 'localhost')) return false;
+
+  log(`[journal] WARNING: http://localhost:${port} is NOT reaching this server.`);
+  log(`[journal] Another process (likely IPv6) is holding port ${port}. Find it with:`);
+  log(`[journal]   lsof -nP -iTCP:${port} -sTCP:LISTEN`);
+  log(`[journal] Stop that process, or start the journal on a free port:`);
+  log(`[journal]   JOURNAL_PORT=3002 npm run journal`);
+  log(`[journal] This server is still reachable at http://127.0.0.1:${port}`);
+  return true;
+}
+
 // ─── sql.js wrappers ──────────────────────────────────────────────────────────
 
 let SQL; // set once in main()
@@ -367,6 +412,11 @@ async function main() {
   const app = express();
   app.use(express.json());
   app.use(express.static(STATIC_DIR));
+
+  // GET /api/health — identity probe used by the EADDRINUSE guard below
+  app.get('/api/health', (_req, res) => {
+    res.json({ service: JOURNAL_SERVICE_ID, port: PORT });
+  });
 
   // GET /api/events — SSE stream; clients subscribe and receive 'refresh' events
   app.get('/api/events', (req, res) => {
@@ -848,20 +898,47 @@ Respond with ONLY a raw JSON object (no markdown, no code fences). Shape:
     });
   });
 
-  const server = app.listen(3001, '127.0.0.1', () => {
-    console.log('Journal server listening on http://localhost:3001');
+  const server = app.listen(PORT, '127.0.0.1', async () => {
+    console.log(`Journal server listening on http://localhost:${PORT}`);
     if (!fs.existsSync(DB_PATH)) {
       console.log(`No database yet at: ${DB_PATH}`);
       console.log('Trades will appear once the Electron app executes auto-trades.');
     }
+    await detectHostnameHijack(PORT);
   });
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log('[journal] Port 3001 already in use — journal server already running. Exiting cleanly.');
+  server.on('error', async (err) => {
+    if (err.code !== 'EADDRINUSE') throw err;
+
+    // Only exit 0 if the port really is another copy of us. Otherwise a
+    // stranger on our port would silently leave the journal API unstarted.
+    // Say plainly that the dashboard is UP — an immediate exit otherwise
+    // reads as a crash, which is exactly how this confused us before.
+    if (await probeJournalHealth(PORT)) {
+      console.log('');
+      console.log(`  ✓ Trade Journal is ALREADY RUNNING at http://localhost:${PORT}`);
+      console.log('    Nothing to do — open that URL. This is not an error.');
+      console.log('');
       process.exit(0);
     }
-    throw err;
+
+    console.error('');
+    console.error(`  ✗ Cannot start: port ${PORT} is held by a DIFFERENT application.`);
+    console.error('');
+    console.error(`    Identify it:  lsof -nP -iTCP:${PORT} -sTCP:LISTEN`);
+    console.error('    Then free that port, or pick another:');
+    console.error(`                  JOURNAL_PORT=3002 npm run journal`);
+    console.error('');
+    process.exit(1);
   });
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+if (require.main === module) {
+  main().catch(err => { console.error(err); process.exit(1); });
+}
+
+module.exports = {
+  probeJournalHealth,
+  detectHostnameHijack,
+  JOURNAL_SERVICE_ID,
+  PORT,
+};
