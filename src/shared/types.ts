@@ -236,6 +236,12 @@ export interface AnalysisResult {
   closedBarPrice: number;
   /** Epoch ms when the current open bar closes (lastBarOpenSecs + resolution*60)*1000). Zero when unavailable (daily/weekly). */
   barCloseMs:     number;
+  /** True when the TradingView chart is in Replay mode. Bar timestamps are then
+   *  historical, so barCloseMs cannot be used for scheduling — see Scheduler. */
+  replayMode:     boolean;
+  /** Open time (epoch SECONDS) of the bar this analysis describes. The scheduler
+   *  uses it to detect replay progress; zero when unavailable. */
+  closedBarTime:  number;
   commentary:     CommentaryResult;
 }
 

@@ -40,6 +40,24 @@
 
 const CDP = require("chrome-remote-interface");
 
+// Injected into every page expression that needs the replay flag.
+//
+// series.isInReplay() does NOT return a boolean — it returns a TradingView
+// WatchedValue ({ subscribe, unsubscribe, value, when, ... }). The old
+// `!!series.isInReplay()` was therefore ALWAYS true, in live mode as well as
+// replay, which silently mislabelled every Claude prompt as "Mode: REPLAY".
+// Read through .value(), but still tolerate a plain boolean in case TV changes
+// the shape back.
+const REPLAY_FLAG_FN = `
+        const readReplayFlag = (series) => {
+          try {
+            if (!series || typeof series.isInReplay !== "function") return false;
+            const rv = series.isInReplay();
+            if (rv && typeof rv.value === "function") return !!rv.value();
+            return !!rv;
+          } catch { return false; }
+        };`;
+
 class TvReader {
   constructor(config, logger) {
     this.config = config;
@@ -221,6 +239,38 @@ class TvReader {
     return await this.evalPage(expr);
   }
 
+  // Cheap poll: just the replay flag and the latest closed-bar timestamp.
+  // Used by the scheduler to detect replay progress without pulling 300 bars
+  // (and without spending a Claude call). Returns null if the chart is not
+  // readable — callers should treat that as "no change".
+  // Returns { replayMode, closedBarTime (epoch secs), lastBarTime (epoch secs) }.
+  async readBarState() {
+    if (!this.client) throw new Error("Not connected. Call connect() first.");
+    const expr = `
+      (() => {
+        try {
+          ${REPLAY_FLAG_FN}
+          const api = window.TradingViewApi;
+          const chart = api && typeof api.activeChart === "function" ? api.activeChart() : null;
+          if (!chart) return null;
+          const series = typeof chart.getSeries === "function" ? chart.getSeries() : null;
+          if (!series) return null;
+          const replayMode = readReplayFlag(series);
+          const data = typeof series.data === "function" ? series.data() : null;
+          const m = data && data.m_bars;
+          if (!m || typeof m.size !== "function" || typeof m.valueAt !== "function") return null;
+          const n = m.size();
+          if (n < 2) return null;
+          const closed = m.valueAt(n - 2);
+          const last   = m.valueAt(n - 1);
+          if (!Array.isArray(closed) || !Array.isArray(last)) return null;
+          return { replayMode, closedBarTime: closed[0], lastBarTime: last[0] };
+        } catch { return null; }
+      })()
+    `;
+    return await this.evalPage(expr);
+  }
+
   // Read the entire chart snapshot we need.
   // Returns { symbol, timeframe, candles[], drawings[], indicators[], replayMode, dataReady, fetchedAt }.
   async readSnapshot({ barCount = 200 } = {}) {
@@ -233,6 +283,7 @@ class TvReader {
     const expr = `
       (() => {
         const safe = (fn, fb) => { try { return fn(); } catch { return fb; } };
+        ${REPLAY_FLAG_FN}
         const api = window.TradingViewApi;
         if (!api || typeof api.activeChart !== "function") {
           return { error: "TradingViewApi.activeChart not found — TV Desktop may not be fully loaded" };
@@ -250,7 +301,7 @@ class TvReader {
         try {
           const series = (typeof chart.getSeries === "function") ? chart.getSeries() : null;
           if (series) {
-            try { inReplay = (typeof series.isInReplay === "function") && !!series.isInReplay(); } catch {}
+            try { inReplay = readReplayFlag(series); } catch {}
             const data = (typeof series.data === "function") ? series.data() : null;
             const m = data && data.m_bars;
             if (m && typeof m.size === "function" && typeof m.valueAt === "function") {
@@ -625,6 +676,14 @@ class MockTvReader {
     return candles;
   }
 
+  async readBarState() {
+    const upTo = Math.min(this._closes.length, 50 + this._t);
+    const closed = this._closes[upTo - 2];
+    const last   = this._closes[upTo - 1];
+    if (!closed || !last) return null;
+    return { replayMode: false, closedBarTime: closed.time, lastBarTime: last.time };
+  }
+
   async readSnapshot({ barCount = 200 } = {}) {
     this._t += 1;
     const upTo = Math.min(this._closes.length, 50 + this._t);
@@ -681,4 +740,4 @@ function createReader(config, logger) {
   return config.tv.useMockReader ? new MockTvReader(config, logger) : new TvReader(config, logger);
 }
 
-module.exports = { TvReader, MockTvReader, createReader };
+module.exports = { TvReader, MockTvReader, createReader, REPLAY_FLAG_FN };

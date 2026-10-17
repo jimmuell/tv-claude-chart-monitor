@@ -1,5 +1,5 @@
 import { AnalysisResult } from '../shared/types';
-import { runAnalysis, setStatusCallback } from './bridge';
+import { runAnalysis, setStatusCallback, peekBarState } from './bridge';
 
 // ---------------------------------------------------------------------------
 // Timeframe → polling interval (milliseconds)
@@ -18,6 +18,13 @@ const TIMEFRAME_INTERVALS: Record<string, number | null> = {
 };
 
 const DEFAULT_INTERVAL_MS = 300_000; // 5 minutes
+
+/**
+ * Replay mode: how often to cheaply check whether the replay cursor advanced.
+ * This is only a CDP read of the last two bar timestamps — no Claude call — so
+ * it can be frequent enough to feel responsive when stepping bar by bar.
+ */
+const REPLAY_POLL_MS = 3_000;
 
 function intervalForTimeframe(timeframe: string): number | null {
   if (Object.prototype.hasOwnProperty.call(TIMEFRAME_INTERVALS, timeframe)) {
@@ -41,6 +48,10 @@ export class Scheduler {
   /** Interval used for the last successful reschedule; kept so transient
    *  errors can re-use it without a result to read the timeframe from. */
   private _lastIntervalMs: number = DEFAULT_INTERVAL_MS;
+
+  /** Open time (epoch secs) of the bar the last replay analysis described.
+   *  Null when not currently driving off replay bars. */
+  private _replayBarTime: number | null = null;
 
   constructor(
     onAnalysis: (result: AnalysisResult) => void,
@@ -71,7 +82,9 @@ export class Scheduler {
   resume(): void {
     if (this._running) return;
     this._running = true;
-    this._scheduleNext(this._lastIntervalMs);
+    // Resume on whichever cadence was active when we were paused.
+    if (this._replayBarTime !== null) this._scheduleReplayPoll();
+    else this._scheduleNext(this._lastIntervalMs);
   }
 
   stop(): void {
@@ -116,12 +129,68 @@ export class Scheduler {
     }, delayMs);
   }
 
+  /**
+   * Replay mode: poll cheaply for the replay cursor advancing, then run a full
+   * analysis on the new bar.
+   *
+   * Wall-clock scheduling is meaningless in replay — bar timestamps are
+   * historical, so barCloseMs alignment never applies and the old code fell
+   * back to the timeframe interval. That left the chart annotations frozen on
+   * whichever bar the last real-time-triggered analysis happened to hit, while
+   * the replay ran on without them.
+   */
+  private _scheduleReplayPoll(): void {
+    if (!this._running) return;
+    this._timer = setTimeout(() => {
+      this._timer = null;
+      void this._replayTick();
+    }, REPLAY_POLL_MS);
+  }
+
+  private async _replayTick(): Promise<void> {
+    if (!this._running) return;
+
+    // Never tears down the connection and never throws — a failed read just
+    // means "no change", and we poll again.
+    const state = await peekBarState();
+
+    if (!this._running) return;
+
+    if (state && !state.replayMode) {
+      // Replay was exited — hand control back to wall-clock scheduling.
+      this._replayBarTime = null;
+      this.onStatus('Replay ended — resuming live schedule');
+      this._scheduleNext(this._lastIntervalMs);
+      return;
+    }
+
+    if (state && state.closedBarTime !== this._replayBarTime) {
+      // Cursor advanced (or rewound — either way this is a different bar).
+      this._execute();
+      return;
+    }
+
+    this._scheduleReplayPoll();
+  }
+
   private _execute(): void {
     runAnalysis()
       .then((result: AnalysisResult) => {
         this.onAnalysis(result);
 
         if (!this._running) return;
+
+        // ── Replay: drive off bar advance, not the clock ─────────────────────
+        if (result.replayMode) {
+          this._replayBarTime = result.closedBarTime;
+          // Blank the renderer countdown: there is no meaningful "next run at
+          // T" in replay, we run when the user steps or autoplay advances.
+          this.onNextTick?.(0);
+          this._scheduleReplayPoll();
+          return;
+        }
+
+        this._replayBarTime = null;
 
         const interval = intervalForTimeframe(result.timeframe);
         if (interval === null) return; // daily chart — fire once only
@@ -142,9 +211,10 @@ export class Scheduler {
 
         if (!this._running) return;
 
-        // On error, reschedule using the last known interval so a transient
-        // CDP or network hiccup doesn't stop monitoring.
-        this._scheduleNext(this._lastIntervalMs);
+        // On error, reschedule so a transient CDP or network hiccup doesn't
+        // stop monitoring — staying on whichever cadence we were using.
+        if (this._replayBarTime !== null) this._scheduleReplayPoll();
+        else this._scheduleNext(this._lastIntervalMs);
       });
   }
 }

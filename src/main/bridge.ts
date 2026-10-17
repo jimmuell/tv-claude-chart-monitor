@@ -22,6 +22,15 @@ interface Logger {
   error: (...args: unknown[]) => void;
 }
 
+/** Lightweight chart state used by the scheduler to detect replay progress. */
+export interface BarState {
+  replayMode:    boolean;
+  /** Open time (epoch SECONDS) of the most recently closed bar. */
+  closedBarTime: number;
+  /** Open time (epoch SECONDS) of the live/forming bar. */
+  lastBarTime:   number;
+}
+
 const logger: Logger = {
   info:  console.log,
   warn:  console.warn,
@@ -99,6 +108,7 @@ const { createReader } = require(path.join(app.getAppPath(), 'src/shared/tv-read
     connect():                                    Promise<boolean>;
     disconnect():                                 Promise<void>;
     readSnapshot(opts?: { barCount?: number }):   Promise<unknown>;
+    readBarState():                               Promise<unknown>;
     hasNewClose(snapshot: unknown):               boolean;
     setStudyInputs(studyId: string, patch: Record<string, unknown>): Promise<{ok: boolean; error?: string}>;
     evalPage(expression: string):                 Promise<unknown>;
@@ -260,7 +270,7 @@ export async function runAnalysis(): Promise<AnalysisResult> {
   const typedCtx = ctx as {
     symbol:    string;
     timeframe: string;
-    closedBar: { close: number };
+    closedBar: { close: number; time: number };
   };
 
   // Compute the close time of the currently-forming bar (last candle in snapshot).
@@ -276,8 +286,35 @@ export async function runAnalysis(): Promise<AnalysisResult> {
     timeframe:      typedCtx.timeframe,
     closedBarPrice: typedCtx.closedBar.close,
     barCloseMs,
+    replayMode:     !!(snapshot as { replayMode?: boolean }).replayMode,
+    closedBarTime:  typedCtx.closedBar.time ?? 0,
     commentary:     commentary as AnalysisResult['commentary'],
   };
+}
+
+/**
+ * Cheap poll for scheduler use: replay flag + latest closed-bar timestamp,
+ * without pulling a full 300-bar snapshot and without a Claude call.
+ *
+ * Deliberately does NOT tear down the connection on failure — this runs every
+ * few seconds during replay, and a transient read error should not force a
+ * reconnect. Returns null on any problem; callers treat that as "no change".
+ */
+export async function peekBarState(): Promise<BarState | null> {
+  try {
+    await ensureConnected();
+    const raw = await reader!.readBarState();
+    if (!raw || typeof raw !== 'object') return null;
+    const s = raw as Partial<BarState>;
+    if (typeof s.closedBarTime !== 'number') return null;
+    return {
+      replayMode:    !!s.replayMode,
+      closedBarTime: s.closedBarTime,
+      lastBarTime:   typeof s.lastBarTime === 'number' ? s.lastBarTime : s.closedBarTime,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function getSnapshot(): Promise<unknown> {
