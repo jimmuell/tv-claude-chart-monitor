@@ -135,6 +135,17 @@ const { CommentaryEngine } = require(path.join(app.getAppPath(), 'src/shared/com
 // Module-level singletons
 // ---------------------------------------------------------------------------
 
+type LessonsProvider = () => Array<{
+  id: number; pattern: string | null; direction: string | null;
+  outcome: string | null; lesson_text: string; context_text: string | null;
+}>;
+let lessonsProvider: LessonsProvider | null = null;
+
+/** Called by index.ts after TradeStore is ready. */
+export function setLessonsProvider(fn: LessonsProvider): void {
+  lessonsProvider = fn;
+}
+
 let config: AppConfig = loadConfig();
 let reader: ReturnType<typeof createReader> | null = null;
 let engine: InstanceType<typeof CommentaryEngine> | null = null;
@@ -261,6 +272,14 @@ export async function runAnalysis(): Promise<AnalysisResult> {
   const ctx = buildContext(snapshot, { tickSize: 0.25, maPeriod: 20 });
   if (ctx === null || ctx === undefined) {
     throw new Error('Not enough bar data to build context');
+  }
+
+  // Inject approved lessons so CommentaryEngine can learn from past trades.
+  if (lessonsProvider) {
+    const lessons = lessonsProvider();
+    if (lessons.length > 0) {
+      (ctx as Record<string, unknown>).lessons = lessons;
+    }
   }
 
   sendStatus('Analyzing...');

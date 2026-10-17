@@ -9,6 +9,22 @@ const POINT_VALUE = 5.0;
 // On version mismatch, the table is dropped and recreated (old rows are known-bad).
 const SCHEMA_VERSION = 2;
 
+const CREATE_LESSONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS trade_lessons (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at   INTEGER NOT NULL,
+    trade_id     INTEGER,
+    symbol       TEXT    NOT NULL,
+    timeframe    TEXT,
+    direction    TEXT,
+    pattern      TEXT,
+    outcome      TEXT,
+    lesson_text  TEXT    NOT NULL,
+    context_text TEXT,
+    approved     INTEGER NOT NULL DEFAULT 0
+  )
+`;
+
 const CREATE_TABLE = `
   CREATE TABLE IF NOT EXISTS trades (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +121,7 @@ export class TradeStore {
       this.db.exec('DROP TABLE IF EXISTS trades');
     }
     this.db.exec(CREATE_TABLE);
+    this.db.exec(CREATE_LESSONS_TABLE);
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -234,6 +251,25 @@ export class TradeStore {
     this.db.prepare(
       `UPDATE trades SET notes=?, tags_json=? WHERE id=?`
     ).run(notes, JSON.stringify(tags), id);
+  }
+
+  /** Return all approved lessons, newest first, for injection into the trading engine. */
+  getApprovedLessons(limit = 30): Array<{
+    id: number; pattern: string | null; direction: string | null;
+    outcome: string | null; lesson_text: string; context_text: string | null;
+  }> {
+    try {
+      return this.db.prepare(`
+        SELECT id, pattern, direction, outcome, lesson_text, context_text
+        FROM trade_lessons WHERE approved = 1
+        ORDER BY created_at DESC LIMIT ?
+      `).all(limit) as Array<{
+        id: number; pattern: string | null; direction: string | null;
+        outcome: string | null; lesson_text: string; context_text: string | null;
+      }>;
+    } catch {
+      return [];
+    }
   }
 
   /** Store a Claude critique on a trade. */

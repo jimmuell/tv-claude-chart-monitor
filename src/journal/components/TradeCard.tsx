@@ -127,6 +127,84 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
     }
   };
 
+  const handleDownloadCritique = () => {
+    if (!critiqueData) return;
+    const dir    = trade.direction.toUpperCase();
+    const sym    = trade.symbol;
+    const entry  = trade.entry_price != null ? trade.entry_price.toFixed(2) : '—';
+    const date   = new Date(trade.created_at).toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Chicago',
+    });
+    const time   = fmtTime(trade.created_at);
+    const exitTime = trade.exit_at ? fmtTime(trade.exit_at) : null;
+    const isWin  = (trade.pnl_net ?? trade.pnl_gross ?? 0) > 0;
+
+    const patterns: string[] = (() => {
+      try { return trade.patterns_json ? JSON.parse(trade.patterns_json) : []; } catch { return []; }
+    })();
+
+    const lines: string[] = [
+      `# Trade Critique — ${sym} ${trade.timeframe}m ${dir} @ ${entry}`,
+      '',
+      `**Date:** ${date} — ${time} CST`,
+      `**Direction:** ${dir}`,
+      `**Account:** ${trade.account_type === 'amp_live' ? 'AMP Live' : trade.account_type === 'paper' ? 'Paper' : '—'}`,
+      `**Verdict:** ${trade.verdict === 'valid_long' || trade.verdict === 'valid_short' ? 'Auto' : 'Manual'}`,
+      '',
+      '## Trade Parameters',
+      '',
+      '| Field | Value |',
+      '|---|---|',
+      `| Entry | ${entry} |`,
+      `| Stop | ${fmtPrice(trade.stop_price)} |`,
+      `| Target | ${fmtPrice(trade.target_price)} |`,
+      `| Planned R:R | ${trade.rr_planned != null ? trade.rr_planned.toFixed(2) : '—'} |`,
+      `| Confidence | ${trade.confidence != null ? `${Math.round(trade.confidence * 100)}%` : '—'} |`,
+      '',
+      '## Outcome',
+      '',
+      '| Field | Value |',
+      '|---|---|',
+      `| Exit | ${exitTime ?? 'Open'} |`,
+      `| Exit Price | ${fmtPrice(trade.exit_price)} |`,
+      `| P&L | ${fmt$(trade.pnl_net ?? trade.pnl_gross)} |`,
+      `| R-Multiple | ${fmtR(trade.r_multiple)} |`,
+      `| Result | ${trade.exit_at ? (isWin ? 'W' : 'L') : 'Open'} |`,
+      '',
+      '## What Claude Saw',
+      '',
+    ];
+
+    if (trade.headline)   lines.push(`**Setup:** ${trade.headline}`, '');
+    if (trade.structure)  lines.push(`**Market structure:** ${trade.structure}`, '');
+    if (trade.rationale)  lines.push(`**Rationale:** ${trade.rationale}`, '');
+    if (patterns.length)  lines.push(`**Patterns:** ${patterns.join(', ')}`, '');
+
+    lines.push('## Claude\'s Critique', '', critiqueData.text, '');
+
+    if (notes.trim()) lines.push('## Your Notes', '', notes.trim(), '');
+
+    lines.push('---', `*Generated ${new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })} CST*`);
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `critique-${sym.replace(/[^a-z0-9]/gi, '_')}-${dir}-${trade.created_at}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDeleteCritique = async () => {
+    if (!window.confirm('Clear this critique? You can regenerate it anytime with Ask Claude.')) return;
+    try {
+      await fetch(`/api/trades/${trade.id}/critique`, { method: 'DELETE' });
+      setCritiqueData(null);
+    } catch {
+      // ignore
+    }
+  };
+
   const handleDelete = async () => {
     if (!window.confirm('Delete this trade? This cannot be undone.')) return;
     setDeleting(true);
@@ -344,7 +422,7 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
                   className="btn-critique"
                   onClick={() => handleFixDirection('long')}
                   disabled={fixingDir}
-                  style={{ background: 'var(--accent)' }}
+                  style={{ background: 'var(--accent)', color: '#fff' }}
                 >
                   ▲ Long
                 </button>
@@ -453,14 +531,30 @@ export function TradeCard({ trade, onUpdated, onDeleted }: TradeCardProps) {
             {critiqueData ? (
               <>
                 <p className="critique-text">{critiqueData.text}</p>
-                <button
-                  className="btn-critique"
-                  onClick={handleCritique}
-                  disabled={critiqueLoading}
-                  style={{ marginTop: '0.5rem' }}
-                >
-                  {critiqueLoading ? <><span className="spinner" /> Refreshing…</> : '↺ Refresh critique'}
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn-critique"
+                    onClick={handleCritique}
+                    disabled={critiqueLoading}
+                  >
+                    {critiqueLoading ? <><span className="spinner" /> Refreshing…</> : '↺ Refresh'}
+                  </button>
+                  <button
+                    className="btn-critique"
+                    onClick={handleDownloadCritique}
+                    disabled={critiqueLoading}
+                  >
+                    ↓ Download .md
+                  </button>
+                  <button
+                    className="btn-critique"
+                    onClick={handleDeleteCritique}
+                    disabled={critiqueLoading}
+                    style={{ color: 'var(--bearish)', borderColor: 'var(--bearish)' }}
+                  >
+                    ✕ Clear
+                  </button>
+                </div>
               </>
             ) : (
               <button

@@ -36,6 +36,20 @@ export interface TradeRecord {
   critique_json: string | null;   // JSON { text, created_at }
 }
 
+export interface TradeLesson {
+  id:           number;
+  created_at:   number;
+  trade_id:     number | null;
+  symbol:       string;
+  timeframe:    string | null;
+  direction:    string | null;
+  pattern:      string | null;
+  outcome:      string | null;
+  lesson_text:  string;
+  context_text: string | null;
+  approved:     boolean;
+}
+
 export interface TradeStats {
   totalTrades:      number;
   winCount:         number;

@@ -321,6 +321,93 @@ const EMPTY_STATS = {
   byDayOfWeek: [],
 };
 
+// ─── Lessons table ───────────────────────────────────────────────────────────
+
+const CREATE_LESSONS_SQL = `CREATE TABLE IF NOT EXISTS trade_lessons (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at   INTEGER NOT NULL,
+  trade_id     INTEGER,
+  symbol       TEXT    NOT NULL,
+  timeframe    TEXT,
+  direction    TEXT,
+  pattern      TEXT,
+  outcome      TEXT,
+  lesson_text  TEXT    NOT NULL,
+  context_text TEXT,
+  approved     INTEGER NOT NULL DEFAULT 0
+)`;
+
+function ensureLessonsTable() {
+  const db = openDb();
+  if (!db) return;
+  try { dbRun(db, CREATE_LESSONS_SQL); saveAndClose(db); }
+  catch (e) { console.warn('[journal] lessons table init failed:', e.message); try { closeDb(db); } catch {} }
+}
+
+async function extractAndSaveLesson(trade, critiqueText) {
+  // Skip open trades — lesson requires a known outcome.
+  if (!trade.exit_at) return;
+
+  // Skip if a lesson already exists for this trade.
+  const db0 = openDb();
+  if (!db0) return;
+  const existing = queryOne(db0, 'SELECT id FROM trade_lessons WHERE trade_id=?', [trade.id]);
+  closeDb(db0);
+  if (existing) return;
+
+  const patterns = (() => { try { return JSON.parse(trade.patterns_json || '[]'); } catch { return []; } })();
+  const outcome  = trade.r_multiple !== null ? (trade.r_multiple > 0 ? 'win' : 'loss') : 'unknown';
+
+  const prompt = `Extract ONE trading lesson from this analysis. Respond with JSON only — no other text.
+
+Trade: ${trade.direction} ${trade.symbol} (${trade.timeframe}m) @ ${trade.entry_price ?? 'unknown'}
+Outcome: ${outcome}${trade.r_multiple != null ? ` (${trade.r_multiple > 0 ? '+' : ''}${trade.r_multiple.toFixed(2)}R)` : ''}
+Patterns: ${patterns.join(', ') || 'none'}
+
+Critique:
+${critiqueText}
+
+JSON schema:
+{
+  "pattern": "snake_case setup name, e.g. bearish_ma_touch, orb_breakdown, failed_retest",
+  "direction": "long" | "short" | "both",
+  "outcome": "win" | "loss",
+  "lesson_text": "One actionable sentence — what to do or avoid in this exact situation",
+  "context_text": "Conditions when this rule applies (market structure, time, context)"
+}`;
+
+  try {
+    // Lesson extraction is high-volume and low-stakes — run it on the
+    // provider's fastModel (configure `llm.fastModel`; defaults to llm.model).
+    const provider = llmProvider();
+    const text = await provider.complete(null, prompt, {
+      model: provider.fastModel,
+      maxOutputTokens: 250,
+    });
+    const lesson = JSON.parse(stripFences(text));
+    if (!lesson.lesson_text) return;
+
+    const db2 = openDb();
+    if (!db2) return;
+    try {
+      dbRun(db2, `INSERT INTO trade_lessons
+        (created_at, trade_id, symbol, timeframe, direction, pattern, outcome, lesson_text, context_text, approved)
+        VALUES (?,?,?,?,?,?,?,?,?,0)`,
+        [Date.now(), trade.id, trade.symbol, trade.timeframe,
+         lesson.direction ?? trade.direction, lesson.pattern ?? null,
+         lesson.outcome ?? outcome, lesson.lesson_text, lesson.context_text ?? null]);
+      saveAndClose(db2);
+      console.log(`[journal] lesson extracted for trade #${trade.id}: ${lesson.lesson_text}`);
+      broadcastRefresh('lesson_extracted');
+    } catch (e) {
+      console.warn('[journal] lesson save failed:', e.message);
+      try { closeDb(db2); } catch {}
+    }
+  } catch (e) {
+    console.warn('[journal] lesson extraction API call failed:', e.message);
+  }
+}
+
 // ─── Critique prompt ──────────────────────────────────────────────────────────
 
 function buildCritiquePrompt(trade) {
@@ -407,6 +494,7 @@ async function main() {
   const initSqlJs = require('sql.js');
   SQL = await initSqlJs();
 
+  ensureLessonsTable();
   watchDb();
 
   const app = express();
@@ -527,6 +615,13 @@ async function main() {
       }
 
       res.json(critique);
+
+      // Fire-and-forget: extract a structured lesson for closed trades.
+      if (trade.exit_at) {
+        extractAndSaveLesson(trade, critiqueText).catch(e =>
+          console.warn('[journal] background lesson extraction error:', e.message)
+        );
+      }
     } catch (e) {
       console.error('[journal] POST /api/trades/:id/critique:', e);
       res.status(500).json({ error: String(e) });
@@ -622,6 +717,23 @@ async function main() {
     }
   });
 
+  // DELETE /api/trades/:id/critique — clear saved critique so it can be regenerated
+  app.delete('/api/trades/:id/critique', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid_id' });
+    const db = openDb();
+    if (!db) return res.status(404).json({ error: 'not_found' });
+    try {
+      dbRun(db, 'UPDATE trades SET critique_json=NULL WHERE id=?', [id]);
+      saveAndClose(db);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('[journal] DELETE /api/trades/:id/critique:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // POST /api/trades/:id/close — manually close an open trade
   app.post('/api/trades/:id/close', (req, res) => {
     const id = parseInt(req.params.id, 10);
@@ -712,6 +824,71 @@ async function main() {
       res.json(rowToRecord(updated));
     } catch (e) {
       console.error('[journal] POST /api/trades/:id/direction:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // ── Lessons ─────────────────────────────────────────────────────────────────
+
+  // GET /api/lessons — all lessons, newest first
+  app.get('/api/lessons', (_req, res) => {
+    const db = openDb();
+    if (!db) return res.json([]);
+    try {
+      const rows = queryAll(db, 'SELECT * FROM trade_lessons ORDER BY created_at DESC');
+      closeDb(db);
+      res.json(rows.map(r => ({ ...r, approved: r.approved === 1 || r.approved === true })));
+    } catch (e) {
+      console.error('[journal] GET /api/lessons:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // PATCH /api/lessons/:id — approve or edit a lesson
+  app.patch('/api/lessons/:id', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid_id' });
+    const { approved, lesson_text, pattern, direction, outcome, context_text } = req.body;
+    const db = openDb();
+    if (!db) return res.status(404).json({ error: 'not_found' });
+    try {
+      const existing = queryOne(db, 'SELECT * FROM trade_lessons WHERE id=?', [id]);
+      if (!existing) { closeDb(db); return res.status(404).json({ error: 'not_found' }); }
+      dbRun(db, `UPDATE trade_lessons SET
+        approved=?, lesson_text=?, pattern=?, direction=?, outcome=?, context_text=?
+        WHERE id=?`, [
+        approved !== undefined ? (approved ? 1 : 0) : existing.approved,
+        lesson_text  ?? existing.lesson_text,
+        pattern      !== undefined ? pattern      : existing.pattern,
+        direction    !== undefined ? direction    : existing.direction,
+        outcome      !== undefined ? outcome      : existing.outcome,
+        context_text !== undefined ? context_text : existing.context_text,
+        id,
+      ]);
+      const updated = queryOne(db, 'SELECT * FROM trade_lessons WHERE id=?', [id]);
+      saveAndClose(db);
+      res.json({ ...updated, approved: updated.approved === 1 });
+    } catch (e) {
+      console.error('[journal] PATCH /api/lessons/:id:', e);
+      try { closeDb(db); } catch {}
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // DELETE /api/lessons/:id — remove a lesson
+  app.delete('/api/lessons/:id', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'invalid_id' });
+    const db = openDb();
+    if (!db) return res.status(404).json({ error: 'not_found' });
+    try {
+      dbRun(db, 'DELETE FROM trade_lessons WHERE id=?', [id]);
+      saveAndClose(db);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('[journal] DELETE /api/lessons/:id:', e);
       try { closeDb(db); } catch {}
       res.status(500).json({ error: String(e) });
     }

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage } from './bridge';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider } from './bridge';
 import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
@@ -309,6 +309,7 @@ app.on('ready', () => {
 
   // Trade journal store (standalone journal server runs separately via `pnpm journal`)
   tradeStore = new TradeStore(app.getPath('userData'));
+  setLessonsProvider(() => tradeStore?.getApprovedLessons() ?? []);
 
   // Watch for journal-reset signal written by the journal server's DELETE /api/trades.
   // The journal server uses sql.js (raw file I/O) which bypasses SQLite's lock protocol,

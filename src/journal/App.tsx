@@ -4,13 +4,15 @@ import { TradeList } from './pages/TradeList';
 import { Stats } from './pages/Stats';
 import { Analysis } from './pages/Analysis';
 import { Config } from './pages/Config';
+import { Lessons } from './pages/Lessons';
 
-type RouteKey = '#/' | '#/trades' | '#/stats' | '#/analysis' | '#/config';
+type RouteKey = '#/' | '#/trades' | '#/stats' | '#/lessons' | '#/analysis' | '#/config';
 
 const ROUTES: Record<RouteKey, React.ComponentType> = {
   '#/':         Today,
   '#/trades':   TradeList,
   '#/stats':    Stats,
+  '#/lessons':  Lessons,
   '#/analysis': Analysis,
   '#/config':   Config,
 };
@@ -18,6 +20,7 @@ const ROUTES: Record<RouteKey, React.ComponentType> = {
 function normalizeHash(hash: string): RouteKey {
   if (hash === '#/trades')   return '#/trades';
   if (hash === '#/stats')    return '#/stats';
+  if (hash === '#/lessons')  return '#/lessons';
   if (hash === '#/analysis') return '#/analysis';
   if (hash === '#/config')   return '#/config';
   return '#/';
@@ -42,6 +45,7 @@ export function App() {
     { label: 'Today',    href: '#/' },
     { label: 'Trades',   href: '#/trades' },
     { label: 'Stats',    href: '#/stats' },
+    { label: 'Lessons',  href: '#/lessons' },
     { label: 'Analysis', href: '#/analysis' },
     { label: 'Config',   href: '#/config' },
   ];
