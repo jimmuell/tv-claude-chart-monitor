@@ -43,6 +43,16 @@ export class PnlTracker {
   // startup-residual P&L (paper trading carries over yesterday's gross on connect).
   private hasObservedLivePosition = false;
 
+  // When the auto-trade executor submits an order it calls suppressNextEntry() so the
+  // pnl-tracker skips ENTRY detection for one poll cycle, preventing a duplicate
+  // "Manually placed trade" record from racing against the auto-trade's recordEntry call.
+  private suppressEntryUntil: number = 0;
+
+  /** Call this just before submitting an auto-trade order. */
+  suppressNextEntry(durationMs = 30_000): void {
+    this.suppressEntryUntil = Date.now() + durationMs;
+  }
+
   // Gross change that may be a real missed trade — confirmed on the next poll.
   // If a position appears on the next poll, this was a paper-trading P&L reset on
   // position open (not a trade); otherwise we fire the rescue.
@@ -182,8 +192,18 @@ export class PnlTracker {
             // Still flat with no position: confirmed real missed trade — fire rescue.
             const pr = this.pendingRescue;
             this.pendingRescue = null;
-            const rescueDir = detectedDirection ?? this.lastKnownDirection;
-            if (rescueDir === null) {
+            const rescueDir     = detectedDirection ?? this.lastKnownDirection;
+            const hasFillEvidence = ((data.buyFills ?? 0) > 0 || (data.sellFills ?? 0) > 0);
+
+            if (rescueDir === null && !hasFillEvidence) {
+              // No direction signal AND no fill rows visible — the user was almost certainly
+              // on the Balances tab throughout. The gross change alone is too weak to prove
+              // a real trade happened (paper-trading account-state resets look identical).
+              // Suppress to avoid phantom records; if a real trade occurred the user can
+              // add it manually via "+ Log Open Trade".
+              console.warn(`[pnl-tracker] RESCUE suppressed — direction and fill data both unavailable (Balances tab likely active throughout). pnlGross=${pr.pnlGross}. If a real trade occurred, use "+ Log Open Trade" to record it manually.`);
+            } else if (rescueDir === null) {
+              // Fills are visible but direction is still unclear — record for manual review.
               console.warn(`[pnl-tracker] RESCUE: direction unknown pnlGross=${pr.pnlGross} buys=${data.buyFills} sells=${data.sellFills} — recording 'unknown', needs_review=1`);
               this.tradeStore.recordEntry({
                 symbol: pr.exitSymbol, timeframe: '1', direction: 'unknown',
@@ -195,6 +215,10 @@ export class PnlTracker {
                 account_type: pr.acctType, direction_source: 'unknown',
                 entry_source: 'rescued', needs_review: true,
               });
+              this.tradeStore.recordExitForOpenTrade(
+                { exit_at: pr.exitAt, pnl_gross: pr.pnlGross, pnl_net: pr.pnlNet },
+                pr.exitSymbol, pr.acctType,
+              );
             } else {
               const rescueSrc = (detectedDirection ? directionSource : 'cached') as TradeEntry['direction_source'];
               console.log(`[pnl-tracker] RESCUE: missed trade pnlGross=${pr.pnlGross} dir=${rescueDir} src=${rescueSrc}`);
@@ -208,11 +232,11 @@ export class PnlTracker {
                 account_type: pr.acctType, direction_source: rescueSrc,
                 entry_source: 'rescued', needs_review: false,
               });
+              this.tradeStore.recordExitForOpenTrade(
+                { exit_at: pr.exitAt, pnl_gross: pr.pnlGross, pnl_net: pr.pnlNet },
+                pr.exitSymbol, pr.acctType,
+              );
             }
-            this.tradeStore.recordExitForOpenTrade(
-              { exit_at: pr.exitAt, pnl_gross: pr.pnlGross, pnl_net: pr.pnlNet },
-              pr.exitSymbol, pr.acctType,
-            );
           }
         }
 
@@ -264,7 +288,11 @@ export class PnlTracker {
 
         const acctType = data.accountType ?? this.lastAccountType;
         console.log(`[pnl-tracker] entry-check: posFromPanel=${JSON.stringify(posFromPanel)} hasNonZeroOte=${hasNonZeroOte} flatToNonFlat=${flatToNonFlat} tabCount=${data.positionsTabCount} hasLivePosition=${hasLivePosition} dir=${detectedDirection} effectiveDir=${effectiveDirection} buys=${data.buyFills} sells=${data.sellFills} hasOpenTrade=${this.tradeStore?.hasOpenTrade(currentSymbol, acctType)}`);
-        if (this.tradeStore && hasLivePosition && effectiveDirection !== null && !this.tradeStore.hasOpenTrade(currentSymbol, acctType)) {
+        const entryDetectionSuppressed = Date.now() < this.suppressEntryUntil;
+        if (entryDetectionSuppressed) {
+          console.log(`[pnl-tracker] ENTRY detection suppressed — auto-trade in flight (${Math.round((this.suppressEntryUntil - Date.now()) / 1000)}s remaining)`);
+        }
+        if (this.tradeStore && hasLivePosition && effectiveDirection !== null && !this.tradeStore.hasOpenTrade(currentSymbol, acctType) && !entryDetectionSuppressed) {
           const src = posFromPanel ? 'positions panel' : detectedDirection ? 'order history net' : 'cached direction';
           console.log(`[pnl-tracker] ENTRY detected — direction=${effectiveDirection} (${src}) entry=${posFromPanel?.entryPrice ?? null}`);
           this.tradeStore.recordEntry({
