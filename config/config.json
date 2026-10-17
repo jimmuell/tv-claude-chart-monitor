@@ -5,10 +5,28 @@
     "pollIntervalMs": 1000,
     "useMockReader": false
   },
-  "anthropic": {
+  "llm": {
+    "provider": "anthropic",
     "apiKeyEnv": "ANTHROPIC_API_KEY",
-    "model": "claude-sonnet-4-6",
+    "model": "claude-haiku-4-5",
+    "fastModel": "claude-haiku-4-5",
     "maxOutputTokens": 2500,
+    "enabled": true
+  },
+  "gemini": {
+    "provider": "gemini",
+    "apiKeyEnv": "GEMINI_API_KEY",
+    "model": "gemini-3-flash-preview",
+    "fallbackModels": [
+      "gemini-3.6-flash",
+      "gemini-3.8-flash"
+    ],
+    "fastModel": "gemini-3.5-flash-lite",
+    "maxOutputTokens": 2500,
+    "thinkingBudget": 0,
+    "temperature": 0.4,
+    "timeoutMs": 20000,
+    "maxPasses": 3,
     "enabled": true
   },
   "session": {

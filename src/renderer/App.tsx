@@ -157,9 +157,19 @@ function stripLeadingNumber(text: string): string {
   return text.replace(/^\d+[.)]\s*/, '');
 }
 
-function splitBullets(text: string): string[] {
-  const parts = text.split(/\s*[•·]\s*|\n+/).map(s => s.trim()).filter(Boolean);
-  return parts.length > 1 ? parts : [text];
+function splitBullets(text: unknown): string[] {
+  // Defence in depth. commentary.js normalizes card shapes at the provider
+  // boundary, but a model can always invent a new one, and a single mistyped
+  // field must never throw — an uncaught render error unmounts the whole panel
+  // and leaves the trader staring at a blank window mid-session.
+  const str = Array.isArray(text)
+    ? text.filter(x => typeof x === 'string').join('\n')
+    : typeof text === 'string' ? text
+    : text == null ? ''
+    : String(text);
+  if (!str) return [];
+  const parts = str.split(/\s*[•·]\s*|\n+/).map(s => s.trim()).filter(Boolean);
+  return parts.length > 1 ? parts : [str];
 }
 
 // ── Countdown formatter ────────────────────────────────────────────────────

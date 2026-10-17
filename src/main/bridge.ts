@@ -39,18 +39,48 @@ interface TvConfig {
   useMockReader: boolean;
 }
 
-interface AnthropicConfig {
+interface LlmConfig {
+  /** Which backend in src/shared/llm-providers.js handles the call. */
+  provider?: 'anthropic' | 'gemini';
   apiKeyEnv: string;
   model: string;
+  /** Cheap model for high-volume work (journal lesson extraction). Defaults to `model`. */
+  fastModel?: string;
   maxOutputTokens: number;
   enabled: boolean;
+  /** Gemini only: 0 disables thinking so the token budget goes to JSON output. */
+  thinkingBudget?: number;
+  temperature?: number;
+  timeoutMs?: number;
+  /** Gemini only: models walked after `model` when one is congested or capped. */
+  fallbackModels?: string[];
+  /** Gemini only: how many times the whole model chain is walked. */
+  maxPasses?: number;
 }
 
 interface AppConfig {
-  tv:        TvConfig;
-  anthropic: AnthropicConfig;
-  filter?:   Record<string, unknown>;
+  tv:         TvConfig;
+  /** Active LLM backend. Falls back to `anthropic` for pre-provider configs. */
+  llm?:       LlmConfig;
+  /** Back-compat only: pre-provider configs had no `llm`. Not the parked block. */
+  anthropic?: LlmConfig;
+  /** Parked alternative backend, copied over `llm` to switch providers. */
+  gemini?:    LlmConfig;
+  filter?:    Record<string, unknown>;
   [key: string]: unknown;
+}
+
+/**
+ * Resolve the active LLM block. `llm` wins when present; `anthropic` is the
+ * back-compat path for configs written before providers existed (and stays in
+ * config.json as a ready-made block to switch back to).
+ */
+function resolveLlm(cfg: AppConfig): LlmConfig {
+  const block = cfg.llm ?? cfg.anthropic;
+  if (!block) {
+    throw new Error('config.json is missing both an `llm` and an `anthropic` block');
+  }
+  return { provider: 'anthropic', ...block };
 }
 
 function loadConfig(): AppConfig {
@@ -84,7 +114,7 @@ const { buildContext } = require(path.join(app.getAppPath(), 'src/shared/context
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { CommentaryEngine } = require(path.join(app.getAppPath(), 'src/shared/commentary')) as {
   CommentaryEngine: new (
-    anthropicConfig: AnthropicConfig,
+    llmConfig: LlmConfig,
     log: Logger,
   ) => {
     analyze(ctx: unknown, reasons: Array<{ kind: string }>): Promise<unknown>;
@@ -106,7 +136,7 @@ let statusCallback: ((status: string) => void) | null = null;
 let _cdpPortOverride: number | null = null;
 let _apiKeyOverride:  string | null = null;
 // Capture original env value before any override is applied
-const _originalApiKeyValue: string | undefined = process.env[config.anthropic.apiKeyEnv];
+const _originalApiKeyValue: string | undefined = process.env[resolveLlm(config).apiKeyEnv];
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -125,12 +155,13 @@ export function setCdpPort(port: number | null): void {
 
 export function setApiKeyOverride(key: string): void {
   _apiKeyOverride = key || null;
+  const keyEnv = resolveLlm(config).apiKeyEnv;
   if (_apiKeyOverride) {
-    process.env[config.anthropic.apiKeyEnv] = _apiKeyOverride;
+    process.env[keyEnv] = _apiKeyOverride;
   } else if (_originalApiKeyValue !== undefined) {
-    process.env[config.anthropic.apiKeyEnv] = _originalApiKeyValue;
+    process.env[keyEnv] = _originalApiKeyValue;
   } else {
-    delete process.env[config.anthropic.apiKeyEnv];
+    delete process.env[keyEnv];
   }
   engine = null;
 }
@@ -143,7 +174,7 @@ export function resetConnection(): void {
 
 export function getKeyStatus(): KeyStatus {
   if (_apiKeyOverride) return 'override';
-  const val = process.env[config.anthropic.apiKeyEnv];
+  const val = process.env[resolveLlm(config).apiKeyEnv];
   return val ? 'env' : 'missing';
 }
 
@@ -187,7 +218,7 @@ async function ensureConnected(): Promise<void> {
 /** Ensure the CommentaryEngine is initialised. */
 function ensureEngine(): void {
   if (!engine) {
-    engine = new CommentaryEngine(config.anthropic, logger);
+    engine = new CommentaryEngine(resolveLlm(config), logger);
   }
 }
 

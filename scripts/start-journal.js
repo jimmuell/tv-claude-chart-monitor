@@ -10,12 +10,28 @@ const express  = require('express');
 const path     = require('path');
 const os       = require('os');
 const fs       = require('fs');
-const Anthropic = require('@anthropic-ai/sdk').default;
+const { createProvider } = require(path.join(__dirname, '..', 'src/shared/llm-providers'));
 
 const DB_PATH = process.env.JOURNAL_DB_PATH
   || path.join(os.homedir(), 'Library', 'Application Support', 'trading-analyzer', 'trades.db');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'config.json');
+
+// Resolves the active LLM backend from config.json's `llm` block (falling back
+// to `anthropic` for pre-provider configs), matching bridge.ts's resolveLlm.
+// Read fresh on every call so editing config.json takes effect without a
+// restart, consistent with how the rest of the journal reads CONFIG_PATH.
+function llmProvider() {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {}
+  const block = cfg.llm || cfg.anthropic;
+  if (!block) throw new Error('config.json has no `llm` or `anthropic` block');
+  const provider = createProvider({ provider: 'anthropic', ...block }, console);
+  if (!provider.hasKey) {
+    throw new Error(`${block.apiKeyEnv} not set for provider '${provider.name}'`);
+  }
+  return provider;
+}
 
 const STATIC_DIR = path.join(__dirname, '..', 'dist', 'journal');
 
@@ -437,21 +453,18 @@ async function main() {
       try { return res.json(JSON.parse(trade.critique_json)); } catch {}
     }
 
-    // Generate via Anthropic
+    // Generate via the configured LLM provider.
     try {
-      const apiKey = process.env.ANTHROPIC_API_KEY || '';
-      if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
+      let provider;
+      try { provider = llmProvider(); }
+      catch (e) { return res.status(500).json({ error: e.message }); }
 
-      const client = new Anthropic({ apiKey });
-      const message = await client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 500,
-        messages: [{ role: 'user', content: buildCritiquePrompt(trade) }],
+      // The critique is prose, not JSON — opt out of the provider's JSON mode.
+      const text = await provider.complete(null, buildCritiquePrompt(trade), {
+        maxOutputTokens: 500,
+        json: false,
       });
-
-      const first = message.content[0];
-      if (first.type !== 'text') throw new Error('Unexpected Anthropic response type');
-      const critiqueText = stripFences(first.text);
+      const critiqueText = stripFences(text);
 
       // Persist
       const critique = { text: critiqueText, created_at: Date.now() };
@@ -770,13 +783,7 @@ Respond with ONLY a raw JSON object (no markdown, no code fences). Shape:
 }`;
 
     try {
-      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' });
-      const msg = await client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      const text = msg.content[0].type === 'text' ? msg.content[0].text : '';
+      const text = await llmProvider().complete(null, prompt, { maxOutputTokens: 1500 });
       const review = JSON.parse(stripFences(text));
       res.json({ ...review, generated_at: Date.now() });
     } catch (e) {

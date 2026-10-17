@@ -1,5 +1,6 @@
 // commentary.js
-// Calls the Anthropic API to turn a structured chart context into the kind of
+// Calls the configured LLM provider (see llm-providers.js) to turn a structured
+// chart context into the kind of
 // trader-style breakdown the user wants:
 //   - objective state of the chart
 //   - setup verdict (was/is this a valid trade)
@@ -9,7 +10,7 @@
 // Returns a structured object so the UI can render consistently and so the
 // journal can store typed fields.
 
-const Anthropic = require("@anthropic-ai/sdk").default || require("@anthropic-ai/sdk");
+const { createProvider } = require("./llm-providers");
 
 const SYSTEM_PROMPT = `You are an experienced futures price-action trader and coach reviewing a freshly-closed candle on a futures chart in real time. Your job is to give the trader a short, decisive, nuanced read on what just happened and what to do about it.
 
@@ -22,7 +23,7 @@ You must think in terms of MARKET STRUCTURE first:
 Format your response as STRICT JSON matching this schema:
 {
   "headline": string,                 // one short line, <= 90 chars, notification-style
-  "objective": string,                // 2-4 short bullet sentences: what the chart shows NOW
+  "objective": string,                // ONE string (NOT an array), 2-4 short sentences separated by newlines: what the chart shows NOW
   "steps_what_happened": string[],    // 2-4 numbered play-by-play steps, each one sentence, no repeats
   "setup_verdict": "valid_long" | "valid_short" | "valid_long_was" | "valid_short_was" | "no_trade" | "wait",
   "entry_was": string | null,         // where entry was (price + reason), null if no setup
@@ -87,6 +88,67 @@ RULES:
 - CANDLESTICK PATTERNS: Populate "candlestick_patterns" only when one or more patterns from the "pattern tags:" line are genuinely significant in context (e.g. a bullish engulfing at a key support level matters; a random doji in the middle of nowhere does not). Return 1-3 entries max. Use bar_offset 0 for the just-closed candle, 1 for the prior candle. Write "meaning" for a beginner in one plain sentence. Return null if no pattern is contextually notable.
 - Output JSON only. No prose around it.`;
 
+// ---------------------------------------------------------------------------
+// Card shape normalization
+// ---------------------------------------------------------------------------
+//
+// The card's declared types (CommentaryResult in shared/types.ts) are not
+// enforced by any provider: Gemini asks for JSON without pinning a schema, and
+// the Anthropic path has no structured-output constraint at all. So the shape
+// is whatever the model felt like, and it varies BY MODEL.
+//
+// Concretely: `objective` is declared string but described in SYSTEM_PROMPT as
+// "2-4 short bullet sentences", and a sibling field (steps_what_happened)
+// really is an array. Claude Haiku reads that and returns an array; Gemini
+// returned a string. The renderer called splitBullets(objective), got
+// "text.split is not a function", and React unmounted the entire panel — one
+// mistyped field blanked the whole trading UI.
+//
+// Normalizing here rather than in the renderer keeps the contract enforced at
+// the boundary that owns it, so every consumer (UI, journal, trade-store)
+// receives the declared shape.
+
+const STRING_FIELDS = [
+  'headline', 'objective', 'entry_was', 'what_now', 'what_not',
+  'next_trigger', 'key_lesson', 'bottom_line', 'structure_read',
+];
+const STRING_ARRAY_FIELDS = ['steps_what_happened'];
+
+function toText(v) {
+  // Newline-joined because the UI's splitBullets() splits on newlines — an
+  // array of bullets round-trips to exactly the bullets the model intended.
+  if (Array.isArray(v)) {
+    return v.filter((x) => typeof x === 'string' || typeof x === 'number')
+      .map(String).join('\n');
+  }
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  // A plain object would render as "[object Object]"; stringify so the bad
+  // shape is visible and reportable instead of silently meaningless.
+  return JSON.stringify(v);
+}
+
+/** Coerce a parsed card to its declared field types. Mutates and returns it. */
+function normalizeCard(card) {
+  if (!card || typeof card !== 'object') return card;
+
+  for (const f of STRING_FIELDS) {
+    const v = card[f];
+    // null is meaningful for the nullable fields — never turn it into "null".
+    if (v == null || typeof v === 'string') continue;
+    card[f] = toText(v);
+  }
+
+  for (const f of STRING_ARRAY_FIELDS) {
+    const v = card[f];
+    if (typeof v === 'string') {
+      card[f] = v.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+    }
+  }
+
+  return card;
+}
+
 function buildUserMessage(ctx) {
   // Compress recent action.
   const recent = ctx.recent.map(c => `${c.time} O:${c.open} H:${c.high} L:${c.low} C:${c.close}`).join("\n");
@@ -121,6 +183,20 @@ function buildUserMessage(ctx) {
     orbSection = `\nORB (Opening Range Breakout) context:\n${orbLines.map(l => "  " + l).join("\n")}\n`;
   }
 
+  let lessonsSection = '';
+  if (ctx.lessons && ctx.lessons.length > 0) {
+    const lines = ctx.lessons.map(l => {
+      const parts = [];
+      if (l.pattern)   parts.push(`[${l.pattern}]`);
+      if (l.direction) parts.push(l.direction.toUpperCase());
+      if (l.outcome)   parts.push(`(${l.outcome})`);
+      parts.push(l.lesson_text);
+      if (l.context_text) parts.push(`— applies when: ${l.context_text}`);
+      return `• ${parts.join(' ')}`;
+    });
+    lessonsSection = `\nLESSONS FROM PAST TRADES — incorporate these into your verdict and confidence score:\n${lines.join('\n')}\n`;
+  }
+
   return `Symbol: ${ctx.symbol}  Timeframe: ${ctx.timeframe}m  Mode: ${ctx.replayMode ? "REPLAY" : "LIVE"}
 
 Just-closed candle:
@@ -136,26 +212,37 @@ ${zonesLines}
 
 Recent 10 closed bars (oldest first):
 ${recent}
-`;
+${lessonsSection}`;
 }
 
 class CommentaryEngine {
-  constructor(anthropicConfig, logger) {
-    this.cfg = anthropicConfig;
+  constructor(llmConfig, logger) {
+    this.cfg = llmConfig;
     this.logger = logger || console;
-    const apiKey = process.env[anthropicConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
-    if (!apiKey) {
-      this.logger.warn(`[commentary] no API key in env ${anthropicConfig.apiKeyEnv}; commentary will be stubbed`);
-      this.client = null;
+    try {
+      this.provider = createProvider(llmConfig, this.logger);
+    } catch (err) {
+      // Bad provider name in config.json. Keep the engine constructible so the
+      // app still runs; every analyze() call stubs with the reason.
+      this.logger.error(`[commentary] ${err.message}`);
+      this.provider = null;
+      this.providerError = err.message;
+      return;
+    }
+    if (!this.provider.hasKey) {
+      this.logger.warn(
+        `[commentary] no API key in env ${llmConfig.apiKeyEnv} for provider ` +
+        `'${this.provider.name}'; commentary will be stubbed`
+      );
     } else {
-      this.client = new Anthropic({ apiKey });
+      this.logger.info(`[commentary] provider=${this.provider.name} model=${this.provider.model}`);
     }
   }
 
   async analyze(ctx, reasons) {
     // Phase 4b.2 — if the only reasons are suggest_level entries, short-circuit
     // and produce a deterministic "💡 SUGGESTION" card without calling the
-    // Anthropic API. Suggestions are nudges to draw a line in TV; they don't
+    // LLM. Suggestions are nudges to draw a line in TV; they don't
     // need an LLM read.
     const allSuggestLevel = Array.isArray(reasons) && reasons.length > 0
       && reasons.every((r) => r && r.kind === 'suggest_level');
@@ -171,22 +258,18 @@ class CommentaryEngine {
     }
 
     if (!this.cfg.enabled) return this._stub(ctx, reasons, "disabled in config");
-    if (!this.client) return this._stub(ctx, reasons, "no API key");
+    if (!this.provider) return this._stub(ctx, reasons, this.providerError || "no provider");
+    if (!this.provider.hasKey) return this._stub(ctx, reasons, "no API key");
 
     const userMsg = buildUserMessage(ctx) + `\nFire reasons: ${JSON.stringify(reasons)}`;
     try {
-      const res = await this.client.messages.create({
-        model: this.cfg.model || "claude-sonnet-4-6",
-        // Bumped from 700 in Phase 4a — the new steps_what_happened (array of
-        // 2-4 items) + bottom_line fields add ~200 tokens to typical responses,
-        // and longer setups can run another 300+. 700 was truncating mid-string,
-        // producing JSON without a closing brace and breaking _extractJson.
-        max_tokens: this.cfg.maxOutputTokens || 2500,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userMsg }],
-      });
-      const text = res.content?.[0]?.text || "";
-      const json = this._extractJson(text);
+      // maxOutputTokens was bumped from 700 in Phase 4a — steps_what_happened
+      // (array of 2-4 items) + bottom_line add ~200 tokens to typical
+      // responses, and longer setups run another 300+. 700 truncated
+      // mid-string, producing JSON without a closing brace and breaking
+      // _extractJson. The provider owns the request shape from here.
+      const text = await this.provider.complete(SYSTEM_PROMPT, userMsg);
+      const json = normalizeCard(this._extractJson(text));
       if (!json) {
         // Log a generous sample so we can diagnose without UI access. Most
         // failure modes (smart quotes, unescaped chars, malformed structure)
@@ -202,7 +285,7 @@ class CommentaryEngine {
     }
   }
 
-  // Robustly extract a JSON object from a Claude text response.
+  // Robustly extract a JSON object from a model text response.
   // Handles four patterns and a sanitize-then-retry pass:
   //   1. Raw JSON: { ... }
   //   2. Markdown-fenced JSON: ```json\n{ ... }\n``` (or just ```\n{ ... }\n```)
@@ -210,7 +293,7 @@ class CommentaryEngine {
   //   4. Fence-with-no-close-fence (truncated trailing prose)
   //   5. Sanitized retry of each candidate — replaces curly quotes with
   //      straight quotes, which are the single most common parse failure when
-  //      Claude generates prose-heavy content with quoted phrases.
+  //      the model generates prose-heavy content with quoted phrases.
   _extractJson(text) {
     if (!text) return null;
 
@@ -404,4 +487,4 @@ class CommentaryEngine {
   }
 }
 
-module.exports = { CommentaryEngine, SYSTEM_PROMPT, buildUserMessage };
+module.exports = { CommentaryEngine, SYSTEM_PROMPT, buildUserMessage, normalizeCard };
