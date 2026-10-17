@@ -23,10 +23,11 @@
 
 import * as fs   from 'fs';
 import * as path from 'path';
-import { app, Notification } from 'electron';
-import { evalPage }          from './bridge';
-import { readAccountData }   from './pnl-reader';
-import { getSettings }       from './settings';
+import { app, Notification }      from 'electron';
+import { evalPage, peekBarState } from './bridge';
+import { readAccountData }        from './pnl-reader';
+import { getSettings }            from './settings';
+import type { AutoTradeAttempt }  from '../shared/types';
 
 // ---------------------------------------------------------------------------
 // Cooldown — persisted so server restarts don't reset the window
@@ -334,19 +335,36 @@ export async function submitMarketOrder(
   entry = 0,           // Claude's intended entry price; 0 = test mode (fall back to live DOM price)
   trailingStop = false,
   ignoreWindow = false, // true for manual test buttons — bypasses the time window guard
-): Promise<'submitted' | 'skipped' | 'error'> {
+): Promise<AutoTradeAttempt> {
   console.log(`[order-executor] ▶ direction=${direction} entry=${entry || 'live'} stop=${stop} target=${target}`);
 
   // Guard 0: non-finite prices
   if (!Number.isFinite(stop) || !Number.isFinite(target)) {
     console.error('[order-executor] ✗ guard-0: invalid prices');
-    return 'error';
+    return { outcome: 'error', reason: 'Invalid stop/target price' };
   }
 
-  // Guard 0b: trading window — skipped for manual test buttons
+  // Guard 0b: REPLAY MODE — never send a real broker order from replayed prices.
+  //
+  // This used to be blocked only by accident: the trading-window check and the
+  // fail-closed account read both happen to fire in replay because TradingView
+  // swaps out the broker panel. If the panel were ever readable behind an
+  // active replay, a replay-derived verdict would have hit the live order
+  // ticket. This makes the block explicit and applies it to the manual test
+  // buttons too (ignoreWindow does NOT bypass it).
+  //
+  // peekBarState() returns null when the chart is unreadable; that is not
+  // treated as replay, because guard 2 below already fails closed on it.
+  const barState = await peekBarState();
+  if (barState?.replayMode) {
+    console.log('[order-executor] ✗ guard-0b: chart is in Replay mode — no live order');
+    return { outcome: 'skipped', reason: 'Chart is in Replay mode — live orders blocked' };
+  }
+
+  // Guard 0c: trading window — skipped for manual test buttons
   if (!ignoreWindow && !isAutoTradeWindow()) {
     console.log('[order-executor] ✗ outside trading window');
-    return 'skipped';
+    return { outcome: 'skipped', reason: 'Outside the auto-trade window' };
   }
 
   // Guard 1: cooldown
@@ -355,7 +373,7 @@ export async function submitMarketOrder(
   if (msSinceLast < COOLDOWN_MS) {
     const remaining = Math.ceil((COOLDOWN_MS - msSinceLast) / 1000);
     console.log(`[order-executor] ✗ guard-1: cooldown (${remaining}s remaining)`);
-    return 'skipped';
+    return { outcome: 'skipped', reason: `Cooldown active — ${remaining}s remaining` };
   }
   console.log('[order-executor] ✓ guard-1: cooldown clear');
 
@@ -365,7 +383,10 @@ export async function submitMarketOrder(
     const acct = await readAccountData();
     if (!acct) {
       console.log('[order-executor] ✗ guard-2: panel unreadable — skipping (fail-closed)');
-      return 'skipped';
+      return {
+        outcome: 'skipped',
+        reason:  'Account panel unreadable — open the AMP Live or Paper Trading panel',
+      };
     }
     console.log('[order-executor] guard-2: OTE =', acct.unrealizedPnl ?? 'null', 'posTab =', acct.positionsTabCount ?? 'null', 'openPos =', JSON.stringify(acct.openPosition));
     const hasOpenPos =
@@ -374,11 +395,11 @@ export async function submitMarketOrder(
       (acct.unrealizedPnl !== null && acct.unrealizedPnl !== 0);
     if (hasOpenPos) {
       console.log('[order-executor] ✗ guard-2: position already open — skipping');
-      return 'skipped';
+      return { outcome: 'skipped', reason: 'A position is already open' };
     }
   } catch (err) {
     console.warn('[order-executor] guard-2: pnl read failed — skipping (fail-closed):', (err as Error).message);
-    return 'skipped';
+    return { outcome: 'skipped', reason: `Account read failed — ${(err as Error).message}` };
   }
 
   // CDP interaction
@@ -387,7 +408,7 @@ export async function submitMarketOrder(
     raw = await evalPage(buildOrderExpr(direction, stop, target, entry, trailingStop));
   } catch (err) {
     console.error('[order-executor] ✗ evalPage threw:', (err as Error).message);
-    return 'error';
+    return { outcome: 'error', reason: `TradingView unreachable — ${(err as Error).message}` };
   }
   console.log('[order-executor] CDP result:', raw);
 
@@ -417,24 +438,26 @@ export async function submitMarketOrder(
   if (!result.ok && result.error === 'wrong-qty') {
     const msg = `Chart qty is ${result.qty || '?'} — set to 1 before auto-trading`;
     notifyWarn('Auto-trade aborted', msg);
-    return 'skipped';
+    return { outcome: 'skipped', reason: msg };
   }
 
   // Side did not confirm → hard abort, no order placed
   if (!result.ok && result.error === 'side-not-confirmed') {
-    notifyWarn('Auto-trade ABORTED', 'Side control did not set — no order was placed');
-    return 'error';
+    const msg = 'Side control did not set — no order was placed';
+    notifyWarn('Auto-trade ABORTED', msg);
+    return { outcome: 'error', reason: msg };
   }
 
   // Bracket did not confirm → hard abort, no order placed
   if (!result.ok && result.error === 'bracket-not-confirmed') {
-    notifyWarn('Auto-trade ABORTED', 'Stop/target did not set — no order was placed');
-    return 'error';
+    const msg = 'Stop/target did not set — no order was placed';
+    notifyWarn('Auto-trade ABORTED', msg);
+    return { outcome: 'error', reason: msg };
   }
 
   if (!result.ok) {
     console.error('[order-executor] ✗ CDP error:', result.error);
-    return 'error';
+    return { outcome: 'error', reason: `Order ticket error — ${result.error ?? 'unknown'}` };
   }
 
   writeLastSubmittedAt(Date.now());
@@ -443,5 +466,5 @@ export async function submitMarketOrder(
   if (Notification.isSupported()) {
     new Notification({ title: '🟢 Order submitted', body: summary, silent: false }).show();
   }
-  return 'submitted';
+  return { outcome: 'submitted', reason: summary };
 }

@@ -35,6 +35,7 @@ export const IPC = {
   ALERT_CREATE:              'alert:create',
   ALERT_REMOVE:              'alert:remove',
   AUTO_TRADE_TEST:           'autoTrade:test',
+  AUTO_TRADE_STATUS:         'autoTrade:status',
   COOLDOWN_DELETE:           'cooldown:delete',
   COOLDOWN_STATUS:           'cooldown:status',
   TRADE_WINDOW_STATUS:       'tradeWindow:status',
@@ -245,6 +246,31 @@ export interface AnalysisResult {
   commentary:     CommentaryResult;
 }
 
+// ---------------------------------------------------------------------------
+// Auto-trade
+// ---------------------------------------------------------------------------
+
+export type AutoTradeOutcome = 'submitted' | 'skipped' | 'error';
+
+/**
+ * The result of one auto-trade decision, including WHY it went that way.
+ *
+ * Every guard used to fail silently to the console, which made "why isn't it
+ * trading?" unanswerable without a code trace. This is pushed to the renderer
+ * on every decision so the reason is visible in the panel.
+ */
+export interface AutoTradeAttempt {
+  outcome: AutoTradeOutcome;
+  /** Short human-readable reason, shown verbatim in the UI. */
+  reason:  string;
+}
+
+export interface AutoTradeStatus extends AutoTradeAttempt {
+  /** Epoch ms when the decision was made. */
+  at:         number;
+  direction?: 'long' | 'short';
+}
+
 export interface GDriveStatus {
   authenticated: boolean;
   email?: string;
@@ -285,7 +311,9 @@ export interface ElectronAPI {
   writePatternMarkers(markers: PatternMarker[]): Promise<void>;
   createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
   removeAlert(price: number): Promise<void>;
-  testAutoTrade(direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<'submitted' | 'skipped' | 'error'>;
+  testAutoTrade(direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<AutoTradeAttempt>;
+  /** Fires on every auto-trade decision, including the ones that decline to trade. */
+  onAutoTradeStatus(cb: (status: AutoTradeStatus) => void): () => void;
 }
 
 // ---------------------------------------------------------------------------

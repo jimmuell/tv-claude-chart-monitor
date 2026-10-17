@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, PatternMarker, AlertCreatePayload, AlertCreateResult } from '../shared/types';
+import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, PatternMarker, AlertCreatePayload, AlertCreateResult, AutoTradeAttempt, AutoTradeStatus } from '../shared/types';
 
 contextBridge.exposeInMainWorld('api', {
   requestAnalysis: () => ipcRenderer.invoke(IPC.ANALYZE_RUN),
@@ -58,8 +58,13 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(IPC.ALERT_CREATE, payload),
   removeAlert: (price: number): Promise<void> =>
     ipcRenderer.invoke(IPC.ALERT_REMOVE, price),
-  testAutoTrade: (direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<'submitted' | 'skipped' | 'error'> =>
+  testAutoTrade: (direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<AutoTradeAttempt> =>
     ipcRenderer.invoke(IPC.AUTO_TRADE_TEST, direction, stop, target, entry),
+  onAutoTradeStatus: (cb: (status: AutoTradeStatus) => void): (() => void) => {
+    const handler = (_e: unknown, status: AutoTradeStatus) => cb(status);
+    ipcRenderer.on(IPC.AUTO_TRADE_STATUS, handler);
+    return () => ipcRenderer.removeListener(IPC.AUTO_TRADE_STATUS, handler);
+  },
   getCooldownStatus: (): Promise<{ active: boolean; remainingMs: number }> =>
     ipcRenderer.invoke(IPC.COOLDOWN_STATUS),
   getTradeWindowStatus: (): Promise<{ inWindow: boolean; remainingSecs: number; opensInSecs: number }> =>

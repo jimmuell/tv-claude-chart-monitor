@@ -1,4 +1,4 @@
-import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, AlertCreatePayload, AlertCreateResult } from '../shared/types';
+import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, AlertCreatePayload, AlertCreateResult, AutoTradeAttempt, AutoTradeStatus } from '../shared/types';
 
 declare global {
   interface Window {
@@ -26,7 +26,8 @@ declare global {
       writePatternMarkers(markers: import('../shared/types').PatternMarker[]): Promise<void>;
       createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;
       removeAlert(price: number): Promise<void>;
-      testAutoTrade(direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<'submitted' | 'skipped' | 'error'>;
+      testAutoTrade(direction: 'long' | 'short', stop: number, target: number, entry: number): Promise<AutoTradeAttempt>;
+      onAutoTradeStatus(cb: (status: AutoTradeStatus) => void): () => void;
       getCooldownStatus(): Promise<{ active: boolean; remainingMs: number }>;
       getTradeWindowStatus(): Promise<{ inWindow: boolean; remainingSecs: number; opensInSecs: number }>;
       deleteCooldown(): Promise<{ deleted: boolean }>;

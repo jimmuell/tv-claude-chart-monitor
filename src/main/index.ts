@@ -11,7 +11,7 @@ import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
 import { TradeStore } from './trade-store';
-import type { AnalysisResult, PatternMarker, AlertCreatePayload } from '../shared/types';
+import type { AnalysisResult, PatternMarker, AlertCreatePayload, AutoTradeOutcome, AutoTradeStatus } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
@@ -201,6 +201,93 @@ function configuredBracket(entry: number, dir: 'long' | 'short'): { stop: number
     : { stop: entry + stopOffset, target: entry - targetOffset };
 }
 
+/** Push one auto-trade decision (and its reason) to the panel. */
+function pushAutoTradeStatus(
+  outcome: AutoTradeOutcome,
+  reason: string,
+  direction?: 'long' | 'short',
+): void {
+  console.log(`[auto-trade] ${outcome}: ${reason}`);
+  const status: AutoTradeStatus = { outcome, reason, at: Date.now(), direction };
+  mainWindow?.webContents.send(IPC.AUTO_TRADE_STATUS, status);
+}
+
+/**
+ * The single auto-trade decision path, shared by the scheduler and by on-demand
+ * analysis (these were two near-identical copies).
+ *
+ * Every branch that declines to trade now reports WHY via pushAutoTradeStatus,
+ * so the panel can answer "why isn't it trading?" without a console trace.
+ */
+function evaluateAutoTrade(result: AnalysisResult): void {
+  const sv          = result.commentary.setup_verdict;
+  const conf        = result.commentary.confidence ?? 1;
+  const minConf     = readMinConfidence();
+  const confOk      = conf >= minConf;
+  const enabled     = getSettings().autoTrade;
+  const directional = sv === 'valid_long' || sv === 'valid_short';
+  const pct         = (n: number) => `${(n * 100).toFixed(0)}%`;
+
+  console.log(`[auto-trade] verdict=${sv} conf=${pct(conf)} confOk=${confOk} autoTrade=${enabled}`);
+
+  const willTrade = enabled && directional && confOk;
+  if (getSettings().notifications && !willTrade) {
+    notifyVerdict(sv, result.commentary.headline);
+  }
+
+  // Auto-trade switched off — nothing to report, the UI hides the row anyway.
+  if (!enabled) return;
+
+  if (!directional) {
+    pushAutoTradeStatus('skipped', `No directional setup — verdict was "${sv}"`);
+    return;
+  }
+  if (!confOk) {
+    pushAutoTradeStatus('skipped', `Confidence ${pct(conf)} is below the ${pct(minConf)} minimum`);
+    return;
+  }
+
+  const bracket = resolveTradePlanNumbers(result);
+  if (!bracket) {
+    pushAutoTradeStatus('skipped', 'No entry/stop/target in the trade plan');
+    return;
+  }
+
+  const dir = sv === 'valid_long' ? 'long' : 'short';
+  const cb  = configuredBracket(bracket.entry, dir);
+  console.log(`[auto-trade] FIRING ${dir.toUpperCase()} entry=${bracket.entry} stop=${cb.stop} target=${cb.target}`);
+  pnlTracker?.suppressNextEntry();
+
+  submitMarketOrder(dir, cb.stop, cb.target, bracket.entry, getSettings().autoTradeTrailingStop)
+    .then(attempt => {
+      pushAutoTradeStatus(attempt.outcome, attempt.reason, dir);
+      if (attempt.outcome === 'submitted' && tradeStore) {
+        tradeStore.recordEntry({
+          symbol:        result.symbol,
+          timeframe:     result.timeframe,
+          direction:     dir,
+          entry_price:   bracket.entry,
+          stop_price:    cb.stop,
+          target_price:  cb.target,
+          trailing_stop: getSettings().autoTradeTrailingStop,
+          rr_planned:    result.commentary.trade_plan?.rr ?? null,
+          verdict:       sv as 'valid_long' | 'valid_short',
+          headline:      result.commentary.headline ?? null,
+          objective:     result.commentary.objective ?? null,
+          steps_json:    JSON.stringify(result.commentary.steps_what_happened ?? []),
+          structure:     result.commentary.structure_read ?? null,
+          rationale:     result.commentary.trade_plan?.rationale ?? null,
+          patterns_json: JSON.stringify(
+            result.commentary.candlestick_patterns?.map(p => p.name) ?? []
+          ),
+          confidence:    result.commentary.confidence ?? null,
+          account_type:  pnlTracker?.getSnapshot().accountType ?? null,
+        });
+      }
+    })
+    .catch(err => pushAutoTradeStatus('error', (err as Error).message, dir));
+}
+
 function autoDrawResult(result: AnalysisResult): void {
   const levels = result.commentary.key_levels_to_watch;
   if (levels && levels.length > 0) {
@@ -346,56 +433,7 @@ app.on('ready', () => {
     (result) => {
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYSIS_PUSH, result);
-      const sv = result.commentary.setup_verdict;
-      const conf = result.commentary.confidence ?? 1;
-      const minConf = readMinConfidence();
-      const confOk = conf >= minConf;
-      console.log(`[auto-trade] verdict=${sv} conf=${(conf * 100).toFixed(0)}% confOk=${confOk} autoTrade=${getSettings().autoTrade}`);
-      if (!confOk && minConf > 0) {
-        console.log(`[auto-trade] skipped — confidence ${(conf * 100).toFixed(0)}% < min ${(minConf * 100).toFixed(0)}%`);
-      }
-      const willTrade = getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short') && confOk;
-      if (getSettings().notifications && !willTrade) {
-        notifyVerdict(sv, result.commentary.headline);
-      }
-      if (getSettings().autoTrade && (sv === 'valid_long' || sv === 'valid_short') && confOk) {
-        const bracket = resolveTradePlanNumbers(result);
-        if (bracket) {
-          const dir = sv === 'valid_long' ? 'long' : 'short';
-          const cb  = configuredBracket(bracket.entry, dir);
-          console.log(`[auto-trade] FIRING ${dir.toUpperCase()} entry=${bracket.entry} stop=${cb.stop} target=${cb.target}`);
-          submitMarketOrder(dir, cb.stop, cb.target, bracket.entry, getSettings().autoTradeTrailingStop)
-            .then(outcome => {
-              console.log('[auto-trade]', outcome);
-              if (outcome === 'submitted' && tradeStore) {
-                tradeStore.recordEntry({
-                  symbol:        result.symbol,
-                  timeframe:     result.timeframe,
-                  direction:     dir,
-                  entry_price:   bracket.entry,
-                  stop_price:    cb.stop,
-                  target_price:  cb.target,
-                  trailing_stop: getSettings().autoTradeTrailingStop,
-                  rr_planned:    result.commentary.trade_plan?.rr ?? null,
-                  verdict:       sv as 'valid_long' | 'valid_short',
-                  headline:      result.commentary.headline ?? null,
-                  objective:     result.commentary.objective ?? null,
-                  steps_json:    JSON.stringify(result.commentary.steps_what_happened ?? []),
-                  structure:     result.commentary.structure_read ?? null,
-                  rationale:     result.commentary.trade_plan?.rationale ?? null,
-                  patterns_json: JSON.stringify(
-                    result.commentary.candlestick_patterns?.map(p => p.name) ?? []
-                  ),
-                  confidence:    result.commentary.confidence ?? null,
-                  account_type:  pnlTracker?.getSnapshot().accountType ?? null,
-                });
-              }
-            })
-            .catch(err => console.error('[auto-trade] error:', (err as Error).message));
-        } else {
-          console.warn('[auto-trade] skipped — no entry in trade_plan or HPT');
-        }
-      }
+      evaluateAutoTrade(result);
       if (getSettings().autoDraw) autoDrawResult(result);
     },
     (err) => {
@@ -420,56 +458,7 @@ app.on('ready', () => {
       const result = await runAnalysis();
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'complete');
-      const sv2 = result.commentary.setup_verdict;
-      const conf2 = result.commentary.confidence ?? 1;
-      const minConf2 = readMinConfidence();
-      const confOk2 = conf2 >= minConf2;
-      console.log(`[auto-trade] verdict=${sv2} conf=${(conf2 * 100).toFixed(0)}% confOk=${confOk2} autoTrade=${getSettings().autoTrade}`);
-      if (!confOk2 && minConf2 > 0) {
-        console.log(`[auto-trade] skipped — confidence ${(conf2 * 100).toFixed(0)}% < min ${(minConf2 * 100).toFixed(0)}%`);
-      }
-      const willTrade2 = getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short') && confOk2;
-      if (getSettings().notifications && !willTrade2) {
-        notifyVerdict(sv2, result.commentary.headline);
-      }
-      if (getSettings().autoTrade && (sv2 === 'valid_long' || sv2 === 'valid_short') && confOk2) {
-        const bracket2 = resolveTradePlanNumbers(result);
-        if (bracket2) {
-          const dir2 = sv2 === 'valid_long' ? 'long' : 'short';
-          const cb2  = configuredBracket(bracket2.entry, dir2);
-          console.log(`[auto-trade] FIRING ${dir2.toUpperCase()} entry=${bracket2.entry} stop=${cb2.stop} target=${cb2.target}`);
-          submitMarketOrder(dir2, cb2.stop, cb2.target, bracket2.entry, getSettings().autoTradeTrailingStop)
-            .then(outcome => {
-              console.log('[auto-trade]', outcome);
-              if (outcome === 'submitted' && tradeStore) {
-                tradeStore.recordEntry({
-                  symbol:        result.symbol,
-                  timeframe:     result.timeframe,
-                  direction:     dir2,
-                  entry_price:   bracket2.entry,
-                  stop_price:    cb2.stop,
-                  target_price:  cb2.target,
-                  trailing_stop: getSettings().autoTradeTrailingStop,
-                  rr_planned:    result.commentary.trade_plan?.rr ?? null,
-                  verdict:       sv2 as 'valid_long' | 'valid_short',
-                  headline:      result.commentary.headline ?? null,
-                  objective:     result.commentary.objective ?? null,
-                  steps_json:    JSON.stringify(result.commentary.steps_what_happened ?? []),
-                  structure:     result.commentary.structure_read ?? null,
-                  rationale:     result.commentary.trade_plan?.rationale ?? null,
-                  patterns_json: JSON.stringify(
-                    result.commentary.candlestick_patterns?.map(p => p.name) ?? []
-                  ),
-                  confidence:    result.commentary.confidence ?? null,
-                  account_type:  pnlTracker?.getSnapshot().accountType ?? null,
-                });
-              }
-            })
-            .catch(e2 => console.error('[auto-trade] error:', (e2 as Error).message));
-        } else {
-          console.warn('[auto-trade] skipped — no entry in trade_plan or HPT');
-        }
-      }
+      evaluateAutoTrade(result);
       if (getSettings().autoDraw) autoDrawResult(result);
       return result;
     } catch (err) {
@@ -556,9 +545,14 @@ app.on('ready', () => {
   ipcMain.handle(IPC.ALERT_REMOVE, (_e, price: number) => { clearAlertForPrice(price); });
 
   // IPC: manual test trigger for order-executor (bypasses autoTrade setting)
-  ipcMain.handle(IPC.AUTO_TRADE_TEST, (_e, direction: 'long' | 'short', stop: number, target: number, entry: number) =>
-    submitMarketOrder(direction, stop, target, entry, false, true)
-  );
+  ipcMain.handle(IPC.AUTO_TRADE_TEST, async (_e, direction: 'long' | 'short', stop: number, target: number, entry: number) => {
+    // ignoreWindow=true bypasses the trading-window guard only. The replay
+    // guard still applies — a manual test button must not fire a live order
+    // from replayed prices either.
+    const attempt = await submitMarketOrder(direction, stop, target, entry, false, true);
+    pushAutoTradeStatus(attempt.outcome, attempt.reason, direction);
+    return attempt;
+  });
 
   // IPC: delete cooldown file so the next trade can fire immediately
   ipcMain.handle(IPC.COOLDOWN_STATUS, () => getCooldownStatus());

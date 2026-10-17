@@ -375,6 +375,36 @@ body {
 .at-window-open   { background: rgba(38,166,154,0.18); color: var(--accent);  border: 1px solid var(--accent); }
 .at-window-closed { background: rgba(255,255,255,0.05); color: var(--text-secondary); border: 1px solid var(--border); }
 
+/* ── Auto-trade decision strip ──
+   Shows why the last auto-trade decision went the way it did — these guards
+   previously only logged to the console. */
+.at-status {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  border-top: 1px solid var(--border);
+}
+.at-status-label {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.at-status-reason {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.at-status-submitted { background: rgba(38,166,154,0.12); }
+.at-status-submitted .at-status-label { color: var(--accent); }
+.at-status-skipped   { background: rgba(255,255,255,0.04); }
+.at-status-skipped   .at-status-label { color: var(--text-secondary); }
+.at-status-error     { background: rgba(239,83,80,0.12); }
+.at-status-error     .at-status-label { color: var(--bearish); }
+
 /* ── Result body wrap (scroll + fade) ── */
 .result-body-wrap {
   flex: 1;

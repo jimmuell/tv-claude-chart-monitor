@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult } from '../shared/types';
+import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult, AutoTradeStatus } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import SettingsPanel from './SettingsPanel';
 
@@ -752,6 +752,8 @@ const App: React.FC = () => {
   const prevSymbolRef                               = useRef<string | null>(null);
   const [tradeToast, setTradeToast]                 = useState<{ msg: string; ok: boolean } | null>(null);
   const tradeToastTimerRef                          = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Most recent auto-trade decision — including the ones that declined to trade.
+  const [autoTradeStatus, setAutoTradeStatus]       = useState<AutoTradeStatus | null>(null);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -850,6 +852,8 @@ const App: React.FC = () => {
 
     const unsubPnl = window.api.onPnlUpdate((snap) => { setPnlSnap(snap); });
 
+    const unsubAutoTrade = window.api.onAutoTradeStatus((status) => { setAutoTradeStatus(status); });
+
     // Fetch initial P&L snapshot and pnlVisible setting
     window.api.getPnl().then(setPnlSnap).catch(() => {});
     window.api.getSettings().then(s => {
@@ -861,6 +865,7 @@ const App: React.FC = () => {
       unsubAnalysis();
       unsubNextTick();
       unsubPnl();
+      unsubAutoTrade();
     };
   }, []);
 
@@ -939,9 +944,9 @@ const App: React.FC = () => {
       : Math.round((price - targetOffset) * 4) / 4;
     console.log('[test-trade] computed — stop:', stop, 'target:', target, `(SL=$${autoTradeStopDollars} TP=$${autoTradeTargetDollars})`);
     try {
-      const outcome = await window.api.testAutoTrade(direction, stop, target, price);
-      console.log('[test-trade] outcome:', outcome);
-      showTradeToast(`[auto-trade] ${direction} → ${outcome}`, outcome === 'submitted');
+      const attempt = await window.api.testAutoTrade(direction, stop, target, price);
+      console.log('[test-trade] outcome:', attempt.outcome, '|', attempt.reason);
+      showTradeToast(`${direction} → ${attempt.outcome}: ${attempt.reason}`, attempt.outcome === 'submitted');
     } catch (err) {
       console.error('[test-trade] IPC error:', err);
       showTradeToast(`[auto-trade] IPC error: ${err instanceof Error ? err.message : String(err)}`, false);
@@ -1300,6 +1305,21 @@ const App: React.FC = () => {
                   </span>
                 : <span className="at-window-chip at-window-closed" title="Auto-trade window closed">AT closed</span>
             )}
+          </div>
+        )}
+        {/* Row 3: why the last auto-trade decision went the way it did. Every
+            guard used to fail silently to the console. */}
+        {view === 'analysis' && autoTrade && autoTradeStatus && (
+          <div
+            className={`at-status at-status-${autoTradeStatus.outcome}`}
+            title={`Auto-trade decision at ${new Date(autoTradeStatus.at).toLocaleTimeString()}`}
+          >
+            <span className="at-status-label">
+              {autoTradeStatus.outcome === 'submitted'
+                ? `Traded ${autoTradeStatus.direction ?? ''}`.trim()
+                : autoTradeStatus.outcome === 'error' ? 'Failed' : 'No trade'}
+            </span>
+            <span className="at-status-reason">{autoTradeStatus.reason}</span>
           </div>
         )}
       </header>
