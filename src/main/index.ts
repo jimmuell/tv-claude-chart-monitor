@@ -467,8 +467,10 @@ app.on('ready', () => {
     console.error('[grade-runner] startup catch-up failed:', (err as Error).message));
 
   // Watch for journal-reset signal written by the journal server's DELETE /api/trades.
-  // The journal server uses sql.js (raw file I/O) which bypasses SQLite's lock protocol,
-  // so we must perform the actual DELETE through better-sqlite3's live connection here.
+  // The journal could now delete rows itself (it speaks real SQLite since TVCM-7), but
+  // reset is more than a delete: clearAll() drops and rebuilds `trades` through
+  // trade-store's own schema init and restarts the id counter. Keeping it here leaves
+  // one owner of the table's shape instead of duplicating CREATE TABLE in two processes.
   const resetSignalPath = path.join(app.getPath('userData'), 'trades.db.reset');
   setInterval(() => {
     if (fs.existsSync(resetSignalPath)) {

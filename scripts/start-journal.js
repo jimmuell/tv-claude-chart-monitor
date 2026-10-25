@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-// Standalone journal server — uses sql.js (pure WASM) so it works in any
-// Node.js version regardless of what better-sqlite3 was compiled for.
+// Standalone journal server — uses Node's built-in node:sqlite, so it needs no
+// native build (better-sqlite3's binary is compiled for Electron's ABI) and can
+// safely share trades.db with the running Electron app.
 
 require('dotenv/config');
 
@@ -80,42 +81,58 @@ async function detectHostnameHijack(port, fetchImpl, log = console.error) {
   return true;
 }
 
-// ─── sql.js wrappers ──────────────────────────────────────────────────────────
+// ─── node:sqlite wrappers ─────────────────────────────────────────────────────
+//
+// This used to be sql.js: it read the ENTIRE database file into memory and wrote
+// the whole thing back on save. That is a read-modify-write over a file the
+// Electron app has open at the same time, so every row the app wrote in between
+// — every recommendation, one per bar close — was silently erased. The window was
+// seconds wide on the critique route, which writes after an LLM round trip.
+//
+// node:sqlite is Node's built-in binding to real SQLite: no native build step, no
+// whole-file rewrite, and it honours SQLite's locking protocol, so the app and the
+// journal can hold the same file safely. busy_timeout makes a concurrent writer
+// wait its turn instead of failing with SQLITE_BUSY.
 
-let SQL; // set once in main()
+const { DatabaseSync } = require('node:sqlite');
 
+const BUSY_TIMEOUT_MS = 5000;
+
+/** Open the journal database, or null when it does not exist yet. */
 function openDb() {
   if (!fs.existsSync(DB_PATH)) return null;
-  const buf = fs.readFileSync(DB_PATH);
-  return new SQL.Database(buf);
+  const db = new DatabaseSync(DB_PATH);
+  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  return db;
 }
 
+/** Close a handle opened for reading. */
 function closeDb(db) {
   db.close();
 }
 
+/**
+ * Close a handle that performed writes. Kept under its old name so every call
+ * site reads the same; with real SQLite the writes are already durable, so this
+ * only releases the connection — it no longer rewrites the file.
+ */
 function saveAndClose(db) {
-  const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
   db.close();
 }
 
+/** Run a query and return every row. */
 function queryAll(db, sql, params) {
-  const stmt = db.prepare(sql);
-  if (params && params.length) stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
+  return db.prepare(sql).all(...(params || []));
 }
 
+/** Run a query and return the first row, or null. */
 function queryOne(db, sql, params) {
-  const rows = queryAll(db, sql, params);
-  return rows[0] ?? null;
+  return db.prepare(sql).get(...(params || [])) ?? null;
 }
 
+/** Execute a statement that returns no rows. */
 function dbRun(db, sql, params) {
-  db.run(sql, params || []);
+  db.prepare(sql).run(...(params || []));
 }
 
 
@@ -593,8 +610,6 @@ function watchDb() {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const initSqlJs = require('sql.js');
-  SQL = await initSqlJs();
 
   ensureLessonsTable();
   watchDb();
@@ -767,7 +782,7 @@ async function main() {
     const SIGNAL = DB_PATH + '.reset';
     const DONE   = DB_PATH + '.reset.done';
 
-    // Read count without writing (sql.js must NOT write during reset)
+    // Read the count only; Electron owns the drop+recreate (see below).
     let count = 0;
     const db = openDb();
     if (db) {
