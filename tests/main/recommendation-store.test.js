@@ -53,7 +53,7 @@ const rec = (over = {}) => ({
   created_at: 1792600000000, symbol: 'CME_MINI:MES1!', timeframe: '1',
   bar_time: 1792600000, bar_price: 100, verdict: 'valid_long', direction: 'long',
   confidence: 0.7, entry: 100, stop: 96.75, target: 103.25, rr_planned: 1,
-  setups_json: '["hammer"]', structure: null, replay_mode: 0,
+  setups_json: '["hammer"]', setup_key: 'hammer', structure: null, replay_mode: 0,
   account_type: 'paper', app_version: '0.1.0', model_id: 'claude-haiku-4-5',
   raw_json: '{}', ...over,
 });
@@ -254,35 +254,47 @@ test('scorecard never mixes replay calls into the live view', () => {
   trades.close();
 });
 
-test('scorecard buckets by setup, hour and direction', () => {
+test('scorecard buckets by setup_key, hour and direction', () => {
   const dir = tmpDir();
   const trades = new TradeStore(dir);
   const store = new RecommendationStore(trades.database);
 
-  const mk = (outcome, setups, direction, i) => {
+  // One bucket per call now, keyed by setup_key — the raw labels below differ in
+  // spelling on purpose, exactly as the model writes them.
+  const mk = (outcome, rawLabel, key, direction, i) => {
     const id = store.save(rec({
-      bar_time: 1792600000 + i * 60, setups_json: JSON.stringify(setups), direction,
+      bar_time: 1792600000 + i * 60,
+      setups_json: JSON.stringify([rawLabel]),
+      setup_key: key,
+      direction,
     }));
-    store.applyGrade(id, { outcome, barsToOutcome: 2, rGross: outcome === 'WIN' ? 1 : -1, rNet: outcome === 'WIN' ? 0.92 : -1.08 });
+    store.applyGrade(id, {
+      outcome, barsToOutcome: 2,
+      rGross: outcome === 'WIN' ? 1 : -1,
+      rNet:   outcome === 'WIN' ? 0.92 : -1.08,
+    });
   };
-  mk('WIN',  ['hammer'], 'long', 0);
-  mk('WIN',  ['hammer'], 'long', 1);
-  mk('LOSS', ['hammer', 'doji'], 'short', 2);
+  mk('WIN',  'Bearish Outside Bar',                        'outside_bar', 'long',  0);
+  mk('WIN',  'Bearish Outside-Bar',                        'outside_bar', 'long',  1);
+  mk('LOSS', 'Bearish outside bar short at swing low break','outside_bar', 'short', 2);
+  mk('LOSS', 'Bullish Engulfing',                          'engulfing',   'short', 3);
 
   const sc = store.getScorecard();
-  const hammer = sc.bySetup.find(b => b.label === 'hammer');
-  assert.ok(hammer, 'hammer bucket exists');
-  assert.strictEqual(hammer.graded, 3);
-  assert.ok(Math.abs(hammer.winRate - 2 / 3) < 1e-9);
 
-  const doji = sc.bySetup.find(b => b.label === 'doji');
-  assert.strictEqual(doji.graded, 1);
-  assert.strictEqual(doji.winRate, 0);
+  const outside = sc.bySetup.find(b => b.label === 'outside_bar');
+  assert.ok(outside, 'outside_bar bucket exists');
+  assert.strictEqual(outside.graded, 3,
+    'all three spellings land in ONE bucket, not three');
+  assert.ok(Math.abs(outside.winRate - 2 / 3) < 1e-9);
+
+  const engulfing = sc.bySetup.find(b => b.label === 'engulfing');
+  assert.strictEqual(engulfing.graded, 1);
+  assert.strictEqual(sc.bySetup.length, 2, 'exactly two setup buckets');
 
   const long = sc.byDirection.find(b => b.label === 'long');
   assert.strictEqual(long.wins, 2);
   const short = sc.byDirection.find(b => b.label === 'short');
-  assert.strictEqual(short.losses, 1);
+  assert.strictEqual(short.losses, 2);
 
   assert.ok(sc.byHour.length >= 1, 'at least one hour bucket');
   assert.ok(sc.breakEven !== null && sc.breakEven > 0.5,
@@ -301,5 +313,56 @@ test('seeded test rows can be removed by app_version', () => {
 
   assert.strictEqual(store.deleteByAppVersion('TVCM-6-SEED'), 2);
   assert.strictEqual(store.count(), 1, 'only the real row remains');
+  trades.close();
+});
+
+// ── setup_key column (TVCM-7 defect 3) ───────────────────────────────────────
+
+test('adding setup_key does not disturb trades or user_version', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  trades.recordEntry(SAMPLE_TRADE);
+  const db = trades.database;
+  const before = {
+    n:       db.prepare('SELECT COUNT(*) AS n FROM trades').get().n,
+    version: db.prepare('PRAGMA user_version').get().user_version,
+  };
+
+  new RecommendationStore(db);          // runs the ALTER TABLE path
+
+  assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM trades').get().n, before.n);
+  assert.strictEqual(db.prepare('PRAGMA user_version').get().user_version, before.version,
+    'ALTER TABLE must be used instead of a schema-version bump');
+  const cols = db.prepare('PRAGMA table_info(recommendations)').all().map(c => c.name);
+  assert.ok(cols.includes('setup_key'), 'setup_key column exists');
+  trades.close();
+});
+
+test('initRecommendationsSchema is safe to run twice (ALTER is not repeated)', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  new RecommendationStore(trades.database);
+  assert.doesNotThrow(() => new RecommendationStore(trades.database),
+    'a second init must not fail with "duplicate column name"');
+  trades.close();
+});
+
+test('backfillSetupKeys fills only NULL keys and is idempotent', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+  const db = trades.database;
+
+  // Two rows written as if before the column existed.
+  store.save(rec({ bar_time: 10, setups_json: '["Bearish Outside Bar"]' }));
+  store.save(rec({ bar_time: 20, setups_json: '["Bearish Outside-Bar"]' }));
+  db.prepare('UPDATE recommendations SET setup_key = NULL').run();
+
+  const mapper = (json) => (String(json).toLowerCase().includes('outside') ? 'outside_bar' : 'other');
+  assert.strictEqual(store.backfillSetupKeys(mapper), 2, 'both rows filled');
+  assert.strictEqual(store.backfillSetupKeys(mapper), 0, 'second run touches nothing');
+
+  const keys = db.prepare('SELECT DISTINCT setup_key FROM recommendations').all().map(r => r.setup_key);
+  assert.deepStrictEqual(keys, ['outside_bar'], 'both spellings collapsed to one key');
   trades.close();
 });

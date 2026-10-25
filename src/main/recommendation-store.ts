@@ -38,8 +38,10 @@ export interface RecommendationInput {
   stop:         number | null;
   target:       number | null;
   rr_planned:   number | null;
-  /** JSON array of pattern/setup labels, as the commentary reported them. */
+  /** JSON array of pattern/setup labels, as the commentary reported them. Never modified. */
   setups_json:  string | null;
+  /** Normalised bucket derived from setups_json, so the scorecard groups like with like. */
+  setup_key:    string | null;
   structure:    string | null;
   /** 1 when the chart was in Bar Replay. Replay calls are excluded from the default scorecard. */
   replay_mode:  number;
@@ -105,11 +107,25 @@ const CREATE_UNGRADED_INDEX = `
     ON recommendations (outcome, replay_mode)
 `;
 
-/** Create the recommendations table and its indexes without touching user_version. */
+/** True when the table already has this column. */
+function hasColumn(db: Database.Database, table: string, column: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+}
+
+/**
+ * Create the recommendations table and its indexes without touching user_version.
+ * New columns are added with ALTER TABLE rather than a schema-version bump,
+ * because trade-store drops `trades` whenever user_version moves.
+ */
 export function initRecommendationsSchema(db: Database.Database): void {
   db.exec(CREATE_RECOMMENDATIONS_TABLE);
   db.exec(CREATE_DEDUP_INDEX);
   db.exec(CREATE_UNGRADED_INDEX);
+  if (!hasColumn(db, 'recommendations', 'setup_key')) {
+    db.exec('ALTER TABLE recommendations ADD COLUMN setup_key TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_setup ON recommendations (setup_key, replay_mode)');
 }
 
 export interface ScorecardBucket {
@@ -159,11 +175,11 @@ export class RecommendationStore {
       INSERT OR IGNORE INTO recommendations (
         created_at, symbol, timeframe, bar_time, bar_price,
         verdict, direction, confidence, entry, stop, target, rr_planned,
-        setups_json, structure, replay_mode, account_type, app_version, model_id, raw_json
+        setups_json, setup_key, structure, replay_mode, account_type, app_version, model_id, raw_json
       ) VALUES (
         @created_at, @symbol, @timeframe, @bar_time, @bar_price,
         @verdict, @direction, @confidence, @entry, @stop, @target, @rr_planned,
-        @setups_json, @structure, @replay_mode, @account_type, @app_version, @model_id, @raw_json
+        @setups_json, @setup_key, @structure, @replay_mode, @account_type, @app_version, @model_id, @raw_json
       )
     `);
     const info = stmt.run(rec as unknown as Record<string, unknown>);
@@ -226,6 +242,20 @@ export class RecommendationStore {
     const row = this.db.prepare('SELECT outcome FROM recommendations WHERE id = ?').get(id) as
       { outcome: string | null } | undefined;
     return row ? row.outcome : null;
+  }
+
+  /**
+   * Fill setup_key on rows that predate the column. The caller supplies the pure
+   * normaliser, so this module needs no knowledge of the label vocabulary.
+   * Idempotent: only rows with a NULL key are touched.
+   */
+  backfillSetupKeys(mapper: (setupsJson: string | null) => string): number {
+    const rows = this.db.prepare(
+      'SELECT id, setups_json FROM recommendations WHERE setup_key IS NULL',
+    ).all() as Array<{ id: number; setups_json: string | null }>;
+    const update = this.db.prepare('UPDATE recommendations SET setup_key = ? WHERE id = ?');
+    for (const row of rows) update.run(mapper(row.setups_json), row.id);
+    return rows.length;
   }
 
   /** Total saved calls, optionally restricted to live or replay. */
@@ -301,28 +331,21 @@ export class RecommendationStore {
     };
   }
 
-  /** Win rate and average net R per setup label, unpacked from setups_json. */
+  /** Win rate and average net R per normalised setup key — one bucket per call. */
   private bucketBySetup(mode: 0 | 1): ScorecardBucket[] {
     const rows = this.db.prepare(`
-      SELECT setups_json, outcome, r_net FROM recommendations
-      WHERE replay_mode = ? AND outcome IN ('WIN','LOSS') AND setups_json IS NOT NULL
-    `).all(mode) as Array<{ setups_json: string; outcome: string; r_net: number | null }>;
+      SELECT COALESCE(setup_key, 'other') AS setup_key, outcome, r_net FROM recommendations
+      WHERE replay_mode = ? AND outcome IN ('WIN','LOSS')
+    `).all(mode) as Array<{ setup_key: string; outcome: string; r_net: number | null }>;
 
     const map = new Map<string, { graded: number; wins: number; losses: number; rSum: number; rCount: number }>();
     for (const row of rows) {
-      let labels: unknown;
-      try { labels = JSON.parse(row.setups_json); } catch { continue; }
-      if (!Array.isArray(labels)) continue;
-      for (const raw of labels) {
-        if (typeof raw !== 'string' || !raw.trim()) continue;
-        const label = raw.trim();
-        const s = map.get(label) ?? { graded: 0, wins: 0, losses: 0, rSum: 0, rCount: 0 };
-        s.graded++;
-        if (row.outcome === 'WIN')  s.wins++;
-        if (row.outcome === 'LOSS') s.losses++;
-        if (row.r_net !== null) { s.rSum += row.r_net; s.rCount++; }
-        map.set(label, s);
-      }
+      const s = map.get(row.setup_key) ?? { graded: 0, wins: 0, losses: 0, rSum: 0, rCount: 0 };
+      s.graded++;
+      if (row.outcome === 'WIN')  s.wins++;
+      if (row.outcome === 'LOSS') s.losses++;
+      if (row.r_net !== null) { s.rSum += row.r_net; s.rCount++; }
+      map.set(row.setup_key, s);
     }
     return toBuckets(map);
   }

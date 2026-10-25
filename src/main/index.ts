@@ -292,6 +292,13 @@ function evaluateAutoTrade(result: AnalysisResult): void {
     .catch(err => pushAutoTradeStatus('error', (err as Error).message, dir));
 }
 
+// Shared CommonJS module (not compiled by tsc) — loaded the same way bridge.ts
+// loads src/shared/*.js. Pure and dependency-free.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { setupKeyFor } = require(path.join(app.getAppPath(), 'src/shared/setup-normaliser')) as {
+  setupKeyFor(labels: unknown): string;
+};
+
 /**
  * Save one recommendation at bar close — every verdict, not just tradeable ones.
  * Deduped on symbol+timeframe+bar+mode, so a manual refresh cannot double-count.
@@ -327,6 +334,7 @@ function saveRecommendation(result: AnalysisResult): void {
       target:       plan?.target ?? null,
       rr_planned:   plan?.rr     ?? null,
       setups_json:  JSON.stringify(setups),
+      setup_key:    setupKeyFor(setups),
       structure:    c.structure_read ?? null,
       replay_mode:  result.replayMode ? 1 : 0,
       account_type: pnlTracker?.getSnapshot().accountType ?? null,
@@ -462,6 +470,13 @@ app.on('ready', () => {
   // Share TradeStore's connection so trades.db keeps a single writer.
   recStore    = new RecommendationStore(tradeStore.database);
   gradeRunner = new GradeRunner(recStore, peekBars);
+  // Fill setup_key on any rows written before the column existed.
+  try {
+    const filled = recStore.backfillSetupKeys((json) => setupKeyFor(json));
+    if (filled > 0) console.log(`[recommendations] backfilled setup_key on ${filled} row(s)`);
+  } catch (err) {
+    console.error('[recommendations] TVCM-REC-BACKFILL-FAILED:', (err as Error).message);
+  }
   // Catch up on anything left ungraded while the app was closed.
   void gradeRunner.run().catch((err: unknown) =>
     console.error('[grade-runner] startup catch-up failed:', (err as Error).message));

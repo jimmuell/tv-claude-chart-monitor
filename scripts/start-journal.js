@@ -207,15 +207,14 @@ function computeScorecard(db, mode) {
   const breakEven = medianRr && medianRr > 0 ? (1 + feeR) / (medianRr + 1) : null;
 
   const graded_rows = queryAll(db, `
-    SELECT setups_json, direction, outcome, r_net,
+    SELECT COALESCE(setup_key, 'other') AS setup_key, direction, outcome, r_net,
            CAST(strftime('%H', datetime(created_at/1000,'unixepoch','localtime')) AS INTEGER) AS hour
     FROM recommendations
     WHERE replay_mode = ? AND outcome IN ('WIN','LOSS')`, [mode]);
 
-  const bySetup = bucketRows(graded_rows, r => {
-    try { const a = JSON.parse(r.setups_json || '[]'); return Array.isArray(a) ? a : []; }
-    catch { return []; }
-  });
+  // Group by the normalised key, one bucket per call. Grouping on the raw labels
+  // split one setup across three buckets just from spelling drift (TVCM-7).
+  const bySetup = bucketRows(graded_rows, r => [r.setup_key]);
   const byHour = bucketRows(graded_rows, r => [String(r.hour).padStart(2, '0') + ':00'])
     .sort((a, b) => a.label.localeCompare(b.label));
   const byDirection = bucketRows(graded_rows, r => [r.direction]);
