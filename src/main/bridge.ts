@@ -103,7 +103,8 @@ function loadConfig(): AppConfig {
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { createReader } = require(path.join(app.getAppPath(), 'src/shared/tv-reader')) as {
+const { createReader, PRICE_POLL_EXPR } = require(path.join(app.getAppPath(), 'src/shared/tv-reader')) as {
+  PRICE_POLL_EXPR: string;
   createReader: (config: AppConfig, log: Logger) => {
     connect():                                    Promise<boolean>;
     disconnect():                                 Promise<void>;
@@ -373,6 +374,11 @@ export async function callSetStudyInputs(
     throw err;
   }
   return reader!.setStudyInputs(studyId, patch);
+}
+
+/** The page expression the alert poller evaluates to read the newest bar's price. */
+export function getPricePollExpr(): string {
+  return PRICE_POLL_EXPR;
 }
 
 export async function evalPage(expression: string): Promise<unknown> {

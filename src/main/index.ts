@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider } from './bridge';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr } from './bridge';
 import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
@@ -592,23 +592,29 @@ app.on('ready', () => {
   // IPC: app version
   ipcMain.handle(IPC.APP_VERSION, () => app.getVersion());
 
-  // Price-crossing alert poller — checks every 5 s, fires macOS notification on cross
-  const PRICE_POLL_EXPR = `(() => {
-    try {
-      const chart = window.TradingViewApi.activeChart();
-      const series = chart.getSeries();
-      const bars = series.data().m_bars;
-      const last = bars.valueAt(bars.size() - 1);
-      return { price: last[4], symbol: chart.symbol() };
-    } catch(e) { return null; }
-  })()`;
+  // Price-crossing alert poller — checks every 5 s, fires macOS notification on cross.
+  // The expression lives in tv-reader so it shares the bar-index-aware reader.
+  const PRICE_POLL_EXPR = getPricePollExpr();
+
+  // Latches the coded error so a persistent fault is logged once, not every 5 s.
+  let alertNoBarLogged = false;
 
   setInterval(async () => {
     try {
-      const result = await evalPage(PRICE_POLL_EXPR);
-      if (result && typeof (result as { price: number; symbol: string }).price === 'number') {
-        const { price, symbol } = result as { price: number; symbol: string };
-        checkCrossings(price, symbol);
+      const result = (await evalPage(PRICE_POLL_EXPR)) as
+        { price?: number; symbol?: string; error?: string } | null;
+      if (result && typeof result.price === 'number' && result.symbol) {
+        alertNoBarLogged = false;
+        checkCrossings(result.price, result.symbol);
+      } else if (result && result.error) {
+        // Chart was reachable but no bar came back — name it instead of skipping.
+        if (!alertNoBarLogged) {
+          console.error(
+            `[alert-poller] ${result.error}: chart is readable but no bar could be read — ` +
+            'price-crossing alerts are not being checked',
+          );
+          alertNoBarLogged = true;
+        }
       }
     } catch (_) { /* CDP not connected — skip silently */ }
   }, 5000);

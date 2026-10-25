@@ -107,6 +107,30 @@ const READ_BARS_FN = `
           return out;
         };`;
 
+// Page expression for the price-crossing alert poller.
+//
+// Reads the newest bar through the shared bar-index-aware reader, so alerts
+// keep firing in Bar Replay. The old `bars.valueAt(bars.size() - 1)` returned
+// null once the index range was shifted, which silently stopped every alert.
+//
+// Three distinct outcomes, because the poller runs every 5s and must not
+// confuse "TradingView isn't running" (quiet skip) with a real read fault:
+//   { price, symbol }              — read succeeded
+//   { error: 'TVCM-ALERT-NO-BAR' } — chart reachable, but no bar could be read
+//   null                           — chart/API not reachable at all
+const PRICE_POLL_EXPR = `(() => {
+    try {
+      ${READ_BARS_FN}
+      const chart = window.TradingViewApi.activeChart();
+      if (!chart) return null;
+      const series = typeof chart.getSeries === "function" ? chart.getSeries() : null;
+      const data = series && typeof series.data === "function" ? series.data() : null;
+      const last = readBars(data && data.m_bars, 1)[0];
+      if (!last) return { error: "TVCM-ALERT-NO-BAR" };
+      return { price: last.close, symbol: chart.symbol() };
+    } catch(e) { return null; }
+  })()`;
+
 class TvReader {
   constructor(config, logger) {
     this.config = config;
@@ -782,4 +806,4 @@ function createReader(config, logger) {
   return config.tv.useMockReader ? new MockTvReader(config, logger) : new TvReader(config, logger);
 }
 
-module.exports = { TvReader, MockTvReader, createReader, REPLAY_FLAG_FN, READ_BARS_FN };
+module.exports = { TvReader, MockTvReader, createReader, REPLAY_FLAG_FN, READ_BARS_FN, PRICE_POLL_EXPR };
