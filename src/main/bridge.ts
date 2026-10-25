@@ -271,7 +271,14 @@ export async function runAnalysis(): Promise<AnalysisResult> {
 
   const ctx = buildContext(snapshot, { tickSize: 0.25, maPeriod: 20 });
   if (ctx === null || ctx === undefined) {
-    throw new Error('Not enough bar data to build context');
+    // Distinguish a bar-read fault from a genuinely short chart, so the user
+    // sees the cause rather than a generic "not enough data".
+    const readError = (snapshot as { readError?: string } | null)?.readError;
+    throw new Error(
+      readError
+        ? `${readError}: TradingView reported its data as loaded but no bars could be read`
+        : 'Not enough bar data to build context',
+    );
   }
 
   // Inject approved lessons so CommentaryEngine can learn from past trades.

@@ -33,6 +33,12 @@
 //      series.data().m_bars  => custom bar collection:
 //        m_bars.size()       => total bar count
 //        m_bars.valueAt(i)   => [time_secs, open, high, low, close, volume]
+//          NB: `i` is a BAR INDEX, not a 0-based position, and valueAt returns
+//          null outside the collection's real range. Live charts start at 0;
+//          in Bar Replay the range shifts and first() is negative. Always read
+//          bars through READ_BARS_FN / readBars(), never a 0..size-1 loop.
+//        m_bars.first()      => { index, value }  — true lowest bar index
+//        m_bars.last()       => { index, value }  — true highest bar index
 //
 // Launch TV Desktop with --remote-debugging-port=9222 (use `npm run tv:launch`)
 // before starting this app. Set `tv.useMockReader: false` in config to attach
@@ -56,6 +62,49 @@ const REPLAY_FLAG_FN = `
             if (rv && typeof rv.value === "function") return !!rv.value();
             return !!rv;
           } catch { return false; }
+        };`;
+
+// Injected into every page expression that reads bars.
+//
+// m_bars.valueAt() is keyed by TradingView's BAR INDEX, not by 0-based
+// position, and returns null outside the collection's real index range. On a
+// live chart the range happens to start at 0, so a 0..size-1 loop works by
+// coincidence. In Bar Replay the range is shifted and the first index is
+// negative (measured -247..326 for size 574), so that same loop asks only for
+// indices past the end, gets null every time, and silently yields zero bars
+// while dataReady is still true. Read first()/last() to get the true range.
+const READ_BARS_FN = `
+        const readBars = (m, want) => {
+          const out = [];
+          try {
+            if (!m || typeof m.size !== "function" || typeof m.valueAt !== "function") return out;
+            const n = m.size();
+            if (!(n > 0) || !(want > 0)) return out;
+            // Prefer the collection's real index range; fall back to 0..n-1.
+            let lo = 0;
+            let hi = n - 1;
+            const f = typeof m.first === "function" ? m.first() : null;
+            const l = typeof m.last === "function" ? m.last() : null;
+            if (f && typeof f.index === "number" && l && typeof l.index === "number" && l.index >= f.index) {
+              lo = f.index;
+              hi = l.index;
+            }
+            const start = Math.max(lo, hi - want + 1);
+            for (let i = start; i <= hi; i++) {
+              const v = m.valueAt(i);
+              if (Array.isArray(v) && v.length >= 5) {
+                out.push({
+                  time: v[0],
+                  open: v[1],
+                  high: v[2],
+                  low: v[3],
+                  close: v[4],
+                  volume: v.length > 5 ? v[5] : null,
+                });
+              }
+            }
+          } catch (_e) { /* out stays as far as we got */ }
+          return out;
         };`;
 
 class TvReader {
@@ -250,6 +299,7 @@ class TvReader {
       (() => {
         try {
           ${REPLAY_FLAG_FN}
+          ${READ_BARS_FN}
           const api = window.TradingViewApi;
           const chart = api && typeof api.activeChart === "function" ? api.activeChart() : null;
           if (!chart) return null;
@@ -258,13 +308,10 @@ class TvReader {
           const replayMode = readReplayFlag(series);
           const data = typeof series.data === "function" ? series.data() : null;
           const m = data && data.m_bars;
-          if (!m || typeof m.size !== "function" || typeof m.valueAt !== "function") return null;
-          const n = m.size();
-          if (n < 2) return null;
-          const closed = m.valueAt(n - 2);
-          const last   = m.valueAt(n - 1);
-          if (!Array.isArray(closed) || !Array.isArray(last)) return null;
-          return { replayMode, closedBarTime: closed[0], lastBarTime: last[0] };
+          // Same bar-index caveat as readSnapshot — go through readBars, not m.valueAt(n-1).
+          const tail = readBars(m, 2);
+          if (tail.length < 2) return null;
+          return { replayMode, closedBarTime: tail[0].time, lastBarTime: tail[1].time };
         } catch { return null; }
       })()
     `;
@@ -284,6 +331,7 @@ class TvReader {
       (() => {
         const safe = (fn, fb) => { try { return fn(); } catch { return fb; } };
         ${REPLAY_FLAG_FN}
+        ${READ_BARS_FN}
         const api = window.TradingViewApi;
         if (!api || typeof api.activeChart !== "function") {
           return { error: "TradingViewApi.activeChart not found — TV Desktop may not be fully loaded" };
@@ -304,24 +352,7 @@ class TvReader {
             try { inReplay = readReplayFlag(series); } catch {}
             const data = (typeof series.data === "function") ? series.data() : null;
             const m = data && data.m_bars;
-            if (m && typeof m.size === "function" && typeof m.valueAt === "function") {
-              const n = m.size();
-              const want = ${barCount};
-              const start = Math.max(0, n - want);
-              for (let i = start; i < n; i++) {
-                const v = m.valueAt(i);
-                if (Array.isArray(v) && v.length >= 5) {
-                  candles.push({
-                    time: v[0],
-                    open: v[1],
-                    high: v[2],
-                    low: v[3],
-                    close: v[4],
-                    volume: v.length > 5 ? v[5] : null,
-                  });
-                }
-              }
-            }
+            candles = readBars(m, ${barCount});
           }
         } catch (e) { /* candles stays [] */ }
 
@@ -599,6 +630,17 @@ class TvReader {
     if (!raw || raw.error) {
       throw new Error(`Could not read TV chart state: ${raw && raw.error}`);
     }
+    // The chart says its data is loaded but we read no bars: a read fault, not
+    // an empty chart. Name it instead of handing analysis a silent empty array.
+    const barCountRead = Array.isArray(raw.candles) ? raw.candles.length : 0;
+    if (raw.dataReady && barCountRead === 0) {
+      const code = 'TVCM-READ-EMPTY-BARS';
+      this.logger.error(
+        `[tv-reader] ${code}: dataReady=true but 0 bars read ` +
+        `(symbol=${raw.symbol} timeframe=${raw.timeframe} replayMode=${raw.replayMode})`,
+      );
+      return { ...raw, fetchedAt: Date.now(), readError: code };
+    }
     return { ...raw, fetchedAt: Date.now() };
   }
 
@@ -740,4 +782,4 @@ function createReader(config, logger) {
   return config.tv.useMockReader ? new MockTvReader(config, logger) : new TvReader(config, logger);
 }
 
-module.exports = { TvReader, MockTvReader, createReader, REPLAY_FLAG_FN };
+module.exports = { TvReader, MockTvReader, createReader, REPLAY_FLAG_FN, READ_BARS_FN };
