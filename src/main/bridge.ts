@@ -245,6 +245,7 @@ function ensureEngine(): void {
 }
 
 export async function runAnalysis(): Promise<AnalysisResult> {
+  const analysisStartedAt = Date.now();
   try {
     await ensureConnected();
   } catch (err: unknown) {
@@ -316,6 +317,9 @@ export async function runAnalysis(): Promise<AnalysisResult> {
     replayMode:     !!(snapshot as { replayMode?: boolean }).replayMode,
     closedBarTime:  typedCtx.closedBar.time ?? 0,
     commentary:     commentary as AnalysisResult['commentary'],
+    // How long this analysis took end to end, so the panel can warn when manual
+    // replay stepping outruns it.
+    analysisMs:     Date.now() - analysisStartedAt,
   };
 }
 

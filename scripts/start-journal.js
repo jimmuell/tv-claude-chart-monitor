@@ -166,16 +166,30 @@ function bucketRows(rows, labelOf) {
   })).sort((a, b) => b.graded - a.graded);
 }
 
-/** Build the whole scorecard for one mode (0 = live, 1 = replay). */
-function computeScorecard(db, mode) {
+/**
+ * Build the whole scorecard for one mode (0 = live, 1 = replay), optionally
+ * restricted to one rules_version so results from different rules are never
+ * averaged together. Blocked calls are reported separately, never blended in.
+ */
+function computeScorecard(db, mode, ver) {
   const empty = {
     graded: 0, wins: 0, losses: 0, winRate: 0, avgNetR: null, avgGrossR: null,
     ambiguous: 0, expired: 0, notTriggered: 0, ungradeable: 0, pending: 0, total: 0,
     bySetup: [], byHour: [], byDirection: [], breakEven: null, medianRr: null, mode,
+    rulesVersion: ver || null, versions: [],
+    blocked: { graded: 0, wins: 0, losses: 0, winRate: 0, avgNetR: null, total: 0 },
   };
   const hasTable = queryOne(db,
     "SELECT name FROM sqlite_master WHERE type='table' AND name='recommendations'");
   if (!hasTable) return empty;
+
+  const V = ver ? ' AND rules_version = ?' : '';
+  const A = (extra = []) => (ver ? [mode, ver, ...extra] : [mode, ...extra]);
+
+  const versions = queryAll(db, `
+    SELECT COALESCE(rules_version,'(none)') AS rules_version, COUNT(*) AS n,
+           MAX(created_at) AS lastSeen
+    FROM recommendations GROUP BY rules_version ORDER BY lastSeen DESC`);
 
   const counts = queryOne(db, `
     SELECT
@@ -187,37 +201,38 @@ function computeScorecard(db, mode) {
       SUM(CASE WHEN outcome='UNGRADEABLE'   THEN 1 ELSE 0 END) AS ungradeable,
       SUM(CASE WHEN outcome IS NULL OR outcome='PENDING' THEN 1 ELSE 0 END) AS pending,
       COUNT(*) AS total
-    FROM recommendations WHERE replay_mode = ?`, [mode]) || {};
+    FROM recommendations WHERE replay_mode = ? AND blocked = 0` + V, A()) || {};
 
   const graded = (counts.wins || 0) + (counts.losses || 0);
 
   const rRow = queryOne(db, `
     SELECT AVG(r_net) AS avgNet, AVG(r_gross) AS avgGross, AVG(ABS(entry - stop)) AS riskPoints
     FROM recommendations
-    WHERE replay_mode = ? AND outcome IN ('WIN','LOSS') AND r_net IS NOT NULL`, [mode]) || {};
+    WHERE replay_mode = ? AND blocked = 0 AND outcome IN ('WIN','LOSS') AND r_net IS NOT NULL` + V, A()) || {};
 
   const rrs = queryAll(db, `
     SELECT rr_planned FROM recommendations
-    WHERE replay_mode = ? AND rr_planned IS NOT NULL AND outcome IN ('WIN','LOSS')
-    ORDER BY rr_planned`, [mode]).map(r => r.rr_planned);
+    WHERE replay_mode = ? AND blocked = 0 AND rr_planned IS NOT NULL AND outcome IN ('WIN','LOSS')` + V + `
+    ORDER BY rr_planned`, A()).map(r => r.rr_planned);
   const medianRr = rrs.length ? rrs[Math.floor(rrs.length / 2)] : null;
 
   const riskDollars = (rRow.riskPoints || 0) * POINT_VALUE;
   const feeR = riskDollars > 0 ? FEE_PER_RT / riskDollars : 0;
   const breakEven = medianRr && medianRr > 0 ? (1 + feeR) / (medianRr + 1) : null;
 
-  const graded_rows = queryAll(db, `
-    SELECT COALESCE(setup_key, 'other') AS setup_key, direction, outcome, r_net,
+  const gradedRows = queryAll(db, `
+    SELECT COALESCE(setup_key,'other') AS setup_key, direction, outcome, r_net,
            CAST(strftime('%H', datetime(created_at/1000,'unixepoch','localtime')) AS INTEGER) AS hour
     FROM recommendations
-    WHERE replay_mode = ? AND outcome IN ('WIN','LOSS')`, [mode]);
+    WHERE replay_mode = ? AND blocked = 0 AND outcome IN ('WIN','LOSS')` + V, A());
 
-  // Group by the normalised key, one bucket per call. Grouping on the raw labels
-  // split one setup across three buckets just from spelling drift (TVCM-7).
-  const bySetup = bucketRows(graded_rows, r => [r.setup_key]);
-  const byHour = bucketRows(graded_rows, r => [String(r.hour).padStart(2, '0') + ':00'])
-    .sort((a, b) => a.label.localeCompare(b.label));
-  const byDirection = bucketRows(graded_rows, r => [r.direction]);
+  const bRow = queryOne(db, `
+    SELECT SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,
+           SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) AS losses,
+           AVG(CASE WHEN outcome IN ('WIN','LOSS') THEN r_net END) AS avgNet,
+           COUNT(*) AS total
+    FROM recommendations WHERE replay_mode = ? AND blocked = 1` + V, A()) || {};
+  const bw = bRow.wins || 0, bl = bRow.losses || 0;
 
   return {
     graded,
@@ -232,17 +247,20 @@ function computeScorecard(db, mode) {
     ungradeable:  counts.ungradeable  || 0,
     pending:      counts.pending      || 0,
     total:        counts.total        || 0,
-    bySetup, byHour, byDirection, breakEven, medianRr, mode,
+    bySetup:     bucketRows(gradedRows, r => [r.setup_key]),
+    byHour:      bucketRows(gradedRows, r => [String(r.hour).padStart(2,'0') + ':00'])
+                   .sort((a, b) => a.label.localeCompare(b.label)),
+    byDirection: bucketRows(gradedRows, r => [r.direction]),
+    breakEven, medianRr, mode,
+    rulesVersion: ver || null,
+    versions,
+    blocked: {
+      graded: bw + bl, wins: bw, losses: bl,
+      winRate: (bw + bl) > 0 ? bw / (bw + bl) : 0,
+      avgNetR: bRow.avgNet ?? null,
+      total: bRow.total || 0,
+    },
   };
-}
-
-function stripFences(s) {
-  return s.replace(/^```(?:json)?\n?/i, '').replace(/\n?```\s*$/i, '').trim();
-}
-
-function lastInsertId(db) {
-  const row = queryOne(db, 'SELECT last_insert_rowid() AS id');
-  return row ? row.id : null;
 }
 
 // ─── Row → TradeRecord ────────────────────────────────────────────────────────
@@ -1027,13 +1045,14 @@ async function main() {
   // GET /api/scorecard?mode=live|replay — recommendation win rate
   app.get('/api/scorecard', (req, res) => {
     const mode = req.query.mode === 'replay' ? 1 : 0;
+    const ver  = typeof req.query.rules === 'string' && req.query.rules ? req.query.rules : null;
     const db = openDb();
     if (!db) return res.json({ graded: 0, wins: 0, losses: 0, winRate: 0, total: 0,
       ambiguous: 0, expired: 0, notTriggered: 0, ungradeable: 0, pending: 0,
       bySetup: [], byHour: [], byDirection: [], breakEven: null, medianRr: null,
       avgNetR: null, avgGrossR: null, mode });
     try {
-      res.json(computeScorecard(db, mode));
+      res.json(computeScorecard(db, mode, ver));
     } catch (e) {
       console.error('[journal] GET /api/scorecard:', e);
       res.status(500).json({ error: String(e) });

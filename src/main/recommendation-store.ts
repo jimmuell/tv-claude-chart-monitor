@@ -48,6 +48,13 @@ export interface RecommendationInput {
   blocked_reason: string | null;
   /** Hash of the rules + app version in force. Part of the dedup key. */
   rules_version:  string | null;
+  /** Tokens the analysis actually consumed, as the API reported them. */
+  input_tokens:   number | null;
+  output_tokens:  number | null;
+  /** Estimated cost of this one call, in USD. */
+  cost_usd:       number | null;
+  /** Milliseconds the analysis took — feeds the replay pacing warning. */
+  analysis_ms:    number | null;
   structure:    string | null;
   /** 1 when the chart was in Bar Replay. Replay calls are excluded from the default scorecard. */
   replay_mode:  number;
@@ -140,6 +147,12 @@ export function initRecommendationsSchema(db: Database.Database): void {
   if (!hasColumn(db, 'recommendations', 'rules_version')) {
     db.exec('ALTER TABLE recommendations ADD COLUMN rules_version TEXT');
   }
+  for (const [col, type] of [['input_tokens', 'INTEGER'], ['output_tokens', 'INTEGER'],
+                             ['cost_usd', 'REAL'], ['analysis_ms', 'INTEGER']] as const) {
+    if (!hasColumn(db, 'recommendations', col)) {
+      db.exec(`ALTER TABLE recommendations ADD COLUMN ${col} ${type}`);
+    }
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_setup ON recommendations (setup_key, replay_mode)');
   // The dedup key now includes rules_version: the same replay day under the SAME
   // rules still cannot double count, but under NEW rules it is a fair re-test.
@@ -213,12 +226,13 @@ export class RecommendationStore {
         created_at, symbol, timeframe, bar_time, bar_price,
         verdict, direction, confidence, entry, stop, target, rr_planned,
         setups_json, setup_key, structure, replay_mode, account_type, app_version, model_id, raw_json,
-        blocked, blocked_reason, rules_version
+        blocked, blocked_reason, rules_version, input_tokens, output_tokens, cost_usd, analysis_ms
       ) VALUES (
         @created_at, @symbol, @timeframe, @bar_time, @bar_price,
         @verdict, @direction, @confidence, @entry, @stop, @target, @rr_planned,
         @setups_json, @setup_key, @structure, @replay_mode, @account_type, @app_version, @model_id, @raw_json,
-        @blocked, @blocked_reason, @rules_version
+        @blocked, @blocked_reason, @rules_version,
+        @input_tokens, @output_tokens, @cost_usd, @analysis_ms
       )
     `);
     const info = stmt.run(rec as unknown as Record<string, unknown>);
@@ -389,6 +403,31 @@ export class RecommendationStore {
         avgNetR: b.avgNet,
         total:   b.total ?? 0,
       },
+    };
+  }
+
+  /** Token and dollar totals for a set of calls, for the cost report. */
+  costSummary(opts: { replayMode?: 0 | 1; rulesVersion?: string | null } = {}): {
+    calls: number; withUsage: number; inputTokens: number; outputTokens: number;
+    costUsd: number; avgCostUsd: number | null; avgAnalysisMs: number | null;
+  } {
+    const mode = opts.replayMode ?? 0;
+    const ver  = opts.rulesVersion ?? null;
+    const sql = `
+      SELECT COUNT(*) AS calls,
+             SUM(CASE WHEN input_tokens IS NOT NULL THEN 1 ELSE 0 END) AS withUsage,
+             COALESCE(SUM(input_tokens), 0)  AS inputTokens,
+             COALESCE(SUM(output_tokens), 0) AS outputTokens,
+             COALESCE(SUM(cost_usd), 0)      AS costUsd,
+             AVG(cost_usd)                   AS avgCostUsd,
+             AVG(analysis_ms)                AS avgAnalysisMs
+      FROM recommendations
+      WHERE replay_mode = ?${ver === null ? '' : ' AND rules_version = ?'}`;
+    const row = this.db.prepare(sql).all(...(ver === null ? [mode] : [mode, ver]))[0] as Record<string, number | null>;
+    return {
+      calls: row.calls ?? 0, withUsage: row.withUsage ?? 0,
+      inputTokens: row.inputTokens ?? 0, outputTokens: row.outputTokens ?? 0,
+      costUsd: row.costUsd ?? 0, avgCostUsd: row.avgCostUsd, avgAnalysisMs: row.avgAnalysisMs,
     };
   }
 

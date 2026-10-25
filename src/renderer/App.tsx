@@ -834,6 +834,8 @@ const App: React.FC = () => {
       }
       setResult(pushed);
       setUiStatus('complete');
+      // Manual replay stepping outran the analysis — bars went by uncounted.
+      if (pushed.pacingWarning) showTradeToast(pushed.pacingWarning, false);
       if (pushed.barCloseMs > Date.now()) setNextTickMs(pushed.barCloseMs);
 
       const ad = autoDrawRef.current;

@@ -269,6 +269,8 @@ class CommentaryEngine {
       // mid-string, producing JSON without a closing brace and breaking
       // _extractJson. The provider owns the request shape from here.
       const text = await this.provider.complete(SYSTEM_PROMPT, userMsg);
+      // Carry the token usage the API reported so the caller can price the run.
+      this.lastUsage = this.provider.lastUsage || null;
       const json = normalizeCard(this._extractJson(text));
       if (!json) {
         // Log a generous sample so we can diagnose without UI access. Most
@@ -278,6 +280,7 @@ class CommentaryEngine {
         this.logger.warn(`[commentary] JSON parse failed; raw text follows ▼\n${sample}\n▲ end raw text`);
         return { headline: "Model output unparseable", objective: text, setup_verdict: "wait", entry_was: null, what_now: "", what_not: "", steps_what_happened: [], bottom_line: null, next_trigger: null, key_lesson: null, trade_plan: null, key_levels_to_watch: null, confidence: 0 };
       }
+      if (json && this.lastUsage) json.usage = this.lastUsage;
       return json;
     } catch (err) {
       this.logger.error(`[commentary] API call failed: ${err.message}`);

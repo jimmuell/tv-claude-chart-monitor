@@ -638,3 +638,22 @@ html, body {
 .scorecard-aside { margin-top: 0.6rem; }
 .scorecard-note  { font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin: 0.5rem 0 0; }
 .scorecard-empty { font-size: 12px; color: var(--text-secondary); padding: 0.75rem 0; }
+
+.scorecard-controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.scorecard-select {
+  background: var(--surface); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 6px;
+  font-size: 11.5px; padding: 0.33rem 0.5rem;
+}
+.scorecard-compare {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 0.9rem;
+}
+.compare-col {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.65rem 0.8rem; background: var(--surface);
+}
+.compare-col.blockedcol { border-left: 3px solid #6a8fd6; }
+.compare-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
+.compare-rate  { font-size: 22px; font-weight: 600; margin-top: 0.15rem; color: var(--text-primary); }
+.compare-sub   { font-size: 11px; color: var(--text-secondary); margin-top: 0.1rem; }
+@media (max-width: 560px) { .scorecard-compare { grid-template-columns: 1fr; } }

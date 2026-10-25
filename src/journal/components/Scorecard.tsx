@@ -26,19 +26,27 @@ function fmtHour(label: string): string {
  */
 export function Scorecard() {
   const [mode, setMode] = useState<'live' | 'replay'>('live');
+  const [rulesVer, setRulesVer] = useState<string>('');   // '' = current/all
   const [data, setData] = useState<ScorecardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchCard = useCallback(() => {
-    fetch(`/api/scorecard?mode=${mode}`)
+    fetch(`/api/scorecard?mode=${mode}${rulesVer ? `&rules=${encodeURIComponent(rulesVer)}` : ''}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((d: ScorecardData) => { setData(d); setError(null); })
       .catch(e => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [mode]);
+  }, [mode, rulesVer]);
 
   useEffect(() => { setLoading(true); fetchCard(); }, [fetchCard]);
+  // Default to the newest rules version once we know what exists, so the page
+  // never silently averages results produced under different rules.
+  useEffect(() => {
+    if (!rulesVer && data && data.versions && data.versions.length > 0) {
+      setRulesVer(data.versions[0].rules_version);
+    }
+  }, [data, rulesVer]);
   useAutoRefresh(fetchCard);
 
   const toggle = (
@@ -64,7 +72,24 @@ export function Scorecard() {
           and not only the ones that were traded.
         </p>
       </div>
-      {toggle}
+      <div className="scorecard-controls">
+        {toggle}
+        {data && data.versions && data.versions.length > 0 && (
+          <select
+            className="scorecard-select"
+            value={rulesVer}
+            onChange={e => setRulesVer(e.target.value)}
+            title="Results from different rules are never averaged together"
+          >
+            <option value="">All rules versions</option>
+            {data.versions.map(v => (
+              <option key={v.rules_version} value={v.rules_version}>
+                rules {v.rules_version} ({v.n})
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
     </div>
   );
 
@@ -143,6 +168,31 @@ export function Scorecard() {
             ? `Above the ${pct(data.breakEven)} needed to cover $1.24/round-trip fees at the median ${data.medianRr?.toFixed(2) ?? '—'}:1 plan.`
             : `Below the ${pct(data.breakEven)} needed to cover $1.24/round-trip fees at the median ${data.medianRr?.toFixed(2) ?? '—'}:1 plan — these calls lose money even when the win rate looks close to half.`}
         </p>
+      )}
+
+      {data.blocked && data.blocked.total > 0 && (
+        <div className="scorecard-compare">
+          <div className="compare-col">
+            <div className="compare-title">Allowed by the rules</div>
+            <div className="compare-rate">{data.graded > 0 ? pct(data.winRate) : '—'}</div>
+            <div className="compare-sub">{data.wins}W / {data.losses}L · {r2(data.avgNetR)} avg</div>
+          </div>
+          <div className="compare-col blockedcol">
+            <div className="compare-title">Blocked by the rules</div>
+            <div className="compare-rate">{data.blocked.graded > 0 ? pct(data.blocked.winRate) : '—'}</div>
+            <div className="compare-sub">
+              {data.blocked.wins}W / {data.blocked.losses}L · {r2(data.blocked.avgNetR)} avg
+              · {data.blocked.total} saved
+            </div>
+          </div>
+        </div>
+      )}
+      {data.blocked && data.blocked.graded > 0 && data.blocked.winRate > data.winRate && (
+        <div className="scorecard-banner">
+          Blocked calls are winning more often than allowed ones
+          ({pct(data.blocked.winRate)} vs {pct(data.winRate)}). The rules may be
+          costing more than they save — check which rule is firing before trusting it.
+        </div>
       )}
 
       {/* Counted, but deliberately outside the win rate. */}

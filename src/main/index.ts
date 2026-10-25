@@ -303,11 +303,30 @@ const { setupKeyFor } = require(path.join(app.getAppPath(), 'src/shared/setup-no
 };
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { detectSkippedBars } = require(path.join(app.getAppPath(), 'src/shared/pacing')) as {
+  detectSkippedBars(prev: number | null, curr: number, timeframe: string, analysisMs: number | null):
+    { message: string } | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { evaluateRules, rulesVersion } = require(path.join(app.getAppPath(), 'src/shared/rules')) as {
   evaluateRules(call: { setup_key: string | null; confidence: number | null; bar_time: number },
                 rules: unknown): { blocked: boolean; reason: string | null };
   rulesVersion(rules: unknown, appVersion: string): string;
 };
+
+// Haiku 4.5 list price. Cost is derived from the usage the API reports, never
+// estimated from character counts.
+const USD_PER_INPUT_MTOK  = 1.0;
+const USD_PER_OUTPUT_MTOK = 5.0;
+
+/** Dollar cost of one analysis from its reported token usage. */
+function costOf(inputTokens: number | null, outputTokens: number | null): number | null {
+  if (inputTokens === null && outputTokens === null) return null;
+  return ((inputTokens ?? 0) / 1e6) * USD_PER_INPUT_MTOK
+       + ((outputTokens ?? 0) / 1e6) * USD_PER_OUTPUT_MTOK;
+}
 
 /** The rules in force right now, and their stable version hash. */
 function currentRules(): { rules: unknown; version: string } {
@@ -346,6 +365,10 @@ function saveRecommendation(result: AnalysisResult): { blocked: boolean; reason:
       rules,
     );
 
+    const usage = (c as unknown as { usage?: { inputTokens: number | null; outputTokens: number | null } }).usage ?? null;
+    const inTok  = usage ? usage.inputTokens  : null;
+    const outTok = usage ? usage.outputTokens : null;
+
     const id = recStore.save({
       created_at:   Date.now(),
       symbol:       result.symbol,
@@ -364,6 +387,10 @@ function saveRecommendation(result: AnalysisResult): { blocked: boolean; reason:
       blocked:        verdict.blocked ? 1 : 0,
       blocked_reason: verdict.reason,
       rules_version:  version,
+      input_tokens:   inTok,
+      output_tokens:  outTok,
+      cost_usd:       costOf(inTok, outTok),
+      analysis_ms:    typeof result.analysisMs === 'number' ? result.analysisMs : null,
       structure:    c.structure_read ?? null,
       replay_mode:  result.replayMode ? 1 : 0,
       account_type: pnlTracker?.getSnapshot().accountType ?? null,
@@ -390,7 +417,20 @@ function saveRecommendation(result: AnalysisResult): { blocked: boolean; reason:
  * grade whatever the fresh bars can now settle. Blocked calls are graded too —
  * shadow grading is how the scorecard shows what a rule costs.
  */
+let lastAnalysedBarTime: number | null = null;
+
 function recordAndGrade(result: AnalysisResult): void {
+  // Replay stepped faster than the analysis? Then a bar went by with no call.
+  if (result.replayMode) {
+    const warn = detectSkippedBars(
+      lastAnalysedBarTime, result.closedBarTime, result.timeframe,
+      typeof result.analysisMs === 'number' ? result.analysisMs : null,
+    );
+    result.pacingWarning = warn ? warn.message : null;
+    if (warn) console.warn(`[pacing] TVCM-TRAIN-BARS-SKIPPED: ${warn.message}`);
+  }
+  lastAnalysedBarTime = result.closedBarTime;
+
   const verdict = saveRecommendation(result);
   result.blocked = verdict.blocked;
   result.blockedReason = verdict.reason;

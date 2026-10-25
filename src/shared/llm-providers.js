@@ -116,6 +116,14 @@ class AnthropicProvider {
     };
     if (system) req.system = system;
     const res = await this.client.messages.create(req);
+    // Record what this call cost in tokens. The API reports it; nothing else
+    // can, and without it "cost per call" is guesswork. No key is read here —
+    // this is the response, not the credential.
+    this.lastUsage = {
+      inputTokens:  res.usage?.input_tokens  ?? null,
+      outputTokens: res.usage?.output_tokens ?? null,
+      model:        res.model || req.model,
+    };
     return res.content?.[0]?.text || '';
   }
 }

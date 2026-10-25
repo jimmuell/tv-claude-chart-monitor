@@ -111,4 +111,17 @@ export interface Scorecard {
   breakEven:    number | null;
   medianRr:     number | null;
   mode:         number;
+  /** Which rules version these numbers are filtered to, or null for all. */
+  rulesVersion: string | null;
+  /** Every rules version present, newest first. */
+  versions:     Array<{ rules_version: string; n: number; lastSeen: number }>;
+  /** Calls the lever blocked, graded anyway. Never folded into the numbers above. */
+  blocked: {
+    graded:  number;
+    wins:    number;
+    losses:  number;
+    winRate: number;
+    avgNetR: number | null;
+    total:   number;
+  };
 }

@@ -12,6 +12,7 @@
     "build:journal": "vite build --config vite.journal.config.ts",
     "dev:journal": "vite --config vite.journal.config.ts",
     "journal": "node scripts/start-journal.js",
+    "train": "node scripts/train-replay.js",
     "package": "npm run build && electron-builder",
     "test": "node --test 'tests/shared/**/*.test.js' 'tests/main/recommendation-store.test.js' 'tests/main/journal-concurrency.test.js' 'tests/main/status-payload.test.js'"
   },

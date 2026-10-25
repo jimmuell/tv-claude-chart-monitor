@@ -267,6 +267,8 @@ export interface AnalysisResult {
   rulesVersion?:  string;
   /** Milliseconds the analysis took, used for the replay pacing warning. */
   analysisMs?:    number;
+  /** Set when manual replay stepping outran the analysis and skipped bars. */
+  pacingWarning?: string | null;
 }
 
 // ---------------------------------------------------------------------------
