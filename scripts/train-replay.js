@@ -110,15 +110,30 @@ const EXPR = {
     ra.stopReplay(); ra.hideReplayToolbar(); return 'ok'; } catch (e) { return 'ERR ' + e; } })()`,
 };
 
+/**
+ * UTC offset string ("-05:00"/"-06:00") for a date in Chicago. Computed rather
+ * than hardcoded: CDT ends on 1 Nov 2026, and a fixed offset would silently
+ * shift the whole training window by an hour after that.
+ */
+function chicagoOffset(isoDate) {
+  const noonUtc = new Date(isoDate + 'T18:00:00Z');       // midday Chicago either way
+  const name = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago', timeZoneName: 'longOffset',
+  }).formatToParts(noonUtc).find((p) => p.type === 'timeZoneName')?.value || 'GMT-06:00';
+  const m = /GMT([+-]\d{2}:\d{2})/.exec(name);
+  return m ? m[1] : '-06:00';
+}
+
 /** Seek replay to a given Chicago date+time. */
 function seekExpr(isoDate, hhmm) {
   // Build the instant in Chicago time, then hand TradingView a Date.
+  const offset = chicagoOffset(isoDate);
   return `(async () => { try {
     const ra = await window.TradingViewApi.replayApi();
     const started = (() => { const v = ra.isReplayStarted();
       return (v && typeof v.value === 'function') ? v.value() : !!v; })();
     if (!started) { ra.selectFirstAvailableDate(); await new Promise(r => setTimeout(r, 9000)); }
-    ra.selectDate(new Date(${JSON.stringify(isoDate + 'T' + hhmm + ':00-05:00')}));
+    ra.selectDate(new Date(${JSON.stringify(isoDate + 'T' + hhmm + ':00' + offset)}));
     return 'ok';
   } catch (e) { return 'ERR ' + e; } })()`;
 }
@@ -170,7 +185,11 @@ process.on('SIGINT', () => {
 
 /** One line per bar, so a long run is auditable afterwards. */
 function logBar(day, n, barTime, waitedMs, row) {
-  const t = new Date(barTime * 1000).toISOString().slice(11, 16);
+  // Must be Chicago time — the label says CT, so printing UTC here would make
+  // every training log quietly wrong by an hour.
+  const t = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(barTime * 1000));
   const state = row ? (row.blocked ? `blocked` : row.verdict) : 'NO ROW';
   console.log(`[train] ${day} bar ${String(n).padStart(3)} ${t}CT  waited ${String(waitedMs).padStart(6)}ms  ${state}`);
 }
@@ -324,4 +343,4 @@ if (require.main === module) {
   main().catch((err) => { console.error('[train]', err.message); process.exit(1); });
 }
 
-module.exports = { parseArgs, hhmmToMinutes, chicagoMinutes, chicagoDate, resolveDays, stepAndWait };
+module.exports = { parseArgs, hhmmToMinutes, chicagoMinutes, chicagoDate, resolveDays, stepAndWait, chicagoOffset, seekExpr };

@@ -143,6 +143,17 @@ function toggleWindow(): void {
   rebuildMenu();
 }
 
+/**
+ * Start the scheduler without the panel. The training runner needs the app
+ * analysing unattended, and the only other way in is a tray click.
+ */
+function maybeAutostartScheduler(): void {
+  if (process.env.TVCM_AUTOSTART_SCHEDULER === '1') {
+    console.log('[index] TVCM_AUTOSTART_SCHEDULER=1 — starting the scheduler without the panel');
+    startSchedulerOnce();
+  }
+}
+
 function startSchedulerOnce(): void {
   if (!schedulerStarted) {
     schedulerStarted = true;
@@ -318,6 +329,23 @@ const { evaluateRules, rulesVersion } = require(path.join(app.getAppPath(), 'src
 
 // Haiku 4.5 list price. Cost is derived from the usage the API reports, never
 // estimated from character counts.
+// Electron's stdout is not captured when the app runs detached, which makes an
+// unattended training run impossible to debug. TVCM_LOG_FILE mirrors console
+// output to a file as well.
+if (process.env.TVCM_LOG_FILE) {
+  const logPath = process.env.TVCM_LOG_FILE;
+  const stamp = () => new Date().toISOString().slice(11, 23);
+  for (const level of ['log', 'warn', 'error'] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      try {
+        fs.appendFileSync(logPath, `${stamp()} [${level}] ${args.map(String).join(' ')}\n`);
+      } catch { /* logging must never break the app */ }
+    };
+  }
+}
+
 const USD_PER_INPUT_MTOK  = 1.0;
 const USD_PER_OUTPUT_MTOK = 5.0;
 
@@ -620,6 +648,8 @@ app.on('ready', () => {
       mainWindow?.webContents.send(IPC.SCHEDULER_NEXT_TICK, nextMs);
     },
   );
+
+  maybeAutostartScheduler();
 
   // IPC: on-demand analysis (awaitable; status updates via callback)
   ipcMain.handle(IPC.ANALYZE_RUN, async () => {

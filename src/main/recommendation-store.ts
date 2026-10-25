@@ -108,13 +108,6 @@ const CREATE_RECOMMENDATIONS_TABLE = `
   )
 `;
 
-// Dedup: one row per symbol+timeframe+bar+mode. A manual refresh on the same bar
-// must not create a second call (index.ts has two analysis entry points).
-const CREATE_DEDUP_INDEX = `
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendations_dedup
-    ON recommendations (symbol, timeframe, bar_time, replay_mode)
-`;
-
 const CREATE_UNGRADED_INDEX = `
   CREATE INDEX IF NOT EXISTS idx_recommendations_ungraded
     ON recommendations (outcome, replay_mode)
@@ -133,7 +126,6 @@ function hasColumn(db: Database.Database, table: string, column: string): boolea
  */
 export function initRecommendationsSchema(db: Database.Database): void {
   db.exec(CREATE_RECOMMENDATIONS_TABLE);
-  db.exec(CREATE_DEDUP_INDEX);
   db.exec(CREATE_UNGRADED_INDEX);
   if (!hasColumn(db, 'recommendations', 'setup_key')) {
     db.exec('ALTER TABLE recommendations ADD COLUMN setup_key TEXT');
@@ -157,9 +149,19 @@ export function initRecommendationsSchema(db: Database.Database): void {
   // The dedup key now includes rules_version: the same replay day under the SAME
   // rules still cannot double count, but under NEW rules it is a fair re-test.
   // Replacing an index is safe — it is not the table.
+  // Replace the old dedup index. The old one is DROPPED, never re-created: on a
+  // database that already holds rows duplicated under the old key, re-creating
+  // it throws, and because this runs inside app.whenReady() that throw takes the
+  // whole app down silently — tray up, nothing working. Creating the new index
+  // is guarded for the same reason: a schema nicety must never brick startup.
   db.exec('DROP INDEX IF EXISTS idx_recommendations_dedup');
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendations_dedup_v2
-             ON recommendations (symbol, timeframe, bar_time, replay_mode, rules_version)`);
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendations_dedup_v2
+               ON recommendations (symbol, timeframe, bar_time, replay_mode, rules_version)`);
+  } catch (err) {
+    console.error('[recommendations] TVCM-REC-DEDUP-INDEX:',
+      (err as Error).message, '— duplicates exist; dedup is not enforced until they are resolved');
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_rules ON recommendations (rules_version, replay_mode, blocked)');
 }
 

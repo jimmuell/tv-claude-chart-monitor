@@ -145,3 +145,25 @@ test('one step per bar: the mock advances exactly one bar each call', async () =
     assert.strictEqual(seen[i] - seen[i - 1], 60, 'no bar was skipped');
   }
 });
+
+test('the seek offset follows Chicago DST instead of being hardcoded', () => {
+  const { chicagoOffset, seekExpr } = require('../../scripts/train-replay');
+  assert.strictEqual(chicagoOffset('2026-10-23'), '-05:00', 'CDT before 1 Nov');
+  assert.strictEqual(chicagoOffset('2026-11-03'), '-06:00', 'CST after 1 Nov');
+  assert.strictEqual(chicagoOffset('2026-07-01'), '-05:00');
+  assert.strictEqual(chicagoOffset('2026-01-15'), '-06:00');
+
+  // A hardcoded offset would put the window an hour out after the change.
+  assert.match(seekExpr('2026-11-03', '08:30'), /2026-11-03T08:30:00-06:00/);
+  assert.match(seekExpr('2026-10-23', '08:30'), /2026-10-23T08:30:00-05:00/);
+});
+
+test('the per-bar log prints Chicago time, not UTC', () => {
+  // 13:32 UTC is 08:32 CT. Printing UTC under a "CT" label would make every
+  // training log wrong by an hour.
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../../scripts/train-replay.js'), 'utf8');
+  assert.doesNotMatch(src.slice(src.indexOf('function logBar')), /^\s*const t = new Date\(barTime \* 1000\)\.toISOString\(\)/m,
+    'logBar must not format the bar time as UTC');
+  assert.match(src.slice(src.indexOf('function logBar'), src.indexOf('function logBar') + 500),
+    /America\/Chicago/, 'logBar formats in Chicago time');
+});
