@@ -63,8 +63,9 @@ function appSavesRecommendation(dbPath, barTime) {
     created_at: Date.now(), symbol: 'CME_MINI:MES1!', timeframe: '1',
     bar_time: barTime, bar_price: 100, verdict: 'valid_long', direction: 'long',
     confidence: 0.8, entry: 100, stop: 96.75, target: 103.25, rr_planned: 1,
-    setups_json: '["hammer"]', structure: null, replay_mode: 0, account_type: 'paper',
-    app_version: 'test', model_id: 'test', raw_json: '{}',
+    setups_json: '["hammer"]', setup_key: 'hammer', structure: null, replay_mode: 0,
+    account_type: 'paper', app_version: 'test', model_id: 'test', raw_json: '{}',
+    blocked: 0, blocked_reason: null, rules_version: 'testver1',
   });
   db.close();
   return id;

@@ -54,6 +54,7 @@ const rec = (over = {}) => ({
   bar_time: 1792600000, bar_price: 100, verdict: 'valid_long', direction: 'long',
   confidence: 0.7, entry: 100, stop: 96.75, target: 103.25, rr_planned: 1,
   setups_json: '["hammer"]', setup_key: 'hammer', structure: null, replay_mode: 0,
+  blocked: 0, blocked_reason: null, rules_version: 'testver1',
   account_type: 'paper', app_version: '0.1.0', model_id: 'claude-haiku-4-5',
   raw_json: '{}', ...over,
 });
@@ -364,5 +365,119 @@ test('backfillSetupKeys fills only NULL keys and is idempotent', () => {
 
   const keys = db.prepare('SELECT DISTINCT setup_key FROM recommendations').all().map(r => r.setup_key);
   assert.deepStrictEqual(keys, ['outside_bar'], 'both spellings collapsed to one key');
+  trades.close();
+});
+
+// ── rules lever + rules_version (TVCM-8) ─────────────────────────────────────
+
+test('same bar + same rules_version is deduped', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+
+  assert.ok(store.save(rec({ rules_version: 'aaaa1111' })) !== null, 'first save');
+  assert.strictEqual(store.save(rec({ rules_version: 'aaaa1111', confidence: 0.9 })), null,
+    're-running the same day under the same rules must not double count');
+  assert.strictEqual(store.count(), 1);
+  trades.close();
+});
+
+test('same bar + NEW rules_version saves a new row (a fair re-test)', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+
+  assert.ok(store.save(rec({ rules_version: 'aaaa1111' })) !== null);
+  assert.ok(store.save(rec({ rules_version: 'bbbb2222' })) !== null,
+    'changing the rules must allow the same day to be re-tested');
+  assert.strictEqual(store.count(), 2);
+  trades.close();
+});
+
+test('blocked calls are stored with their reason and still gradeable', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+
+  const id = store.save(rec({ blocked: 1, blocked_reason: 'setup "hammer" is blocked' }));
+  const row = trades.database.prepare('SELECT * FROM recommendations WHERE id = ?').get(id);
+  assert.strictEqual(row.blocked, 1);
+  assert.match(row.blocked_reason, /hammer/);
+
+  // Shadow grading: a blocked call is graded exactly like an allowed one.
+  assert.strictEqual(store.getUngraded().length, 1, 'blocked calls are still queued for grading');
+  store.applyGrade(id, { outcome: 'WIN', barsToOutcome: 3, rGross: 1, rNet: 0.92 });
+  assert.strictEqual(store.outcomeOf(id), 'WIN');
+  trades.close();
+});
+
+test('scorecard separates allowed from blocked and never blends them', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+
+  const add = (blocked, outcome, i) => {
+    const id = store.save(rec({ bar_time: 500 + i, blocked, rules_version: 'v1',
+                                blocked_reason: blocked ? 'blocked' : null }));
+    store.applyGrade(id, { outcome, barsToOutcome: 2,
+      rGross: outcome === 'WIN' ? 1 : -1, rNet: outcome === 'WIN' ? 0.92 : -1.08 });
+  };
+  // allowed: 1 win / 1 loss = 50%.  blocked: 3 wins = 100% (blocking these cost money).
+  add(0, 'WIN', 1); add(0, 'LOSS', 2);
+  add(1, 'WIN', 3); add(1, 'WIN', 4); add(1, 'WIN', 5);
+
+  const sc = store.getScorecard({ rulesVersion: 'v1' });
+  assert.strictEqual(sc.wins, 1, 'blocked wins must not inflate the allowed win rate');
+  assert.strictEqual(sc.losses, 1);
+  assert.ok(Math.abs(sc.winRate - 0.5) < 1e-9);
+  assert.strictEqual(sc.blocked.graded, 3, 'blocked calls are counted on their own');
+  assert.strictEqual(sc.blocked.wins, 3);
+  assert.strictEqual(sc.blocked.winRate, 1);
+  trades.close();
+});
+
+test('scorecard can filter by rules_version and list the versions present', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+
+  const add = (ver, outcome, i) => {
+    const id = store.save(rec({ bar_time: 900 + i, rules_version: ver }));
+    store.applyGrade(id, { outcome, barsToOutcome: 2,
+      rGross: outcome === 'WIN' ? 1 : -1, rNet: outcome === 'WIN' ? 0.92 : -1.08 });
+  };
+  add('v1', 'WIN', 1); add('v1', 'WIN', 2);
+  add('v2', 'LOSS', 3);
+
+  assert.strictEqual(store.getScorecard({ rulesVersion: 'v1' }).winRate, 1);
+  assert.strictEqual(store.getScorecard({ rulesVersion: 'v2' }).winRate, 0);
+  assert.strictEqual(store.getScorecard({ rulesVersion: 'v1' }).graded, 2,
+    'v2 results must not leak into v1');
+
+  const versions = store.listRulesVersions();
+  assert.ok(versions.some(v => v.rules_version === 'v1' && v.n === 2));
+  assert.ok(versions.some(v => v.rules_version === 'v2' && v.n === 1));
+  trades.close();
+});
+
+test('the rules columns are added without disturbing trades or user_version', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  trades.recordEntry(SAMPLE_TRADE);
+  const db = trades.database;
+  const before = {
+    n: db.prepare('SELECT COUNT(*) AS n FROM trades').get().n,
+    v: db.prepare('PRAGMA user_version').get().user_version,
+  };
+
+  new RecommendationStore(db);
+
+  assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM trades').get().n, before.n);
+  assert.strictEqual(db.prepare('PRAGMA user_version').get().user_version, before.v,
+    'ALTER TABLE only — a version bump would drop trades');
+  const cols = db.prepare('PRAGMA table_info(recommendations)').all().map(c => c.name);
+  for (const c of ['blocked', 'blocked_reason', 'rules_version']) {
+    assert.ok(cols.includes(c), `${c} column exists`);
+  }
   trades.close();
 });

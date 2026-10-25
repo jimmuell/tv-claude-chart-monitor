@@ -42,6 +42,12 @@ export interface RecommendationInput {
   setups_json:  string | null;
   /** Normalised bucket derived from setups_json, so the scorecard groups like with like. */
   setup_key:    string | null;
+  /** 1 when the rules lever would have stopped the app acting on this call. */
+  blocked:      number;
+  /** Which rule fired, in plain English. Null when the call was allowed. */
+  blocked_reason: string | null;
+  /** Hash of the rules + app version in force. Part of the dedup key. */
+  rules_version:  string | null;
   structure:    string | null;
   /** 1 when the chart was in Bar Replay. Replay calls are excluded from the default scorecard. */
   replay_mode:  number;
@@ -125,7 +131,23 @@ export function initRecommendationsSchema(db: Database.Database): void {
   if (!hasColumn(db, 'recommendations', 'setup_key')) {
     db.exec('ALTER TABLE recommendations ADD COLUMN setup_key TEXT');
   }
+  if (!hasColumn(db, 'recommendations', 'blocked')) {
+    db.exec('ALTER TABLE recommendations ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn(db, 'recommendations', 'blocked_reason')) {
+    db.exec('ALTER TABLE recommendations ADD COLUMN blocked_reason TEXT');
+  }
+  if (!hasColumn(db, 'recommendations', 'rules_version')) {
+    db.exec('ALTER TABLE recommendations ADD COLUMN rules_version TEXT');
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_setup ON recommendations (setup_key, replay_mode)');
+  // The dedup key now includes rules_version: the same replay day under the SAME
+  // rules still cannot double count, but under NEW rules it is a fair re-test.
+  // Replacing an index is safe — it is not the table.
+  db.exec('DROP INDEX IF EXISTS idx_recommendations_dedup');
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendations_dedup_v2
+             ON recommendations (symbol, timeframe, bar_time, replay_mode, rules_version)`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_rules ON recommendations (rules_version, replay_mode, blocked)');
 }
 
 export interface ScorecardBucket {
@@ -159,6 +181,21 @@ export interface Scorecard {
   /** Win rate this plan must beat, from fees and the median planned R:R. */
   breakEven:    number | null;
   medianRr:     number | null;
+  /** The rules version these numbers are filtered to, or null for all. */
+  rulesVersion: string | null;
+  /**
+   * Calls the rules lever stopped the app acting on, graded anyway (shadow
+   * grading). Never folded into the numbers above — a blocked winner is the
+   * cost of a rule, and seeing it is the whole point.
+   */
+  blocked: {
+    graded:  number;
+    wins:    number;
+    losses:  number;
+    winRate: number;
+    avgNetR: number | null;
+    total:   number;
+  };
 }
 
 export class RecommendationStore {
@@ -175,11 +212,13 @@ export class RecommendationStore {
       INSERT OR IGNORE INTO recommendations (
         created_at, symbol, timeframe, bar_time, bar_price,
         verdict, direction, confidence, entry, stop, target, rr_planned,
-        setups_json, setup_key, structure, replay_mode, account_type, app_version, model_id, raw_json
+        setups_json, setup_key, structure, replay_mode, account_type, app_version, model_id, raw_json,
+        blocked, blocked_reason, rules_version
       ) VALUES (
         @created_at, @symbol, @timeframe, @bar_time, @bar_price,
         @verdict, @direction, @confidence, @entry, @stop, @target, @rr_planned,
-        @setups_json, @setup_key, @structure, @replay_mode, @account_type, @app_version, @model_id, @raw_json
+        @setups_json, @setup_key, @structure, @replay_mode, @account_type, @app_version, @model_id, @raw_json,
+        @blocked, @blocked_reason, @rules_version
       )
     `);
     const info = stmt.run(rec as unknown as Record<string, unknown>);
@@ -271,9 +310,18 @@ export class RecommendationStore {
     return this.db.prepare('DELETE FROM recommendations WHERE app_version = ?').run(appVersion).changes;
   }
 
-  /** Aggregate the scorecard for one mode. Live (replay_mode=0) by default. */
-  getScorecard(opts: { replayMode?: 0 | 1 } = {}): Scorecard {
+  /**
+   * Aggregate the scorecard for one mode. Live (replay_mode=0) by default, and
+   * restricted to one rules_version when given so results from different rules
+   * are never averaged together.
+   */
+  getScorecard(opts: { replayMode?: 0 | 1; rulesVersion?: string | null } = {}): Scorecard {
     const mode = opts.replayMode ?? 0;
+    const ver  = opts.rulesVersion ?? null;
+    // Allowed calls only for the headline numbers; blocked are reported apart.
+    const verSql = ver === null ? '' : ' AND rules_version = ?';
+    const args   = (extra: unknown[] = []): unknown[] =>
+      ver === null ? [mode, ...extra] : [mode, ver, ...extra];
 
     const counts = this.db.prepare(`
       SELECT
@@ -285,32 +333,36 @@ export class RecommendationStore {
         SUM(CASE WHEN outcome = 'UNGRADEABLE'   THEN 1 ELSE 0 END) AS ungradeable,
         SUM(CASE WHEN outcome IS NULL OR outcome = 'PENDING' THEN 1 ELSE 0 END) AS pending,
         COUNT(*) AS total
-      FROM recommendations WHERE replay_mode = ?
-    `).get(mode) as Record<string, number | null>;
+      FROM recommendations WHERE replay_mode = ?${verSql} AND blocked = 0
+    `).all(...args())[0] as Record<string, number | null>;
 
     const wins   = counts.wins   ?? 0;
     const losses = counts.losses ?? 0;
     const graded = wins + losses;
 
     const rRow = this.db.prepare(`
-      SELECT AVG(r_net) AS avgNet, AVG(r_gross) AS avgGross
+      SELECT AVG(r_net) AS avgNet, AVG(r_gross) AS avgGross, AVG(ABS(entry - stop)) AS riskPoints
       FROM recommendations
-      WHERE replay_mode = ? AND outcome IN ('WIN','LOSS') AND r_net IS NOT NULL
-    `).get(mode) as { avgNet: number | null; avgGross: number | null };
+      WHERE replay_mode = ?${verSql} AND blocked = 0 AND outcome IN ('WIN','LOSS') AND r_net IS NOT NULL
+    `).all(...args())[0] as { avgNet: number | null; avgGross: number | null; riskPoints: number | null };
 
-    // Median planned R:R drives the break-even line. SQLite has no median, so
-    // take the middle row of the ordered non-null values.
     const rrs = this.db.prepare(`
       SELECT rr_planned FROM recommendations
-      WHERE replay_mode = ? AND rr_planned IS NOT NULL AND outcome IN ('WIN','LOSS')
+      WHERE replay_mode = ?${verSql} AND blocked = 0 AND rr_planned IS NOT NULL AND outcome IN ('WIN','LOSS')
       ORDER BY rr_planned
-    `).all(mode) as Array<{ rr_planned: number }>;
+    `).all(...args()) as Array<{ rr_planned: number }>;
     const medianRr = rrs.length > 0 ? rrs[Math.floor(rrs.length / 2)].rr_planned : null;
 
-    const riskRow = this.db.prepare(`
-      SELECT AVG(ABS(entry - stop)) AS riskPoints FROM recommendations
-      WHERE replay_mode = ? AND entry IS NOT NULL AND stop IS NOT NULL AND outcome IN ('WIN','LOSS')
-    `).get(mode) as { riskPoints: number | null };
+    const b = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN outcome = 'WIN'  THEN 1 ELSE 0 END) AS wins,
+        SUM(CASE WHEN outcome = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+        AVG(CASE WHEN outcome IN ('WIN','LOSS') THEN r_net END) AS avgNet,
+        COUNT(*) AS total
+      FROM recommendations WHERE replay_mode = ?${verSql} AND blocked = 1
+    `).all(...args())[0] as Record<string, number | null>;
+    const bWins = b.wins ?? 0;
+    const bLoss = b.losses ?? 0;
 
     return {
       graded, wins, losses,
@@ -323,20 +375,41 @@ export class RecommendationStore {
       ungradeable:  counts.ungradeable  ?? 0,
       pending:      counts.pending      ?? 0,
       total:        counts.total        ?? 0,
-      bySetup:      this.bucketBySetup(mode),
-      byHour:       this.bucketByHour(mode),
-      byDirection:  this.bucketByDirection(mode),
+      bySetup:      this.bucketBySetup(mode, ver),
+      byHour:       this.bucketByHour(mode, ver),
+      byDirection:  this.bucketByDirection(mode, ver),
       medianRr,
-      breakEven:    breakEvenFrom(medianRr, riskRow.riskPoints),
+      breakEven:    breakEvenFrom(medianRr, rRow.riskPoints),
+      rulesVersion: ver,
+      blocked: {
+        graded:  bWins + bLoss,
+        wins:    bWins,
+        losses:  bLoss,
+        winRate: (bWins + bLoss) > 0 ? bWins / (bWins + bLoss) : 0,
+        avgNetR: b.avgNet,
+        total:   b.total ?? 0,
+      },
     };
   }
 
+  /** Every rules_version present, newest first, with how many calls each produced. */
+  listRulesVersions(): Array<{ rules_version: string; n: number; firstSeen: number; lastSeen: number }> {
+    return this.db.prepare(`
+      SELECT COALESCE(rules_version, '(none)') AS rules_version, COUNT(*) AS n,
+             MIN(created_at) AS firstSeen, MAX(created_at) AS lastSeen
+      FROM recommendations
+      GROUP BY rules_version
+      ORDER BY lastSeen DESC
+    `).all() as Array<{ rules_version: string; n: number; firstSeen: number; lastSeen: number }>;
+  }
+
   /** Win rate and average net R per normalised setup key — one bucket per call. */
-  private bucketBySetup(mode: 0 | 1): ScorecardBucket[] {
+  private bucketBySetup(mode: 0 | 1, ver: string | null): ScorecardBucket[] {
     const rows = this.db.prepare(`
       SELECT COALESCE(setup_key, 'other') AS setup_key, outcome, r_net FROM recommendations
-      WHERE replay_mode = ? AND outcome IN ('WIN','LOSS')
-    `).all(mode) as Array<{ setup_key: string; outcome: string; r_net: number | null }>;
+      WHERE replay_mode = ? AND blocked = 0 AND outcome IN ('WIN','LOSS')
+        ${ver === null ? '' : 'AND rules_version = ?'}
+    `).all(...(ver === null ? [mode] : [mode, ver])) as Array<{ setup_key: string; outcome: string; r_net: number | null }>;
 
     const map = new Map<string, { graded: number; wins: number; losses: number; rSum: number; rCount: number }>();
     for (const row of rows) {
@@ -351,14 +424,15 @@ export class RecommendationStore {
   }
 
   /** Win rate and average net R per local hour of day. */
-  private bucketByHour(mode: 0 | 1): ScorecardBucket[] {
+  private bucketByHour(mode: 0 | 1, ver: string | null): ScorecardBucket[] {
     const rows = this.db.prepare(`
       SELECT
         CAST(strftime('%H', datetime(created_at / 1000, 'unixepoch', 'localtime')) AS INTEGER) AS hour,
         outcome, r_net
       FROM recommendations
-      WHERE replay_mode = ? AND outcome IN ('WIN','LOSS')
-    `).all(mode) as Array<{ hour: number; outcome: string; r_net: number | null }>;
+      WHERE replay_mode = ? AND blocked = 0 AND outcome IN ('WIN','LOSS')
+        ${ver === null ? '' : 'AND rules_version = ?'}
+    `).all(...(ver === null ? [mode] : [mode, ver])) as Array<{ hour: number; outcome: string; r_net: number | null }>;
 
     const map = new Map<string, { graded: number; wins: number; losses: number; rSum: number; rCount: number }>();
     for (const row of rows) {
@@ -374,11 +448,12 @@ export class RecommendationStore {
   }
 
   /** Win rate and average net R for long versus short. */
-  private bucketByDirection(mode: 0 | 1): ScorecardBucket[] {
+  private bucketByDirection(mode: 0 | 1, ver: string | null): ScorecardBucket[] {
     const rows = this.db.prepare(`
       SELECT direction, outcome, r_net FROM recommendations
-      WHERE replay_mode = ? AND outcome IN ('WIN','LOSS') AND direction IN ('long','short')
-    `).all(mode) as Array<{ direction: string; outcome: string; r_net: number | null }>;
+      WHERE replay_mode = ? AND blocked = 0 AND outcome IN ('WIN','LOSS') AND direction IN ('long','short')
+        ${ver === null ? '' : 'AND rules_version = ?'}
+    `).all(...(ver === null ? [mode] : [mode, ver])) as Array<{ direction: string; outcome: string; r_net: number | null }>;
 
     const map = new Map<string, { graded: number; wins: number; losses: number; rSum: number; rCount: number }>();
     for (const row of rows) {

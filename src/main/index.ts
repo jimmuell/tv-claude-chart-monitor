@@ -236,7 +236,9 @@ function evaluateAutoTrade(result: AnalysisResult): void {
   console.log(`[auto-trade] verdict=${sv} conf=${pct(conf)} confOk=${confOk} autoTrade=${enabled}`);
 
   const willTrade = enabled && directional && confOk;
-  if (getSettings().notifications && !willTrade) {
+  // A call the rules lever blocked must not ping Jim — it is recorded and graded
+  // in the background, but it is explicitly not something to act on.
+  if (getSettings().notifications && !willTrade && !result.blocked) {
     notifyVerdict(sv, result.commentary.headline);
   }
 
@@ -300,12 +302,26 @@ const { setupKeyFor } = require(path.join(app.getAppPath(), 'src/shared/setup-no
   setupKeyFor(labels: unknown): string;
 };
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { evaluateRules, rulesVersion } = require(path.join(app.getAppPath(), 'src/shared/rules')) as {
+  evaluateRules(call: { setup_key: string | null; confidence: number | null; bar_time: number },
+                rules: unknown): { blocked: boolean; reason: string | null };
+  rulesVersion(rules: unknown, appVersion: string): string;
+};
+
+/** The rules in force right now, and their stable version hash. */
+function currentRules(): { rules: unknown; version: string } {
+  const rules = getSettings().rules;
+  return { rules, version: rulesVersion(rules, app.getVersion()) };
+}
+
 /**
  * Save one recommendation at bar close — every verdict, not just tradeable ones.
  * Deduped on symbol+timeframe+bar+mode, so a manual refresh cannot double-count.
  */
-function saveRecommendation(result: AnalysisResult): void {
-  if (!recStore) return;
+function saveRecommendation(result: AnalysisResult): { blocked: boolean; reason: string | null; version: string } {
+  const fallback = { blocked: false, reason: null as string | null, version: '' };
+  if (!recStore) return fallback;
   try {
     const c    = result.commentary;
     const plan = c.trade_plan ?? null;
@@ -321,6 +337,15 @@ function saveRecommendation(result: AnalysisResult): void {
       ...(c.highest_probability_trade?.setup ? [c.highest_probability_trade.setup] : []),
     ].filter(Boolean);
 
+    const setupKey = setupKeyFor(setups);
+    const { rules, version } = currentRules();
+    // The lever runs AFTER analysis, so blocking never changes what the model said.
+    const verdict = evaluateRules(
+      { setup_key: setupKey, confidence: typeof c.confidence === 'number' ? c.confidence : null,
+        bar_time: result.closedBarTime },
+      rules,
+    );
+
     const id = recStore.save({
       created_at:   Date.now(),
       symbol:       result.symbol,
@@ -335,7 +360,10 @@ function saveRecommendation(result: AnalysisResult): void {
       target:       plan?.target ?? null,
       rr_planned:   plan?.rr     ?? null,
       setups_json:  JSON.stringify(setups),
-      setup_key:    setupKeyFor(setups),
+      setup_key:    setupKey,
+      blocked:        verdict.blocked ? 1 : 0,
+      blocked_reason: verdict.reason,
+      rules_version:  version,
       structure:    c.structure_read ?? null,
       replay_mode:  result.replayMode ? 1 : 0,
       account_type: pnlTracker?.getSnapshot().accountType ?? null,
@@ -346,15 +374,27 @@ function saveRecommendation(result: AnalysisResult): void {
     if (id === null) {
       console.log(`[recommendations] bar ${result.closedBarTime} already saved — skipped (dedup)`);
     }
+    if (verdict.blocked) {
+      console.log(`[recommendations] BLOCKED: ${verdict.reason}`);
+    }
+    return { blocked: verdict.blocked, reason: verdict.reason, version };
   } catch (err) {
     // Never let bookkeeping break the analysis pipeline.
     console.error('[recommendations] TVCM-REC-SAVE-FAILED:', (err as Error).message);
+    return fallback;
   }
 }
 
-/** Save the call, then grade whatever the fresh bars can now settle. */
+/**
+ * Save the call, stamp the lever's verdict onto the result for the panel, then
+ * grade whatever the fresh bars can now settle. Blocked calls are graded too —
+ * shadow grading is how the scorecard shows what a rule costs.
+ */
 function recordAndGrade(result: AnalysisResult): void {
-  saveRecommendation(result);
+  const verdict = saveRecommendation(result);
+  result.blocked = verdict.blocked;
+  result.blockedReason = verdict.reason;
+  result.rulesVersion = verdict.version;
   void gradeRunner?.run().catch((err: unknown) =>
     console.error('[grade-runner] TVCM-GRADE-FAILED:', (err as Error).message));
 }
@@ -518,8 +558,10 @@ app.on('ready', () => {
   scheduler = new Scheduler(
     (result) => {
       lastResult = result;
-      mainWindow?.webContents.send(IPC.ANALYSIS_PUSH, result);
+      // Stamp the lever verdict onto the result BEFORE pushing, so the panel can
+      // say "Blocked: <rule>" instead of presenting it as an actionable call.
       recordAndGrade(result);
+      mainWindow?.webContents.send(IPC.ANALYSIS_PUSH, result);
       evaluateAutoTrade(result);
       if (getSettings().autoDraw) autoDrawResult(result);
     },
@@ -547,8 +589,8 @@ app.on('ready', () => {
     try {
       const result = await runAnalysis();
       lastResult = result;
-      mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'complete');
       recordAndGrade(result);
+      mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'complete');
       evaluateAutoTrade(result);
       if (getSettings().autoDraw) autoDrawResult(result);
       return result;

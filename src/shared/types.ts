@@ -203,6 +203,21 @@ export interface AppSettings {
   feeTradingDays:      number;   // trading days/month, default 21
   subtractCommissions: boolean;  // deduct commissions from pnl_net; default false (off for paper trading)
   pnlVisible:          boolean;  // show P&L bar
+  /** The rules lever. Applied AFTER analysis; blocked calls are saved and graded anyway. */
+  rules:               TradingRules;
+}
+
+/** Rules that decide whether the app would have acted on a call. */
+export interface TradingRules {
+  enabled:          boolean;
+  /** Normalised setup_key values the app must not act on. */
+  blockedSetupKeys: string[];
+  /** Calls below this confidence are blocked. 0 disables the check. */
+  minConfidence:    number;
+  /** America/Chicago, inclusive, "HH:MM". */
+  windowStart:      string;
+  /** America/Chicago, exclusive, "HH:MM". */
+  windowEnd:        string;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +259,14 @@ export interface AnalysisResult {
    *  uses it to detect replay progress; zero when unavailable. */
   closedBarTime:  number;
   commentary:     CommentaryResult;
+  /** True when the rules lever would have stopped the app acting on this call. */
+  blocked?:       boolean;
+  /** Which rule fired, in plain English. */
+  blockedReason?: string | null;
+  /** Rules in force when this call was made. */
+  rulesVersion?:  string;
+  /** Milliseconds the analysis took, used for the replay pacing warning. */
+  analysisMs?:    number;
 }
 
 // ---------------------------------------------------------------------------

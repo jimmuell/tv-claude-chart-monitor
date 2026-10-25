@@ -24,6 +24,14 @@ const DEFAULTS: AppSettings = {
   feeTradingDays:        21,
   subtractCommissions:   false,
   pnlVisible:            true,
+  // Default lever: the 08:30-11:00 Chicago window only, nothing blocked.
+  rules: {
+    enabled:          true,
+    blockedSetupKeys: [],
+    minConfidence:    0,
+    windowStart:      '08:30',
+    windowEnd:        '11:00',
+  },
 };
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 
