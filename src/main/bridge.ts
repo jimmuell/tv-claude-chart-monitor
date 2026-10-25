@@ -376,6 +376,43 @@ export async function callSetStudyInputs(
   return reader!.setStudyInputs(studyId, patch);
 }
 
+/** The model id the active LLM block is configured to use, for provenance on saved calls. */
+export function getActiveModelId(): string | null {
+  try {
+    return resolveLlm(loadConfig()).model ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recent bars plus the chart's current identity, for the grader.
+ * Returns null when the chart cannot be read, so callers can skip a cycle.
+ */
+export async function peekBars(barCount = 300): Promise<{
+  symbol: string; timeframe: string; replayMode: boolean;
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number }>;
+} | null> {
+  try {
+    await ensureConnected();
+  } catch {
+    return null;
+  }
+  const snap = (await reader!.readSnapshot({ barCount })) as {
+    symbol?: string; timeframe?: string; replayMode?: boolean; readError?: string;
+    candles?: Array<{ time: number; open: number; high: number; low: number; close: number }>;
+  } | null;
+  if (!snap || snap.readError || !Array.isArray(snap.candles) || snap.candles.length === 0) {
+    return null;
+  }
+  return {
+    symbol:     String(snap.symbol ?? ''),
+    timeframe:  String(snap.timeframe ?? ''),
+    replayMode: !!snap.replayMode,
+    candles:    snap.candles,
+  };
+}
+
 /** The page expression the alert poller evaluates to read the newest bar's price. */
 export function getPricePollExpr(): string {
   return PRICE_POLL_EXPR;

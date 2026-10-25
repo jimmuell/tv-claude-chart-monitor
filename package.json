@@ -13,7 +13,7 @@
     "dev:journal": "vite --config vite.journal.config.ts",
     "journal": "node scripts/start-journal.js",
     "package": "npm run build && electron-builder",
-    "test": "node --test 'tests/shared/**/*.test.js'"
+    "test": "node --test 'tests/shared/**/*.test.js' 'tests/main/recommendation-store.test.js'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

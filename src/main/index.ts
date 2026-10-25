@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr } from './bridge';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr, peekBars, getActiveModelId } from './bridge';
 import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier } from './notifier';
@@ -11,6 +11,8 @@ import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
 import { TradeStore } from './trade-store';
+import { RecommendationStore } from './recommendation-store';
+import { GradeRunner } from './grade-runner';
 import type { AnalysisResult, PatternMarker, AlertCreatePayload, AutoTradeOutcome, AutoTradeStatus } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
@@ -75,6 +77,8 @@ let lastResult: AnalysisResult | null = null;
 
 let pnlTracker:      PnlTracker     | null = null;
 let tradeStore:      TradeStore     | null = null;
+let recStore:        RecommendationStore | null = null;
+let gradeRunner:     GradeRunner    | null = null;
 let schedulerStarted = false;
 let isQuitting       = false;
 let firstShow        = false; // set to true when no saved position exists
@@ -288,6 +292,64 @@ function evaluateAutoTrade(result: AnalysisResult): void {
     .catch(err => pushAutoTradeStatus('error', (err as Error).message, dir));
 }
 
+/**
+ * Save one recommendation at bar close — every verdict, not just tradeable ones.
+ * Deduped on symbol+timeframe+bar+mode, so a manual refresh cannot double-count.
+ */
+function saveRecommendation(result: AnalysisResult): void {
+  if (!recStore) return;
+  try {
+    const c    = result.commentary;
+    const plan = c.trade_plan ?? null;
+    const dir  = plan?.direction === 'long' || plan?.direction === 'short'
+      ? plan.direction
+      : c.setup_verdict === 'valid_long' ? 'long'
+      : c.setup_verdict === 'valid_short' ? 'short'
+      : 'none';
+
+    // Setup labels: the detected patterns plus the named high-probability setup.
+    const setups: string[] = [
+      ...(c.candlestick_patterns?.map(p => p.name) ?? []),
+      ...(c.highest_probability_trade?.setup ? [c.highest_probability_trade.setup] : []),
+    ].filter(Boolean);
+
+    const id = recStore.save({
+      created_at:   Date.now(),
+      symbol:       result.symbol,
+      timeframe:    result.timeframe,
+      bar_time:     result.closedBarTime,
+      bar_price:    result.closedBarPrice ?? null,
+      verdict:      c.setup_verdict,
+      direction:    dir,
+      confidence:   typeof c.confidence === 'number' ? c.confidence : null,
+      entry:        plan?.entry  ?? null,
+      stop:         plan?.stop   ?? null,
+      target:       plan?.target ?? null,
+      rr_planned:   plan?.rr     ?? null,
+      setups_json:  JSON.stringify(setups),
+      structure:    c.structure_read ?? null,
+      replay_mode:  result.replayMode ? 1 : 0,
+      account_type: pnlTracker?.getSnapshot().accountType ?? null,
+      app_version:  app.getVersion(),
+      model_id:     getActiveModelId(),
+      raw_json:     JSON.stringify(c).slice(0, 20000),
+    });
+    if (id === null) {
+      console.log(`[recommendations] bar ${result.closedBarTime} already saved — skipped (dedup)`);
+    }
+  } catch (err) {
+    // Never let bookkeeping break the analysis pipeline.
+    console.error('[recommendations] TVCM-REC-SAVE-FAILED:', (err as Error).message);
+  }
+}
+
+/** Save the call, then grade whatever the fresh bars can now settle. */
+function recordAndGrade(result: AnalysisResult): void {
+  saveRecommendation(result);
+  void gradeRunner?.run().catch((err: unknown) =>
+    console.error('[grade-runner] TVCM-GRADE-FAILED:', (err as Error).message));
+}
+
 function autoDrawResult(result: AnalysisResult): void {
   const levels = result.commentary.key_levels_to_watch;
   if (levels && levels.length > 0) {
@@ -397,6 +459,12 @@ app.on('ready', () => {
   // Trade journal store (standalone journal server runs separately via `pnpm journal`)
   tradeStore = new TradeStore(app.getPath('userData'));
   setLessonsProvider(() => tradeStore?.getApprovedLessons() ?? []);
+  // Share TradeStore's connection so trades.db keeps a single writer.
+  recStore    = new RecommendationStore(tradeStore.database);
+  gradeRunner = new GradeRunner(recStore, peekBars);
+  // Catch up on anything left ungraded while the app was closed.
+  void gradeRunner.run().catch((err: unknown) =>
+    console.error('[grade-runner] startup catch-up failed:', (err as Error).message));
 
   // Watch for journal-reset signal written by the journal server's DELETE /api/trades.
   // The journal server uses sql.js (raw file I/O) which bypasses SQLite's lock protocol,
@@ -433,6 +501,7 @@ app.on('ready', () => {
     (result) => {
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYSIS_PUSH, result);
+      recordAndGrade(result);
       evaluateAutoTrade(result);
       if (getSettings().autoDraw) autoDrawResult(result);
     },
@@ -458,6 +527,7 @@ app.on('ready', () => {
       const result = await runAnalysis();
       lastResult = result;
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'complete');
+      recordAndGrade(result);
       evaluateAutoTrade(result);
       if (getSettings().autoDraw) autoDrawResult(result);
       return result;

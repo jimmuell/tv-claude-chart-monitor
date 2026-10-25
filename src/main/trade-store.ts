@@ -125,6 +125,11 @@ export class TradeStore {
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
+  /** The shared Database handle, so other stores write through one connection. */
+  get database(): Database.Database {
+    return this.db;
+  }
+
   /** Record a new trade entry. Returns the new trade's id. */
   recordEntry(entry: TradeEntry): number {
     const stmt = this.db.prepare(`
