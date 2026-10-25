@@ -167,3 +167,25 @@ test('the per-bar log prints Chicago time, not UTC', () => {
   assert.match(src.slice(src.indexOf('function logBar'), src.indexOf('function logBar') + 500),
     /America\/Chicago/, 'logBar formats in Chicago time');
 });
+
+test('stepAndWait waits for the CLOSED bar, which is the one the app saves', async () => {
+  // The app saves bar_time = closedBarTime (second-to-last). After a step, the
+  // bar that just closed is the one that was last BEFORE the step. Waiting on
+  // the new last bar never matches and every bar times out.
+  const { stepAndWait } = require('../../scripts/train-replay');
+  const reader = mockReader(60, 1792600000);
+  const asked = [];
+  let clock = 0;
+
+  const res = await stepAndWait(reader, chartOf(reader), { barTimeoutMs: 10000 }, {
+    readChart: async () => chartOf(reader),
+    hasRow: (_sym, _tf, barTime) => { asked.push(barTime); return { id: 1, blocked: 0, verdict: 'wait' }; },
+    sleep: async (ms) => { clock += ms; },
+    now: () => clock,
+  });
+
+  assert.strictEqual(asked[0], 1792600000,
+    'must poll for the bar that was last BEFORE the step, not the new one');
+  assert.strictEqual(res.barTime, 1792600000);
+  assert.ok(res.row, 'and it finds the row');
+});

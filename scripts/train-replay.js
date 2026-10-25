@@ -222,15 +222,22 @@ async function stepAndWait(reader, chart, opts, deps = {}) {
   }
 
   // Then wait for the row the app writes for that bar.
+  //
+  // IMPORTANT: the app saves bar_time = closedBarTime, which is the
+  // SECOND-to-last bar — the last one is still forming. After a step the bar
+  // that just closed is the one that WAS last before the step, so that is the
+  // row to wait for. Waiting on the new last bar never matches, and the runner
+  // times out on every bar while the app is in fact saving correctly.
+  const closedBarTime = before.lastTime;
   const started = now();
   const deadline = started + opts.barTimeoutMs;
   let row = null;
   while (now() < deadline && !stopping) {
-    row = hasRowFn(chart.symbol, chart.timeframe, after.lastTime);
+    row = hasRowFn(chart.symbol, chart.timeframe, closedBarTime);
     if (row) break;
     await sleepFn(500);
   }
-  return { advanced: true, barTime: after.lastTime, waitedMs: now() - started, row };
+  return { advanced: true, barTime: closedBarTime, waitedMs: now() - started, row };
 }
 
 async function main() {
@@ -263,10 +270,19 @@ async function main() {
 
     const seek = await reader.evalPage(seekExpr(day, opts.start));
     if (String(seek).startsWith('ERR')) throw new Error(`TVCM-TRAIN-SEEK-FAILED: ${day}: ${seek}`);
-    await sleep(14000);
 
+    // Wait for replay to actually engage rather than guessing a delay. Seeking
+    // can take a while when TradingView has to load the day's history first.
     let chart = await readChart(reader);
-    if (!chart.replay) throw new Error('TVCM-TRAIN-NO-REPLAY: replay did not start');
+    const replayDeadline = Date.now() + 60000;
+    while (Date.now() < replayDeadline && !chart.replay && !stopping) {
+      await sleep(2000);
+      chart = await readChart(reader);
+    }
+    if (!chart.replay) throw new Error('TVCM-TRAIN-NO-REPLAY: replay did not start within 60s');
+    // Let the cursor settle on the requested bar before stepping.
+    await sleep(6000);
+    chart = await readChart(reader);
 
     let n = 0, skipped = 0, stalls = 0;
     // ── window: one bar at a time, waiting for each analysis ──────────────
