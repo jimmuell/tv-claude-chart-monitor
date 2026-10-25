@@ -52,6 +52,8 @@ export class Scheduler {
   /** Open time (epoch secs) of the bar the last replay analysis described.
    *  Null when not currently driving off replay bars. */
   private _replayBarTime: number | null = null;
+  /** True when the CHART is in Bar Replay, regardless of analysis success. */
+  private _inReplay = false;
 
   constructor(
     onAnalysis: (result: AnalysisResult) => void,
@@ -156,6 +158,10 @@ export class Scheduler {
 
     if (!this._running) return;
 
+    // Remember the chart's actual mode. The retry cadence is chosen from this,
+    // not from whether a replay analysis has already succeeded.
+    if (state) this._inReplay = !!state.replayMode;
+
     if (state && !state.replayMode) {
       // Replay was exited — hand control back to wall-clock scheduling.
       this._replayBarTime = null;
@@ -182,6 +188,7 @@ export class Scheduler {
 
         // ── Replay: drive off bar advance, not the clock ─────────────────────
         if (result.replayMode) {
+          this._inReplay = true;
           this._replayBarTime = result.closedBarTime;
           // Blank the renderer countdown: there is no meaningful "next run at
           // T" in replay, we run when the user steps or autoplay advances.
@@ -190,6 +197,7 @@ export class Scheduler {
           return;
         }
 
+        this._inReplay = false;
         this._replayBarTime = null;
 
         const interval = intervalForTimeframe(result.timeframe);
@@ -205,16 +213,37 @@ export class Scheduler {
         this._lastIntervalMs = interval;
         this._scheduleAt(alignedTarget);
       })
-      .catch((err: unknown) => {
+      .catch(async (err: unknown) => {
         const error = err instanceof Error ? err : new Error(String(err));
         this.onError(error);
 
         if (!this._running) return;
 
-        // On error, reschedule so a transient CDP or network hiccup doesn't
-        // stop monitoring — staying on whichever cadence we were using.
-        if (this._replayBarTime !== null) this._scheduleReplayPoll();
-        else this._scheduleNext(this._lastIntervalMs);
+        // On error, reschedule so a transient CDP or network hiccup doesn't stop
+        // monitoring — on whichever cadence the CHART is actually on.
+        //
+        // This used to key off _replayBarTime, which is only set AFTER a
+        // successful replay analysis. So one failure before the first success —
+        // common right after seeking, when the chart is still loading — dropped
+        // replay onto the live bar-close interval: 2 minutes on a 2-minute
+        // chart, instead of the 3-second replay poll. That is what throttled the
+        // training runner to ~3 analyses in 7 minutes.
+        if (this._inReplay || this._replayBarTime !== null) {
+          this._scheduleReplayPoll();
+          return;
+        }
+        // Mode unknown (the failure came before any successful read): ask.
+        // peekBarState is a cheap CDP read, not an analysis.
+        try {
+          const state = await peekBarState();
+          if (!this._running) return;
+          if (state && state.replayMode) {
+            this._inReplay = true;
+            this._scheduleReplayPoll();
+            return;
+          }
+        } catch { /* fall through to the live cadence */ }
+        if (this._running) this._scheduleNext(this._lastIntervalMs);
       });
   }
 }

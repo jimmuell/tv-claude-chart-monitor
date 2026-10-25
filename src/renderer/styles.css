@@ -1363,3 +1363,13 @@ body {
   padding-top: 4px;
   margin-top: 2px;
 }
+
+/* Live-money safety banner — the app's answer to "can this place an order?" */
+.live-safety {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 0.3rem 0.6rem; border-radius: 4px; margin: 0.25rem 0;
+  border: 1px solid var(--border);
+}
+.live-safety.ok     { color: var(--text-secondary); border-left: 3px solid var(--accent); }
+.live-safety.warn   { color: #d6a84a; border-left: 3px solid #d6a84a; background: rgba(214,168,74,0.10); }
+.live-safety.danger { color: #fff; background: var(--bearish); border-color: var(--bearish); }

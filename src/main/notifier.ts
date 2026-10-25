@@ -25,3 +25,10 @@ export function notifyVerdict(verdict: SetupVerdict, headline: string): void {
 export function resetNotifier(): void {
   prevVerdict = null;
 }
+
+/** Show a macOS notification for a problem the user must not miss. */
+export function notifyProblem(title: string, body: string): void {
+  if (Notification.isSupported()) {
+    new Notification({ title, body, silent: false }).show();
+  }
+}

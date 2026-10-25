@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { liveSafetyBanner } from '../shared/live-safety';
 import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult, AutoTradeStatus } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import SettingsPanel from './SettingsPanel';
@@ -1285,6 +1286,15 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
+        {/* Live-money safety: can this app place a real order right now? */}
+        {(() => {
+          const b = liveSafetyBanner({
+            accountType: pnlSnap?.accountType ?? null,
+            autoTrade,
+            autoTradeTestMode,
+          });
+          return b ? <div className={`live-safety ${b.level}`}>{b.text}</div> : null;
+        })()}
         {/* Row 2: only in analysis view */}
         {view === 'analysis' && (
           <div className="header-row2">

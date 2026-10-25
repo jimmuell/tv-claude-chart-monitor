@@ -221,8 +221,21 @@ export class RecommendationStore {
     initRecommendationsSchema(this.db);
   }
 
-  /** Save one call. Returns its id, or null when the bar already has one (dedup). */
+  /**
+   * Save one call. Returns its id, or null when the bar already has one (dedup).
+   *
+   * rules_version is forced non-empty here, not just at the call site. SQLite
+   * treats NULLs as DISTINCT in a unique index, so a single null-versioned row
+   * silently switches dedup off for that bar — which is exactly how TVCM-8
+   * accumulated 8 copies of one bar.
+   */
   save(rec: RecommendationInput): number | null {
+    const row: RecommendationInput = {
+      ...rec,
+      rules_version: rec.rules_version && String(rec.rules_version).trim()
+        ? rec.rules_version
+        : 'unversioned',
+    };
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO recommendations (
         created_at, symbol, timeframe, bar_time, bar_price,
@@ -237,7 +250,7 @@ export class RecommendationStore {
         @input_tokens, @output_tokens, @cost_usd, @analysis_ms
       )
     `);
-    const info = stmt.run(rec as unknown as Record<string, unknown>);
+    const info = stmt.run(row as unknown as Record<string, unknown>);
     return info.changes > 0 ? Number(info.lastInsertRowid) : null;
   }
 

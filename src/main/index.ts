@@ -5,13 +5,14 @@ import path from 'path';
 import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr, peekBars, getActiveModelId } from './bridge';
 import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
-import { notifyVerdict, resetNotifier } from './notifier';
+import { notifyVerdict, resetNotifier, notifyProblem } from './notifier';
 import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './order-executor';
 import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
 import { TradeStore } from './trade-store';
 import { analysisErrorPayload } from './status-payload';
+import { runStartupStep, startupFailureText, type StartupFailure } from './startup-guard';
 import { RecommendationStore } from './recommendation-store';
 import { GradeRunner } from './grade-runner';
 import type { AnalysisResult, PatternMarker, AlertCreatePayload, AutoTradeOutcome, AutoTradeStatus } from '../shared/types';
@@ -138,6 +139,10 @@ function toggleWindow(): void {
     }
     // showInactive — appear on the current Space without stealing focus
     mainWindow.showInactive();
+    // A failure recorded before the panel existed still has to be seen.
+    for (const f of pendingStartupFailures) {
+      mainWindow.webContents.send(IPC.ANALYZE_STATUS, 'error', startupFailureText(f));
+    }
     startSchedulerOnce();
   }
   rebuildMenu();
@@ -158,7 +163,14 @@ function startSchedulerOnce(): void {
   if (!schedulerStarted) {
     schedulerStarted = true;
     if (getSettings().autoRefresh !== false) {
-      scheduler?.start();
+      // A scheduler that fails to start means no analysis ever happens, which
+      // is silent by nature — so it is reported like any other startup step.
+      runStartupStep('scheduler', () => scheduler?.start(), (f) => {
+        const text = startupFailureText(f);
+        console.error('[startup]', text);
+        try { notifyProblem('TV Chart Monitor — startup problem', text); } catch { /* ignore */ }
+        mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'error', text);
+      });
     }
   }
 }
@@ -446,6 +458,8 @@ function saveRecommendation(result: AnalysisResult): { blocked: boolean; reason:
  * shadow grading is how the scorecard shows what a rule costs.
  */
 let lastAnalysedBarTime: number | null = null;
+/** Startup failures seen before the panel existed, replayed when it opens. */
+const pendingStartupFailures: StartupFailure[] = [];
 
 function recordAndGrade(result: AnalysisResult): void {
   // Replay stepped faster than the analysis? Then a bar went by with no call.
@@ -574,20 +588,36 @@ app.on('ready', () => {
   rebuildMenu();
 
   // Trade journal store (standalone journal server runs separately via `pnpm journal`)
+  // Startup failures must be visible. A throw here used to leave a working tray
+  // and a dead app with nothing on screen and nothing in any log a user reads.
+  const startupFailures: StartupFailure[] = [];
+  const reportStartupFailure = (f: StartupFailure): void => {
+    startupFailures.push(f);
+    pendingStartupFailures.push(f);
+    const text = startupFailureText(f);
+    console.error('[startup]', text);
+    // A notification failure must never hide the original problem.
+    try { notifyProblem('TV Chart Monitor — startup problem', text); } catch { /* ignore */ }
+    // The panel may not exist yet; send on creation as well as now.
+    mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'error', text);
+  };
+
   tradeStore = new TradeStore(app.getPath('userData'));
   setLessonsProvider(() => tradeStore?.getApprovedLessons() ?? []);
   // Share TradeStore's connection so trades.db keeps a single writer.
-  recStore    = new RecommendationStore(tradeStore.database);
-  gradeRunner = new GradeRunner(recStore, peekBars);
+  runStartupStep('schema', () => {
+    recStore    = new RecommendationStore(tradeStore!.database);
+    gradeRunner = new GradeRunner(recStore, peekBars);
+  }, reportStartupFailure);
   // Fill setup_key on any rows written before the column existed.
   try {
-    const filled = recStore.backfillSetupKeys((json) => setupKeyFor(json));
+    const filled = recStore?.backfillSetupKeys((json) => setupKeyFor(json)) ?? 0;
     if (filled > 0) console.log(`[recommendations] backfilled setup_key on ${filled} row(s)`);
   } catch (err) {
     console.error('[recommendations] TVCM-REC-BACKFILL-FAILED:', (err as Error).message);
   }
   // Catch up on anything left ungraded while the app was closed.
-  void gradeRunner.run().catch((err: unknown) =>
+  void gradeRunner?.run().catch((err: unknown) =>
     console.error('[grade-runner] startup catch-up failed:', (err as Error).message));
 
   // Watch for journal-reset signal written by the journal server's DELETE /api/trades.

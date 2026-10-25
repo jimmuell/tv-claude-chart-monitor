@@ -481,3 +481,36 @@ test('the rules columns are added without disturbing trades or user_version', ()
   }
   trades.close();
 });
+
+// ── rules_version is never null (TVCM-9) ─────────────────────────────────────
+
+test('save() never writes a null or blank rules_version', () => {
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+  const db = trades.database;
+
+  for (const [i, bad] of [null, undefined, '', '   '].entries()) {
+    const id = store.save(rec({ bar_time: 7000 + i, rules_version: bad }));
+    assert.ok(id, `saved for ${JSON.stringify(bad)}`);
+    const row = db.prepare('SELECT rules_version FROM recommendations WHERE id = ?').get(id);
+    assert.strictEqual(row.rules_version, 'unversioned',
+      `a ${JSON.stringify(bad)} version must become "unversioned", never NULL`);
+  }
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM recommendations WHERE rules_version IS NULL').get().n, 0);
+  trades.close();
+});
+
+test('dedup still works for calls saved without a rules version', () => {
+  // The TVCM-8 failure mode: NULLs are DISTINCT in a unique index, so one
+  // null-versioned row turned dedup off for that bar entirely.
+  const dir = tmpDir();
+  const trades = new TradeStore(dir);
+  const store = new RecommendationStore(trades.database);
+
+  assert.ok(store.save(rec({ bar_time: 8000, rules_version: null })), 'first save');
+  assert.strictEqual(store.save(rec({ bar_time: 8000, rules_version: null })), null,
+    'the second save of the same bar must be rejected, not silently duplicated');
+  assert.strictEqual(store.count(), 1);
+  trades.close();
+});
