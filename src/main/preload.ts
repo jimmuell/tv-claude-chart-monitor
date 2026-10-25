@@ -4,8 +4,9 @@ import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapsh
 contextBridge.exposeInMainWorld('api', {
   requestAnalysis: () => ipcRenderer.invoke(IPC.ANALYZE_RUN),
   getSnapshot: () => ipcRenderer.invoke(IPC.SNAPSHOT_RAW),
-  onStatus: (callback: (status: string) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, status: string) => callback(status);
+  onStatus: (callback: (status: string, message?: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: string, message?: string) =>
+      callback(status, message);
     ipcRenderer.on(IPC.ANALYZE_STATUS, handler);
     return () => ipcRenderer.removeListener(IPC.ANALYZE_STATUS, handler);
   },

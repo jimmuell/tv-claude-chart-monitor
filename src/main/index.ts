@@ -11,6 +11,7 @@ import { PnlTracker } from './pnl-tracker';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
 import { TradeStore } from './trade-store';
+import { analysisErrorPayload } from './status-payload';
 import { RecommendationStore } from './recommendation-store';
 import { GradeRunner } from './grade-runner';
 import type { AnalysisResult, PatternMarker, AlertCreatePayload, AutoTradeOutcome, AutoTradeStatus } from '../shared/types';
@@ -523,9 +524,12 @@ app.on('ready', () => {
       if (getSettings().autoDraw) autoDrawResult(result);
     },
     (err) => {
-      // Status only — never push error objects as ANALYSIS_PUSH (renderer expects AnalysisResult)
-      mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'error');
-      console.error('[scheduler] background analysis failed:', err.message);
+      // Never push error objects as ANALYSIS_PUSH (renderer expects AnalysisResult),
+      // but DO send the message: a scheduled failure used to show only a red dot,
+      // hiding coded reasons like TVCM-READ-EMPTY-BARS from everyone but the console.
+      const payload = analysisErrorPayload(err);
+      mainWindow?.webContents.send(IPC.ANALYZE_STATUS, payload.status, payload.message);
+      console.error('[scheduler] background analysis failed:', payload.message);
     },
     (status) => {
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, status);

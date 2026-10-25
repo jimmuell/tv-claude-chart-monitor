@@ -815,8 +815,14 @@ const App: React.FC = () => {
 
   // Subscribe to IPC events
   useEffect(() => {
-    const unsubStatus = window.api.onStatus((status) => {
+    const unsubStatus = window.api.onStatus((status, message) => {
       setLoadingMessage(mapLoadingMessage(status));
+      // A scheduled bar-close failure arrives here, not through the manual
+      // refresh path. Show its message instead of only turning the dot red.
+      if (status === 'error') {
+        setErrorMessage(message && message.trim() ? message : 'Background analysis failed');
+        setUiStatus('error');
+      }
     });
 
     const unsubAnalysis = window.api.onAnalysis((pushed) => {

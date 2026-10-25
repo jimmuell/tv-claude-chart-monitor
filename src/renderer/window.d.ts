@@ -5,7 +5,7 @@ declare global {
     api: {
       requestAnalysis(): Promise<AnalysisResult>;
       getSnapshot(): Promise<unknown>;
-      onStatus(callback: (status: AnalysisStatus) => void): () => void;
+      onStatus(callback: (status: AnalysisStatus, message?: string) => void): () => void;
       onAnalysis(cb: (result: AnalysisResult) => void): () => void;
       onNextTick(cb: (nextMs: number) => void): () => void;
       toggleLevel(slotIndex: number, price: number, kind: string, label: string, visible: number, priority: string): Promise<void>;

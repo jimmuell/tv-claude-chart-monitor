@@ -18,6 +18,7 @@ into something you can search for.
 | **`TVCM-ALERT-NO-BAR`** | The price-crossing alert poller (every 5 s) reached the chart but could **not read the newest bar**, so there was no price to test armed alerts against. Alerts are not being checked. | **Nothing in the UI.** One line in the terminal / dev log:<br>`[alert-poller] TVCM-ALERT-NO-BAR: chart is readable but no bar could be read — price-crossing alerts are not being checked`<br>Latched: logged once per fault episode, re-armed on recovery, so it will not repeat every 5 s. | Returned by the poll expression `PRICE_POLL_EXPR` in `src/shared/tv-reader.js` (line 129, `{ error: "TVCM-ALERT-NO-BAR" }`); logged by the poller in `src/main/index.ts` (lines 599-620). | 1. Same four bar-read causes as `TVCM-READ-EMPTY-BARS` — both read bars through the same `readBars` helper.<br>2. Confirm armed alerts actually matter right now; the code means they are *unchecked*, not that they failed.<br>3. **If TradingView is closed entirely you get no message at all** — that is the deliberate quiet-skip path, not this code. |
 | **`TVCM-REC-SAVE-FAILED`** | Saving a recommendation at bar close threw. The analysis itself still completed — bookkeeping must never break the pipeline. | **Nothing in the UI**; the analysis card appears as normal. One line in the terminal / dev log with the underlying error. The call is simply missing from the scorecard. | `src/main/index.ts`, `saveRecommendation()` catch block. | 1. Is `trades.db` writable, and is another process holding a write lock?<br>2. Did the DB file move or get replaced underneath the running app?<br>3. A dedup skip is **not** this error — that logs `bar <t> already saved — skipped (dedup)` and is normal. |
 | **`TVCM-GRADE-NO-BARS`** | The grader ran but could not read any bars, so it graded nothing this cycle. Not a grading fault — the chart was unreadable. | **Nothing in the UI.** One latched log line; re-arms once bars return. Calls stay ungraded and are retried next bar. | `src/main/grade-runner.ts`, `run()`. | 1. Same bar-read causes as `TVCM-READ-EMPTY-BARS` — both go through `readBars`.<br>2. Is TradingView running and on a chart with history?<br>3. Persisting while the chart looks fine points at the bar reader, not the grader. |
+| **`TVCM-REC-BACKFILL-FAILED`** | Filling `setup_key` on rows written before that column existed threw at startup. Saving and grading continue normally; only the backfill was skipped. | **Nothing in the UI.** One line in the terminal / dev log. Affected rows keep a NULL `setup_key` and fall into the scorecard's `other` bucket until the next successful start. | `src/main/index.ts`, startup backfill block. | 1. Is `trades.db` writable?<br>2. Is the `recommendations` table present — a very old DB may predate it.<br>3. The backfill is idempotent, so a restart retries it safely. |
 | **`TVCM-GRADE-FAILED`** | The grading pass threw. Already-settled grades are unaffected; ungraded calls are retried on the next bar. | **Nothing in the UI.** One line in the terminal / dev log with the underlying error. | `src/main/index.ts`, `recordAndGrade()` catch block. | 1. Read the attached error — it is the real cause.<br>2. Grades are idempotent, so a transient failure costs nothing but a cycle. |
 
 ## Reading the three poll outcomes
@@ -31,12 +32,13 @@ must not confuse "TradingView isn't running" with a real fault:
 | `{ error: 'TVCM-ALERT-NO-BAR' }` | chart reachable, bar unreadable — a real fault | yes, once per episode |
 | `null` | chart / API not reachable at all (TradingView closed, CDP down) | no — expected, stays quiet |
 
-## Known gap
+## Closed gap (TVCM-7)
 
-`TVCM-READ-EMPTY-BARS` only reaches the panel on a **manual** refresh. The scheduler's error
-callback sends the status but not the message (`src/main/index.ts:439-443`), so a background
-bar-close failure shows a red dot while the code appears only on the console. Worth closing if this
-code is ever seen in practice.
+`TVCM-READ-EMPTY-BARS` used to reach the panel only on a **manual** refresh — a scheduled
+bar-close failure sent the status but not the message, so the user saw a red dot and the code went
+to the console, where nobody running a menubar app will look. The scheduler now sends the message
+too (`analysisErrorPayload()` in `src/main/status-payload.ts`), and the renderer displays it. Since
+almost every run is a scheduled one, this was the common case, not the edge case.
 
 ## Why grading has its own codes
 
