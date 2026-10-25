@@ -200,6 +200,34 @@ export class RecommendationStore {
     `).run(grade.outcome, grade.barsToOutcome, grade.rGross, grade.rNet, Date.now(), id);
   }
 
+  /**
+   * Clear grades that a rule change could invalidate, so the grader settles them
+   * again. Only WIN/LOSS/AMBIGUOUS are affected by scoring-rule changes —
+   * NOT_TRIGGERED and UNGRADEABLE are decided before any level is scored.
+   * Returns the rows cleared, with their previous outcome, for a before/after diff.
+   */
+  clearGradesForRegrade(): Array<{ id: number; outcome: string }> {
+    const rows = this.db.prepare(`
+      SELECT id, outcome FROM recommendations
+      WHERE outcome IN ('WIN','LOSS','AMBIGUOUS')
+    `).all() as Array<{ id: number; outcome: string }>;
+    if (rows.length > 0) {
+      this.db.prepare(`
+        UPDATE recommendations
+           SET outcome = NULL, bars_to_outcome = NULL, r_gross = NULL, r_net = NULL, graded_at = NULL
+         WHERE outcome IN ('WIN','LOSS','AMBIGUOUS')
+      `).run();
+    }
+    return rows;
+  }
+
+  /** Current outcome of one call, for comparing before and after a re-grade. */
+  outcomeOf(id: number): string | null {
+    const row = this.db.prepare('SELECT outcome FROM recommendations WHERE id = ?').get(id) as
+      { outcome: string | null } | undefined;
+    return row ? row.outcome : null;
+  }
+
   /** Total saved calls, optionally restricted to live or replay. */
   count(replayMode?: 0 | 1): number {
     const row = replayMode === undefined

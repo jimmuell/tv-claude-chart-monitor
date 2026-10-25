@@ -124,7 +124,9 @@ test('fees turn a tiny win negative', () => {
   // of $1.24 on $50 of risk (10 points) costs 0.0248 R and swamps it.
   const tiny = { direction: 'long', entry: 100, stop: 90, target: 100.1 };
   const bars = [
-    bar(t(1), 100.25, 100.5, 99.5, 100.0),     // triggered
+    // Trigger bar must NOT tag the target (high < 100.1), or the trigger-bar
+    // rule makes this AMBIGUOUS rather than the win this test is about.
+    bar(t(1), 100.05, 100.08, 99.5, 100.0),    // triggered, target untouched
     bar(t(2), 100.0, 100.25, 99.9, 100.1),     // high 100.25 >= target 100.1
   ];
   const g = gradeCall(tiny, bars);
@@ -177,4 +179,59 @@ test('break-even win rate accounts for fees and planned R:R', () => {
   // Free trading would be exactly 50% at 1:1.
   const beFree = breakEvenWinRate({ rrPlanned: 1, riskPoints: 3.25, feePerRt: 0 });
   assert.ok(Math.abs(beFree - 0.5) < 1e-9, `got ${beFree}`);
+});
+
+// ── trigger-bar bias (TVCM-7 defect 2) ───────────────────────────────────────
+// Scanning for target/stop from the trigger bar onward scores a WIN when the
+// SAME bar both reaches the entry and tags the target — but the target may have
+// traded before the entry was ever filled. Only bars strictly AFTER the trigger
+// bar can produce a clean win.
+
+test('trigger bar reaching the target is AMBIGUOUS, not a win', () => {
+  // One bar spans entry 100 and target 103.25. Which came first is unknowable.
+  const bars = [bar(t(1), 99.5, 103.5, 99.25, 103.25)];
+  const g = gradeCall(LONG, bars);
+
+  assert.strictEqual(g.outcome, 'AMBIGUOUS',
+    'a same-bar entry-and-target cannot be proven to be a win');
+  assert.strictEqual(g.rGross, null);
+  assert.strictEqual(g.rNet, null);
+});
+
+test('trigger bar reaching only the stop is a LOSS', () => {
+  // Conservative: if the bar that filled you also tagged the stop, take the loss.
+  const bars = [bar(t(1), 100.5, 100.75, 96.5, 96.75)];
+  const g = gradeCall(LONG, bars);
+
+  assert.strictEqual(g.outcome, 'LOSS');
+  assert.strictEqual(g.rGross, -1);
+});
+
+test('target on a LATER bar is still a clean WIN', () => {
+  const bars = [
+    bar(t(1), 100.5, 100.75, 99.75, 100.25),   // trigger only
+    bar(t(2), 100.25, 103.5, 100.0, 103.25),   // target, a bar later
+  ];
+  const g = gradeCall(LONG, bars);
+
+  assert.strictEqual(g.outcome, 'WIN');
+  assert.strictEqual(g.barsToOutcome, 2);
+  assert.ok(Math.abs(g.rGross - 1) < 1e-9);
+});
+
+test('same rule for shorts: trigger bar hitting the target is AMBIGUOUS', () => {
+  const bars = [bar(t(1), 100.5, 100.25, 96.5, 96.75)];
+  assert.strictEqual(gradeCall(SHORT, bars).outcome, 'AMBIGUOUS');
+
+  // but a later-bar target is a win
+  const later = [
+    bar(t(1), 99.5, 100.25, 99.25, 99.75),
+    bar(t(2), 99.75, 99.75, 96.5, 96.75),
+  ];
+  assert.strictEqual(gradeCall(SHORT, later).outcome, 'WIN');
+});
+
+test('trigger bar hitting BOTH levels stays AMBIGUOUS', () => {
+  const bars = [bar(t(1), 100, 103.5, 96.5, 100)];
+  assert.strictEqual(gradeCall(LONG, bars).outcome, 'AMBIGUOUS');
 });

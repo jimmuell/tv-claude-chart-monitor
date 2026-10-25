@@ -109,6 +109,24 @@ export class GradeRunner {
     }
   }
 
+  /**
+   * One-shot re-grade after a scoring-rule change: drop the grades a rule change
+   * could invalidate, score them again, and report which ones actually moved.
+   * Normal grading stays idempotent; only this path deliberately re-opens a grade.
+   */
+  async regrade(): Promise<{ cleared: number; resettled: number; changed: Array<{ id: number; from: string; to: string }> }> {
+    const before = this.store.clearGradesForRegrade();
+    await this.run();
+    const changed: Array<{ id: number; from: string; to: string }> = [];
+    let resettled = 0;
+    for (const row of before) {
+      const now = this.store.outcomeOf(row.id);
+      if (now !== null && now !== 'PENDING') resettled++;
+      if (now !== row.outcome) changed.push({ id: row.id, from: row.outcome, to: now ?? 'PENDING' });
+    }
+    return { cleared: before.length, resettled, changed };
+  }
+
   /** True when the on-screen chart is the same instrument, timeframe and mode as the call. */
   private matchesChart(
     row: RecommendationRow,

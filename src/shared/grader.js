@@ -21,6 +21,11 @@
 //
 // AMBIGUOUS and EXPIRED carry no R. Guessing which level came first inside a bar
 // is the single easiest way to manufacture a fake edge, so it is never scored.
+//
+// The trigger bar gets a stricter rule still: it contains the entry, so a target
+// tag on that bar may have come BEFORE the fill. Only bars strictly AFTER the
+// trigger bar can produce a clean WIN. A stop on the trigger bar is still a LOSS,
+// because the conservative reading is the one that cannot invent an edge.
 
 // MES contract economics. $5 per point; one round trip of fees costs $1.24.
 const DEFAULTS = {
@@ -116,6 +121,22 @@ function gradeCall(call, barsAfter, opts) {
     const b    = bars[i];
     const tHit = hitTarget(b, call);
     const sHit = hitStop(b, call);
+
+    // The trigger bar is a special case. It contains the entry, so a target tag
+    // on that same bar may have happened BEFORE the fill — price could have run
+    // to the target and only then come back to the entry. Scoring that as a win
+    // is free money the trade never earned, so the target can never settle the
+    // trigger bar. A stop tag still counts: taking the loss is the conservative
+    // reading, and refusing it would flatter the record the other way.
+    if (i === triggerIndex) {
+      if (tHit) {
+        return { ...none, outcome: 'AMBIGUOUS', barsToOutcome: i + 1, triggerBarIndex: triggerIndex };
+      }
+      if (sHit) {
+        return { outcome: 'LOSS', barsToOutcome: i + 1, rGross: -1, rNet: -1 - fee, triggerBarIndex: triggerIndex };
+      }
+      // Neither level on the trigger bar — fall through to the checks below.
+    }
 
     // Both in one bar — including a gap that opens through one and runs to the
     // other. Which came first is not knowable from OHLC, so refuse to score it.
