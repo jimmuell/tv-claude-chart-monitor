@@ -613,3 +613,28 @@ html, body {
   text-align: right;
 }
 .config-field input[type="number"]:focus { border-color: var(--accent); outline: none; }
+
+/* ── Recommendation scorecard ───────────────────────────────────────────── */
+.scorecard { margin-bottom: 1.5rem; }
+.scorecard-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin-bottom: 0.9rem;
+}
+.scorecard-title { font-size: 15px; font-weight: 600; margin: 0; color: var(--text-primary); }
+.scorecard-sub   { font-size: 11.5px; color: var(--text-secondary); margin: 0.25rem 0 0; max-width: 46ch; line-height: 1.45; }
+.scorecard-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.scorecard-tab {
+  background: transparent; border: 0; color: var(--text-secondary);
+  font-size: 11.5px; padding: 0.35rem 0.7rem; cursor: pointer;
+}
+.scorecard-tab.active { background: var(--surface); color: var(--text-primary); font-weight: 600; }
+.scorecard-banner {
+  border: 1px solid var(--border); border-left: 3px solid #d6a84a;
+  background: rgba(214,168,74,0.08); color: var(--text-primary);
+  font-size: 11.5px; line-height: 1.5; padding: 0.55rem 0.7rem;
+  border-radius: 4px; margin-bottom: 0.85rem;
+}
+.scorecard-banner.replay { border-left-color: #6a8fd6; background: rgba(106,143,214,0.08); }
+.scorecard-aside { margin-top: 0.6rem; }
+.scorecard-note  { font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin: 0.5rem 0 0; }
+.scorecard-empty { font-size: 12px; color: var(--text-secondary); padding: 0.75rem 0; }

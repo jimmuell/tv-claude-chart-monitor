@@ -77,3 +77,38 @@ export interface TradeStats {
     winRate: number;
   }>;
 }
+
+/** One win-rate bucket on the recommendation scorecard. */
+export interface ScorecardBucket {
+  label:   string;
+  graded:  number;
+  wins:    number;
+  losses:  number;
+  winRate: number;
+  avgNetR: number | null;
+}
+
+/**
+ * Win rate of the app's own recommendations, graded from bars.
+ * `mode` is 0 for live calls and 1 for Bar Replay — never mixed.
+ */
+export interface Scorecard {
+  graded:       number;
+  wins:         number;
+  losses:       number;
+  winRate:      number;
+  avgNetR:      number | null;
+  avgGrossR:    number | null;
+  ambiguous:    number;
+  expired:      number;
+  notTriggered: number;
+  ungradeable:  number;
+  pending:      number;
+  total:        number;
+  bySetup:      ScorecardBucket[];
+  byHour:       ScorecardBucket[];
+  byDirection:  ScorecardBucket[];
+  breakEven:    number | null;
+  medianRr:     number | null;
+  mode:         number;
+}

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { TradeStats } from '../types';
 import { BarChart, LineChart } from '../components/StatChart';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import { Scorecard } from '../components/Scorecard';
 
 const fmt$ = (n: number) =>
   `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
@@ -82,6 +83,16 @@ export function Stats() {
 
   return (
     <div className="page">
+      {/* Recommendation scorecard — the app's own calls, graded from bars. */}
+      <Scorecard />
+
+      <div style={{ marginTop: '2rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border)' }}>
+        <h3 className="scorecard-title">Taken trades</h3>
+        <p className="scorecard-sub">
+          Trades actually executed, from the broker panel. Measures execution, not call quality.
+        </p>
+      </div>
+
       {/* Summary chips */}
       <div className="stat-chips">
         <div className="stat-chip">

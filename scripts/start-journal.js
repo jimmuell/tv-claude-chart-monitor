@@ -118,6 +118,108 @@ function dbRun(db, sql, params) {
   db.run(sql, params || []);
 }
 
+
+// ── Scorecard: win rate of the app's own recommendations ─────────────────────
+// Reads the `recommendations` table. LIVE calls (replay_mode = 0) by default;
+// replay is a separate view and is never blended in.
+const POINT_VALUE = 5.0;
+const FEE_PER_RT  = 1.24;
+
+/** Group graded calls into win-rate buckets by an arbitrary label. */
+function bucketRows(rows, labelOf) {
+  const map = new Map();
+  for (const row of rows) {
+    for (const label of labelOf(row)) {
+      if (!label) continue;
+      const s = map.get(label) || { graded: 0, wins: 0, losses: 0, rSum: 0, rCount: 0 };
+      s.graded++;
+      if (row.outcome === 'WIN')  s.wins++;
+      if (row.outcome === 'LOSS') s.losses++;
+      if (row.r_net !== null && row.r_net !== undefined) { s.rSum += row.r_net; s.rCount++; }
+      map.set(label, s);
+    }
+  }
+  return [...map.entries()].map(([label, s]) => ({
+    label,
+    graded:  s.graded,
+    wins:    s.wins,
+    losses:  s.losses,
+    winRate: (s.wins + s.losses) > 0 ? s.wins / (s.wins + s.losses) : 0,
+    avgNetR: s.rCount > 0 ? s.rSum / s.rCount : null,
+  })).sort((a, b) => b.graded - a.graded);
+}
+
+/** Build the whole scorecard for one mode (0 = live, 1 = replay). */
+function computeScorecard(db, mode) {
+  const empty = {
+    graded: 0, wins: 0, losses: 0, winRate: 0, avgNetR: null, avgGrossR: null,
+    ambiguous: 0, expired: 0, notTriggered: 0, ungradeable: 0, pending: 0, total: 0,
+    bySetup: [], byHour: [], byDirection: [], breakEven: null, medianRr: null, mode,
+  };
+  const hasTable = queryOne(db,
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='recommendations'");
+  if (!hasTable) return empty;
+
+  const counts = queryOne(db, `
+    SELECT
+      SUM(CASE WHEN outcome='WIN'           THEN 1 ELSE 0 END) AS wins,
+      SUM(CASE WHEN outcome='LOSS'          THEN 1 ELSE 0 END) AS losses,
+      SUM(CASE WHEN outcome='AMBIGUOUS'     THEN 1 ELSE 0 END) AS ambiguous,
+      SUM(CASE WHEN outcome='EXPIRED'       THEN 1 ELSE 0 END) AS expired,
+      SUM(CASE WHEN outcome='NOT_TRIGGERED' THEN 1 ELSE 0 END) AS notTriggered,
+      SUM(CASE WHEN outcome='UNGRADEABLE'   THEN 1 ELSE 0 END) AS ungradeable,
+      SUM(CASE WHEN outcome IS NULL OR outcome='PENDING' THEN 1 ELSE 0 END) AS pending,
+      COUNT(*) AS total
+    FROM recommendations WHERE replay_mode = ?`, [mode]) || {};
+
+  const graded = (counts.wins || 0) + (counts.losses || 0);
+
+  const rRow = queryOne(db, `
+    SELECT AVG(r_net) AS avgNet, AVG(r_gross) AS avgGross, AVG(ABS(entry - stop)) AS riskPoints
+    FROM recommendations
+    WHERE replay_mode = ? AND outcome IN ('WIN','LOSS') AND r_net IS NOT NULL`, [mode]) || {};
+
+  const rrs = queryAll(db, `
+    SELECT rr_planned FROM recommendations
+    WHERE replay_mode = ? AND rr_planned IS NOT NULL AND outcome IN ('WIN','LOSS')
+    ORDER BY rr_planned`, [mode]).map(r => r.rr_planned);
+  const medianRr = rrs.length ? rrs[Math.floor(rrs.length / 2)] : null;
+
+  const riskDollars = (rRow.riskPoints || 0) * POINT_VALUE;
+  const feeR = riskDollars > 0 ? FEE_PER_RT / riskDollars : 0;
+  const breakEven = medianRr && medianRr > 0 ? (1 + feeR) / (medianRr + 1) : null;
+
+  const graded_rows = queryAll(db, `
+    SELECT setups_json, direction, outcome, r_net,
+           CAST(strftime('%H', datetime(created_at/1000,'unixepoch','localtime')) AS INTEGER) AS hour
+    FROM recommendations
+    WHERE replay_mode = ? AND outcome IN ('WIN','LOSS')`, [mode]);
+
+  const bySetup = bucketRows(graded_rows, r => {
+    try { const a = JSON.parse(r.setups_json || '[]'); return Array.isArray(a) ? a : []; }
+    catch { return []; }
+  });
+  const byHour = bucketRows(graded_rows, r => [String(r.hour).padStart(2, '0') + ':00'])
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const byDirection = bucketRows(graded_rows, r => [r.direction]);
+
+  return {
+    graded,
+    wins:   counts.wins   || 0,
+    losses: counts.losses || 0,
+    winRate: graded > 0 ? (counts.wins || 0) / graded : 0,
+    avgNetR:   rRow.avgNet   ?? null,
+    avgGrossR: rRow.avgGross ?? null,
+    ambiguous:    counts.ambiguous    || 0,
+    expired:      counts.expired      || 0,
+    notTriggered: counts.notTriggered || 0,
+    ungradeable:  counts.ungradeable  || 0,
+    pending:      counts.pending      || 0,
+    total:        counts.total        || 0,
+    bySetup, byHour, byDirection, breakEven, medianRr, mode,
+  };
+}
+
 function stripFences(s) {
   return s.replace(/^```(?:json)?\n?/i, '').replace(/\n?```\s*$/i, '').trim();
 }
@@ -902,6 +1004,24 @@ async function main() {
       res.json(computeStats(db));
     } catch (e) {
       console.error('[journal] GET /api/stats:', e);
+      res.status(500).json({ error: String(e) });
+    } finally {
+      closeDb(db);
+    }
+  });
+
+  // GET /api/scorecard?mode=live|replay — recommendation win rate
+  app.get('/api/scorecard', (req, res) => {
+    const mode = req.query.mode === 'replay' ? 1 : 0;
+    const db = openDb();
+    if (!db) return res.json({ graded: 0, wins: 0, losses: 0, winRate: 0, total: 0,
+      ambiguous: 0, expired: 0, notTriggered: 0, ungradeable: 0, pending: 0,
+      bySetup: [], byHour: [], byDirection: [], breakEven: null, medianRr: null,
+      avgNetR: null, avgGrossR: null, mode });
+    try {
+      res.json(computeScorecard(db, mode));
+    } catch (e) {
+      console.error('[journal] GET /api/scorecard:', e);
       res.status(500).json({ error: String(e) });
     } finally {
       closeDb(db);
