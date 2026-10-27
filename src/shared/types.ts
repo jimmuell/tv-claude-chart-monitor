@@ -39,6 +39,7 @@ export const IPC = {
   COOLDOWN_DELETE:           'cooldown:delete',
   COOLDOWN_STATUS:           'cooldown:status',
   TRADE_WINDOW_STATUS:       'tradeWindow:status',
+  LOG_RENDERER:              'log:renderer',
 } as const;
 
 // ---------------------------------------------------------------------------

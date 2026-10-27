@@ -15,7 +15,7 @@
     "train": "node scripts/train-replay.js",
     "check:safety": "node scripts/check-live-safety.js",
     "package": "npm run build && electron-builder",
-    "test": "node --test 'tests/shared/**/*.test.js' 'tests/main/recommendation-store.test.js' 'tests/main/journal-concurrency.test.js' 'tests/main/status-payload.test.js' 'tests/main/startup-guard.test.js' 'tests/main/scheduler-replay.test.js' 'tests/main/live-safety.test.js'"
+    "test": "node --test 'tests/shared/**/*.test.js' 'tests/main/recommendation-store.test.js' 'tests/main/journal-concurrency.test.js' 'tests/main/status-payload.test.js' 'tests/main/startup-guard.test.js' 'tests/main/scheduler-replay.test.js' 'tests/main/live-safety.test.js' 'tests/main/logger.test.js' 'tests/main/error-boundary.test.js'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

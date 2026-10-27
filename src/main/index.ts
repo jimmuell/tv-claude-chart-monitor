@@ -20,6 +20,7 @@ import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import { formatAsHtml, docName } from './google-doc-formatter';
+import { initLogger, logDir, logFilePath, logLine } from './logger';
 
 // ── Confidence gate ───────────────────────────────────────────────────────
 
@@ -121,9 +122,55 @@ function rebuildMenu(): void {
       label: 'Open Journal',
       click: () => shell.openExternal('http://localhost:3001'),
     },
+    {
+      label: 'Open Log Folder',
+      click: () => { void shell.openPath(logDir()); },
+    },
     { type: 'separator' },
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
   ]));
+}
+
+// ── Renderer watchdogs (TVCM-UI-*) ────────────────────────────────────────
+
+/**
+ * Log renderer crashes, hangs, failed loads and reloads, and bring the panel
+ * back when it is safe to do so. Without this a blank panel left no trace.
+ */
+function attachRendererWatchdogs(win: BrowserWindow): void {
+  const wc = win.webContents;
+
+  // The renderer process died. Reloading is safe: all state is re-fetched.
+  wc.on('render-process-gone', (_e, details) => {
+    console.error(`[TVCM-UI-GONE] renderer gone reason=${details.reason} exitCode=${details.exitCode}`);
+    if (details.reason !== 'clean-exit' && !isQuitting) {
+      try { wc.reload(); console.log('[TVCM-UI-GONE] reloaded the panel'); }
+      catch (err) { console.error('[TVCM-UI-GONE] reload failed:', (err as Error).message); }
+    }
+  });
+
+  // Hung on the main thread. Not auto-recovered: a forced reload here would
+  // throw away whatever the renderer was in the middle of.
+  wc.on('unresponsive', () => {
+    console.error('[TVCM-UI-UNRESPONSIVE] the panel stopped responding');
+  });
+  wc.on('responsive', () => {
+    console.log('[TVCM-UI-RESPONSIVE] the panel is responding again');
+  });
+
+  // Vite not up yet in dev, or a missing bundle when packaged.
+  wc.on('did-fail-load', (_e, code, desc, url) => {
+    console.error(`[TVCM-UI-LOADFAIL] ${code} ${desc} url=${url}`);
+  });
+
+  // Distinguishes a reload from first paint, which matters when reading the log
+  // back: a reload Jim did not ask for is itself a symptom.
+  let loads = 0;
+  wc.on('did-finish-load', () => {
+    loads += 1;
+    if (loads > 1) console.warn(`[TVCM-UI-RELOAD] panel reloaded (load #${loads})`);
+    else console.log('[TVCM-UI-LOAD] panel loaded');
+  });
 }
 
 // ── Window toggle ─────────────────────────────────────────────────────────
@@ -341,9 +388,13 @@ const { evaluateRules, rulesVersion } = require(path.join(app.getAppPath(), 'src
 
 // Haiku 4.5 list price. Cost is derived from the usage the API reports, never
 // estimated from character counts.
-// Electron's stdout is not captured when the app runs detached, which makes an
-// unattended training run impossible to debug. TVCM_LOG_FILE mirrors console
-// output to a file as well.
+// Electron's stdout is not captured when the app runs detached, which made a
+// blank panel or a crash during a live session impossible to investigate after
+// the fact. The log file is now always on — see logger.ts. TVCM_LOG_FILE is
+// still honoured as a second destination for training runs that want their own
+// file, but it is no longer what decides whether anything gets logged.
+initLogger();
+
 if (process.env.TVCM_LOG_FILE) {
   const logPath = process.env.TVCM_LOG_FILE;
   const stamp = () => new Date().toISOString().slice(11, 23);
@@ -572,6 +623,10 @@ app.on('ready', () => {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
+  // A blank panel has more than one cause. Every way the renderer can die,
+  // hang or reload is logged with its own code so the log says which happened.
+  attachRendererWatchdogs(mainWindow);
+
   // Hide instead of destroy when the user closes the window
   mainWindow.on('close', (e) => {
     if (!isQuitting) { e.preventDefault(); mainWindow?.hide(); rebuildMenu(); }
@@ -789,6 +844,12 @@ app.on('ready', () => {
 
   // IPC: delete cooldown file so the next trade can fire immediately
   ipcMain.handle(IPC.COOLDOWN_STATUS, () => getCooldownStatus());
+  // Renderer console errors/warnings, written to the same always-on log file.
+  // One-way on purpose: logging must never make the panel await the main process.
+  ipcMain.on(IPC.LOG_RENDERER, (_e, level: string, message: string) => {
+    logLine(`renderer:${level === 'warn' ? 'warn' : 'error'}`, String(message));
+  });
+
   ipcMain.handle(IPC.TRADE_WINDOW_STATUS, () => getTradeWindowStatus());
 
   ipcMain.handle(IPC.COOLDOWN_DELETE, () => {

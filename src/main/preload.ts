@@ -72,4 +72,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(IPC.TRADE_WINDOW_STATUS),
   deleteCooldown: (): Promise<{ deleted: boolean }> =>
     ipcRenderer.invoke(IPC.COOLDOWN_DELETE),
+  // Renderer console errors/warnings land in the same always-on log file.
+  logRenderer: (level: string, message: string): void =>
+    ipcRenderer.send(IPC.LOG_RENDERER, level, message),
 });

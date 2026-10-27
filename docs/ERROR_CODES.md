@@ -29,6 +29,14 @@ into something you can search for.
 | **`TVCM-TRAIN-STALLED`** | The replay cursor stopped advancing — usually the end of available data. | Runner ends that day early and reports it. | `scripts/train-replay.js`, `stepAndWait()`. | 1. Expected at the end of a session.<br>2. If mid-session, check replay is still active. |
 | **`TVCM-TRAIN-BARS-SKIPPED`** | Replay advanced more than one bar between analyses, so a bar produced no call. | Panel toast with the measured analysis time and a safe pace; one log line. | `src/main/index.ts` via `src/shared/pacing.js`. | 1. Stepping replay by hand too fast — slow to the suggested interval.<br>2. The runner never causes this; it waits for each save. |
 | **`TVCM-GRADE-FAILED`** | The grading pass threw. Already-settled grades are unaffected; ungraded calls are retried on the next bar. | **Nothing in the UI.** One line in the terminal / dev log with the underlying error. | `src/main/index.ts`, `recordAndGrade()` catch block. | 1. Read the attached error — it is the real cause.<br>2. Grades are idempotent, so a transient failure costs nothing but a cycle. |
+| **`TVCM-UI-RENDER`** | A React render threw inside the panel. The boundary caught it, so one section shows an error card instead of the whole panel going blank. | The failing section is replaced by a card reading **`TVCM-UI-RENDER`**, the time it failed, the error message, and **Try again** / **Reload panel** buttons. Everything outside that section keeps working. | `src/renderer/ErrorBoundary.tsx`, `componentDidCatch()`. Wrapped around the whole panel in `src/renderer/main.tsx` and around the settings, P&L and analysis-card sections in `src/renderer/App.tsx`. | 1. The log line carries the error **and the component stack** — the last named component in the stack is where it threw.<br>2. Most likely a field the LLM omitted: an unguarded `.toFixed()` / `.map()` on an optional commentary field (see the throw-path list in the TVCM-11B report).<br>3. **Try again** re-renders with the same data and usually fails again; **Reload panel** refetches. |
+| **`TVCM-UI-GONE`** | The renderer process died (crash, OOM, killed). | The panel is auto-reloaded unless the app is quitting, so the window comes back by itself. One log line with `reason` and `exitCode`. | `attachRendererWatchdogs()` in `src/main/index.ts`, `render-process-gone`. | 1. `reason=crashed` with no pattern points at memory — check how long the app had been up.<br>2. `reason=oom` means the panel grew unbounded; look for an accumulating array in the renderer.<br>3. If the reload itself fails, a second line says so. |
+| **`TVCM-UI-UNRESPONSIVE`** | The renderer stopped answering — its main thread is blocked. | **Nothing in the UI** (the UI is the thing that is stuck). One log line. **Not** auto-recovered: a forced reload would discard whatever the panel was mid-way through. | `attachRendererWatchdogs()`, `unresponsive`. | 1. Look for the matching `TVCM-UI-RESPONSIVE` line — the gap between them is how long it hung.<br>2. A hang at bar close points at render work on a large analysis payload. |
+| **`TVCM-UI-RESPONSIVE`** | The renderer recovered on its own after a hang. | Nothing. One log line, which closes a `TVCM-UI-UNRESPONSIVE` episode. | `attachRendererWatchdogs()`, `responsive`. | Informational — it is the "all clear" for the code above. |
+| **`TVCM-UI-LOADFAIL`** | The panel's HTML/bundle failed to load. | The window stays empty. One log line with the Chromium error code, description and URL. | `attachRendererWatchdogs()`, `did-fail-load`. | 1. In dev: is Vite up on `localhost:5173`?<br>2. Packaged: is `dist/renderer/index.html` present — did `npm run build` run?<br>3. `-6 ERR_FILE_NOT_FOUND` means the bundle path is wrong, not that the panel crashed. |
+| **`TVCM-UI-RELOAD`** | The panel reloaded when nobody asked it to. | Nothing visible beyond a brief flicker. One log line with the load count. | `attachRendererWatchdogs()`, `did-finish-load` past the first load. | 1. A reload nobody triggered is itself a symptom — check for a `TVCM-UI-GONE` line just before it.<br>2. In dev, Vite HMR causes these legitimately; in a packaged build it should never happen. |
+| **`TVCM-UI-WINDOW`** | An error escaped React entirely and reached `window.onerror`. | Nothing — no boundary can catch this one. One log line with file and line. | `forwardConsoleToLog()` in `src/renderer/main.tsx`. | 1. Usually an event handler or a timer callback, which boundaries do not cover.<br>2. The file:line in the message is in the bundled output; check the sourcemap. |
+| **`TVCM-UI-REJECTION`** | An unhandled promise rejection in the renderer. | Nothing. One log line with the rejection reason. | `forwardConsoleToLog()` in `src/renderer/main.tsx`. | 1. Most often an `await window.api.*` call with no catch.<br>2. The reason is the real error — a bare `undefined` means something rejected with no value. |
 
 ## Reading the three poll outcomes
 
@@ -56,6 +64,36 @@ analysis down with it, so every grading failure is caught and logged rather than
 thrown. That makes silence ambiguous — these codes are what distinguish "nothing
 to do" from "something broke". Grades are idempotent, so losing a cycle costs
 nothing; losing them *silently* would cost the scorecard its credibility.
+
+## The always-on log file (TVCM-11B)
+
+Every `TVCM-UI-*` code above is written to a log file that exists on **every** start, with no env
+var to remember:
+
+```
+~/Library/Application Support/trading-analyzer/logs/main.log
+```
+
+Tray → **Open Log Folder** opens it. Lines are stamped in ISO-8601 **America/Chicago**
+(`2026-10-27T07:30:12.345-05:00`), the file rotates at 1 MB, and five files are kept
+(`main.log` plus `main.1.log`…`main.4.log`).
+
+Renderer `console.error` / `console.warn` are forwarded over the `log:renderer` IPC channel into the
+same file, which is how a `TVCM-UI-RENDER` component stack from the panel ends up next to the main
+process's own lines.
+
+**Nothing sensitive is written.** `redact()` in `src/main/logger.ts` strips provider-key shapes
+(`sk-ant-…`, `sk-…`, `AIza…`), bearer tokens, `apiKey`/`token`/`secret`/`password` values in both
+JSON and `KEY=value` form, and account **numbers**. The account **type** (`amp_live`, `amp_demo`) is
+deliberately left readable, because it is a safety flag Jim needs to be able to see. This is covered
+by tests in `tests/main/logger.test.js` — if you add a log line that could carry a credential, add a
+redaction case there in the same commit.
+
+**Why this exists.** Before TVCM-11B, console output was mirrored to a file only when
+`TVCM_LOG_FILE` was set, and the normal start never set it. A panel that went blank during a live
+session left no evidence at all, so the cause could not be investigated after the fact. The log is
+now unconditional. `TVCM_LOG_FILE` is still honoured as a *second* destination for training runs
+that want their own file.
 
 ## Adding a code
 
