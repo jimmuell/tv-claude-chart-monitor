@@ -31,6 +31,7 @@ declare global {
       getCooldownStatus(): Promise<{ active: boolean; remainingMs: number }>;
       getTradeWindowStatus(): Promise<{ inWindow: boolean; remainingSecs: number; opensInSecs: number }>;
       deleteCooldown(): Promise<{ deleted: boolean }>;
+      logRenderer(level: string, message: string): void;
     };
   }
 }

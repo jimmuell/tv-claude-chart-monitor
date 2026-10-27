@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { liveSafetyBanner } from '../shared/live-safety';
+import ErrorBoundary from './ErrorBoundary';
 import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult, AutoTradeStatus } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import SettingsPanel from './SettingsPanel';
@@ -1158,7 +1159,9 @@ const App: React.FC = () => {
     if (view === 'settings') {
       return (
         <div className="result-body-wrap">
-          <SettingsPanel />
+          <ErrorBoundary section="settings">
+            <SettingsPanel />
+          </ErrorBoundary>
         </div>
       );
     }
@@ -1172,13 +1175,16 @@ const App: React.FC = () => {
       return (
         <div className="result-body-wrap">
           {pnlVisible && pnlSnap && (
-            <PnlBar
-              snap={pnlSnap}
-              expanded={pnlExpanded}
-              onToggle={() => setPnlExpanded(v => !v)}
-            />
+            <ErrorBoundary section="P&L bar">
+              <PnlBar
+                snap={pnlSnap}
+                expanded={pnlExpanded}
+                onToggle={() => setPnlExpanded(v => !v)}
+              />
+            </ErrorBoundary>
           )}
           <div className="result-body">
+            <ErrorBoundary section="analysis card">
             <CommentaryCard
               commentary={result.commentary}
               currentPrice={result.closedBarPrice}
@@ -1205,6 +1211,7 @@ const App: React.FC = () => {
                 onAlertToggle: handleAlertToggle,
               }}
             />
+            </ErrorBoundary>
           </div>
           <div className="scroll-fade" />
         </div>

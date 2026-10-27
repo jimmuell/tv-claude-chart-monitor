@@ -1373,3 +1373,49 @@ body {
 .live-safety.ok     { color: var(--text-secondary); border-left: 3px solid var(--accent); }
 .live-safety.warn   { color: #d6a84a; border-left: 3px solid #d6a84a; background: rgba(214,168,74,0.10); }
 .live-safety.danger { color: #fff; background: var(--bearish); border-color: var(--bearish); }
+
+
+/* ── Render-error card (TVCM-UI-RENDER) ───────────────────────────────────
+   Shown in place of a section that threw, so the panel is never blank. */
+.ui-error-card {
+  margin: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--bearish);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ui-error-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.ui-error-code {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--bearish);
+}
+.ui-error-time { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.ui-error-what { margin-bottom: 6px; }
+.ui-error-msg {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-word;
+  margin-bottom: 8px;
+}
+.ui-error-actions { display: flex; gap: 8px; margin-bottom: 6px; }
+.ui-error-btn {
+  background: var(--bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ui-error-btn:hover { border-color: var(--accent); color: var(--accent); }
+.ui-error-hint { color: var(--text-secondary); font-size: 11px; }
