@@ -78,3 +78,46 @@ test('a null or non-object card is passed through untouched', () => {
   assert.strictEqual(normalizeCard(null), null);
   assert.strictEqual(normalizeCard(undefined), undefined);
 });
+
+// ── TVCM-11B: presence, not just type ─────────────────────────────────────
+// normalizeCard used to coerce field TYPES but never guarantee a field was
+// PRESENT. The renderer maps over these fields unconditionally, so an omitted
+// field threw in render and blanked the panel.
+
+test('an omitted steps_what_happened becomes an empty array, not undefined', () => {
+  const card = normalizeCard({ headline: 'x' });
+  assert.ok(Array.isArray(card.steps_what_happened));
+  assert.strictEqual(card.steps_what_happened.length, 0);
+});
+
+test('a non-array steps_what_happened becomes an array', () => {
+  assert.deepStrictEqual(normalizeCard({ steps_what_happened: 42 }).steps_what_happened, []);
+  assert.deepStrictEqual(normalizeCard({ steps_what_happened: null }).steps_what_happened, []);
+});
+
+test('a key level with no usable price is dropped rather than thrown on', () => {
+  const card = normalizeCard({
+    key_levels_to_watch: [
+      { price: 6012.25, label: 'ORB high', action: 'watch' },
+      { label: 'missing price', action: 'watch' },
+      { price: 'not a number', label: 'bad', action: 'watch' },
+      null,
+    ],
+  });
+  assert.strictEqual(card.key_levels_to_watch.length, 1);
+  assert.strictEqual(card.key_levels_to_watch[0].price, 6012.25);
+  // Every survivor must render: price is a number and label is a string.
+  for (const lvl of card.key_levels_to_watch) {
+    assert.strictEqual(typeof lvl.price, 'number');
+    assert.strictEqual(typeof lvl.label, 'string');
+  }
+});
+
+test('a string price is coerced rather than dropped', () => {
+  const card = normalizeCard({ key_levels_to_watch: [{ price: '6012.25', label: 'VWAP' }] });
+  assert.strictEqual(card.key_levels_to_watch[0].price, 6012.25);
+});
+
+test('a null key_levels_to_watch stays null — the renderer guards that case', () => {
+  assert.strictEqual(normalizeCard({ key_levels_to_watch: null }).key_levels_to_watch, null);
+});

@@ -144,6 +144,19 @@ function normalizeCard(card) {
     if (typeof v === 'string') {
       card[f] = v.split(/\n+/).map((x) => x.trim()).filter(Boolean);
     }
+    // The renderer maps over this field unconditionally because the type says
+    // it is always an array. A model that omits it entirely used to throw in
+    // render and take the whole panel blank with it (TVCM-UI-RENDER).
+    if (!Array.isArray(card[f])) card[f] = [];
+  }
+
+  // Every key level is rendered as price.toFixed(2) and can be drawn on the
+  // chart, so a level without a usable price is not renderable. Dropping it
+  // here keeps one bad entry from throwing out the whole card.
+  if (Array.isArray(card.key_levels_to_watch)) {
+    card.key_levels_to_watch = card.key_levels_to_watch.filter(
+      (lvl) => lvl && typeof lvl === 'object' && Number.isFinite(Number(lvl.price))
+    ).map((lvl) => ({ ...lvl, price: Number(lvl.price), label: String(lvl.label ?? '') }));
   }
 
   return card;
