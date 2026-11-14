@@ -5,18 +5,14 @@ import type {
 
 // Display rules live outside the component tree so they can be tested without a DOM.
 import * as view from '../shared/pnl-view.mjs';
-import { Scorecard } from './Scorecard';
-import { Lessons } from './Lessons';
 
-type TabKey = 'summary' | 'trades' | 'fills' | 'days' | 'scorecard' | 'lessons';
+type TabKey = 'summary' | 'trades' | 'fills' | 'days';
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'summary', label: 'Summary' },
   { key: 'trades',  label: 'Trades' },
   { key: 'fills',   label: 'Fills' },
   { key: 'days',    label: 'Past days' },
-  { key: 'scorecard', label: 'Scorecard' },
-  { key: 'lessons',   label: 'Lessons' },
 ];
 
 /** The shared "nothing imported yet" panel, so no tab ever shows invented zeros. */
@@ -289,11 +285,7 @@ export function App() {
       </nav>
 
       <main className="body">
-        {tab === 'scorecard'
-          ? <Scorecard />
-          : tab === 'lessons'
-          ? <Lessons />
-          : tab === 'days'
+        {tab === 'days'
           ? <PastDays sessions={sessions} selected={selected} onSelect={(d) => { setSelected(d); setTab('summary'); }} />
           : !hasData
             ? <Empty state={state} />
