@@ -201,14 +201,14 @@ const SettingsPanel: React.FC = () => {
           />
         </div>
         <div className="settings-row">
-          <span className="settings-label">Per-contract (RT)</span>
+          <span className="settings-label">Per contract / side</span>
           <input
             type="number"
             className="settings-input settings-input-sm"
-            value={settings.feePerContract}
+            value={settings.feePerContractSide}
             step={0.01}
             min={0}
-            onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) update({ feePerContract: v }); }}
+            onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) update({ feePerContractSide: v }); }}
           />
         </div>
         <div className="settings-row">
@@ -246,9 +246,9 @@ const SettingsPanel: React.FC = () => {
           />
         </div>
         <div className="settings-row">
-          <span className="settings-label">Daily fixed (calc)</span>
+          <span className="settings-label">Daily fixed (not charged)</span>
           <span className="settings-value">
-            ${(settings.feeLiquidationDaily + settings.feeDataMonthly / settings.feeTradingDays).toFixed(2)}
+            ${(settings.feeLiquidationDaily + settings.feeDataMonthly / Math.max(1, settings.feeTradingDays)).toFixed(2)}
           </span>
         </div>
       </div>

@@ -18,9 +18,11 @@ const DEFAULTS: AppSettings = {
   lineThickness:         2,
   labelSize:             'large',
   apiKeyOverride:        '',
-  feePerContract:        1.24,
-  feeLiquidationDaily:   2.50,
-  feeDataMonthly:        45.00,
+  // Renamed from feePerContract (which meant $/round-trip) so a stale settings.json
+  // cannot silently keep charging the old 1.24 against the new per-side model.
+  feePerContractSide:    0.60,
+  feeLiquidationDaily:   0,
+  feeDataMonthly:        0,
   feeTradingDays:        21,
   subtractCommissions:   false,
   pnlVisible:            true,

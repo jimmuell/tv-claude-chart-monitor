@@ -1,5 +1,5 @@
 import { readAccountData } from './pnl-reader';
-import { calculateFees, getBreakevenPoints, dailyFixedFee, type FeeConfig } from './fee-calculator';
+import { calculateFees, getBreakevenPoints, contractSidesFromRoundTrips, roundTripFee, type FeeConfig } from './fee-calculator';
 import type { PnlSnapshot, FeeBreakdown, TradeEntry } from '../shared/types';
 import type { TradeStore } from './trade-store';
 import { getSettings } from './settings';
@@ -32,6 +32,7 @@ export class PnlTracker {
   private sessionDate:        string;
   private lastGrossPnl:       number | null = null;
   private tradeCount          = 0;
+  private feeEstimateWarned   = false;
   private prevTradeCount      = 0;
   private prevUnrealized:     number | null = null;
   private lastKnownDirection: 'long' | 'short' | null = null;
@@ -87,6 +88,16 @@ export class PnlTracker {
     return this.current;
   }
 
+  /** Says once a session that live fee totals are an estimate, because the DOM hides contract size. */
+  private warnFeeEstimateOnce(): void {
+    if (this.feeEstimateWarned || this.tradeCount === 0) return;
+    this.feeEstimateWarned = true;
+    console.log(
+      '[pnl-tracker] TVCM-PNL-FEE-ESTIMATE: live fees assume 1 contract per round trip — ' +
+      'the trading panel does not expose contract size. Import Order History for exact fees.'
+    );
+  }
+
   private async poll(): Promise<void> {
     // Session date rollover check
     const today = todayCST();
@@ -94,6 +105,7 @@ export class PnlTracker {
       this.sessionDate             = today;
       this.tradeCount              = 0;
       this.prevTradeCount          = 0;
+      this.feeEstimateWarned       = false;
       this.lastGrossPnl            = null;
       this.lastKnownDirection      = null;
       this.hasObservedLivePosition = false;
@@ -243,7 +255,9 @@ export class PnlTracker {
         // ── Step 2: Detect position close or missed complete trade ────────────────────────
         if (this.tradeStore && isFlat && grossChanged) {
           const pnlGross   = gross - prevGross!;
-          const exitFee    = getSettings().subtractCommissions ? cfg.perContractFee : 0;
+          // Both sides of one round trip. The DOM gives no contract size here, so this
+          // assumes 1 contract — see TVCM-PNL-FEE-ESTIMATE.
+          const exitFee    = getSettings().subtractCommissions ? roundTripFee(1, cfg) : 0;
           const acctType   = data.accountType ?? this.lastAccountType;
           const exitSymbol = this.lastSymbol;
 
@@ -321,9 +335,14 @@ export class PnlTracker {
         this.prevUnrealized = unrealized;
         this.prevTradeCount = this.tradeCount;
 
+        // tradeCount is round trips read from the DOM, which never exposes contract size,
+        // so sides are estimated at 1 contract per round trip. Order History is the
+        // authoritative count — see TVCM-PNL-FEE-ESTIMATE.
+        this.warnFeeEstimateOnce();
+        const contractSides = contractSidesFromRoundTrips(this.tradeCount);
         const fees: FeeBreakdown = getSettings().subtractCommissions
-          ? calculateFees(this.tradeCount, cfg)
-          : { perContractRate: 0, contractCount: this.tradeCount, variableFees: 0, dailyFixed: 0, totalFees: 0 };
+          ? calculateFees(contractSides, cfg)
+          : { perContractRate: 0, contractCount: contractSides, variableFees: 0, dailyFixed: 0, totalFees: 0 };
         const netPnl = gross - fees.totalFees;
 
         snap = {

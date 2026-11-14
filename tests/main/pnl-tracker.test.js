@@ -34,7 +34,11 @@ const pnlReaderStub = {
 const feeCalcStub = {
   calculateFees:     () => ({ perContractRate: 0, contractCount: 0, variableFees: 0, dailyFixed: 0, totalFees: 0 }),
   getBreakevenPoints: () => 0,
-  dailyFixedFee:     0,
+  dailyFixedFee:     () => 0,
+  // Fees are per contract PER SIDE now; the tracker converts round trips through these.
+  contractSidesFromRoundTrips: (rt, perTrip = 1) => rt * perTrip * 2,
+  roundTripFee:      () => 0,
+  SIDES_PER_ROUND_TRIP: 2,
 };
 
 const settingsStub = {
@@ -101,7 +105,7 @@ function makeAccountData(overrides = {}) {
 test('PnlTracker rescue — direction unknown when all signals dark: writes "unknown" NOT "long"', async () => {
   const tmpDir = makeTmpDir();
   const store  = new TradeStore(tmpDir);
-  const feeConfig = { perContractFee: 0, liquidationFee: 0, dataFeeMonthly: 0, tradingDaysPerMonth: 21 };
+  const feeConfig = { perContractSideFee: 0, liquidationDaily: 0, dataFeedMonthly: 0, tradingDaysPerMonth: 21 };
 
   const tracker = new PnlTracker(
     () => {},              // onUpdate
@@ -146,7 +150,7 @@ test('PnlTracker rescue — direction unknown when all signals dark: writes "unk
 test('PnlTracker rescue — direction recorded correctly when lastKnownDirection is set', async () => {
   const tmpDir = makeTmpDir();
   const store  = new TradeStore(tmpDir);
-  const feeConfig = { perContractFee: 0, liquidationFee: 0, dataFeeMonthly: 0, tradingDaysPerMonth: 21 };
+  const feeConfig = { perContractSideFee: 0, liquidationDaily: 0, dataFeedMonthly: 0, tradingDaysPerMonth: 21 };
 
   const tracker = new PnlTracker(() => {}, () => feeConfig, store);
 

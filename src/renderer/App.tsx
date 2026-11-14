@@ -302,11 +302,11 @@ const PnlBar: React.FC<{ snap: PnlSnapshot; expanded: boolean; onToggle: () => v
           {expanded && (
             <div className="pnl-breakdown">
               <div className="pnl-bd-row">
-                <span>Variable ({fees.contractCount}&nbsp;RT&nbsp;×&nbsp;${fees.perContractRate.toFixed(2)})</span>
+                <span>Variable ({fees.contractCount}&nbsp;sides&nbsp;×&nbsp;${fees.perContractRate.toFixed(2)})</span>
                 <span>${fees.variableFees.toFixed(2)}</span>
               </div>
               <div className="pnl-bd-row">
-                <span>Daily fixed (liq + data)</span>
+                <span>Daily fixed (not charged)</span>
                 <span>${fees.dailyFixed.toFixed(2)}</span>
               </div>
               <div className="pnl-bd-row pnl-bd-total">

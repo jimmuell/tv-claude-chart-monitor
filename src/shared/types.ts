@@ -154,11 +154,11 @@ export interface CommentaryResult {
 // ---------------------------------------------------------------------------
 
 export interface FeeBreakdown {
-  perContractRate: number;  // $/RT
-  contractCount:   number;  // round-trips today
+  perContractRate: number;  // $ per contract PER SIDE
+  contractCount:   number;  // contract-sides today (a 5-lot round trip = 10)
   variableFees:    number;  // perContractRate × contractCount
-  dailyFixed:      number;  // liquidation + amortized data feed
-  totalFees:       number;  // variableFees + dailyFixed
+  dailyFixed:      number;  // liquidation + amortized data feed — reported only, NOT charged
+  totalFees:       number;  // == variableFees; dailyFixed is deliberately excluded
 }
 
 export interface PnlSnapshot {
@@ -198,10 +198,10 @@ export interface AppSettings {
   labelSize:           'small' | 'normal' | 'large';
   apiKeyOverride:      string;
   // P&L / fee settings
-  feePerContract:      number;   // $/RT, default 1.24
-  feeLiquidationDaily: number;   // $/day, default 2.50
-  feeDataMonthly:      number;   // $/month, default 45.00
-  feeTradingDays:      number;   // trading days/month, default 21
+  feePerContractSide:  number;   // $ per contract PER SIDE, default 0.60 (AMP); $1.20 round trip
+  feeLiquidationDaily: number;   // $/day, default 0 — AMP bills none; excluded from net
+  feeDataMonthly:      number;   // $/month, default 0 — AMP bills none; excluded from net
+  feeTradingDays:      number;   // trading days/month, default 21 (only amortises feeDataMonthly)
   subtractCommissions: boolean;  // deduct commissions from pnl_net; default false (off for paper trading)
   pnlVisible:          boolean;  // show P&L bar
   /** The rules lever. Applied AFTER analysis; blocked calls are saved and graded anyway. */

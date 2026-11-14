@@ -704,7 +704,7 @@ app.on('ready', () => {
     () => {
       const s = getSettings();
       return {
-        perContractFee:      s.feePerContract,
+        perContractSideFee:  s.feePerContractSide,
         liquidationDaily:    s.feeLiquidationDaily,
         dataFeedMonthly:     s.feeDataMonthly,
         tradingDaysPerMonth: s.feeTradingDays,
