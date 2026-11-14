@@ -193,22 +193,68 @@ function sortChronologically(fills) {
 
 // ── FIFO position ledger ────────────────────────────────────────────────────
 
+/** A fresh trade record, opened by the fill that takes the position away from flat. */
+function startTrade(id, fill, sign) {
+  return {
+    id,
+    status:           'OPEN',
+    direction:        sign === 1 ? 'long' : 'short',
+    openSessionDate:  fill.sessionDate,
+    sessionDate:      null,          // set to the session it CLOSES in
+    openTime:         fill.fillTime,
+    closeTime:        null,
+    entryQty:         0,
+    exitQty:          0,
+    entryNotional:    0,
+    exitNotional:     0,
+    maxPositionSize:  0,
+    grossRaw:         0,             // rounded to cents at the end
+    orderIds:         [],
+    matchCount:       0,
+    /** Realized P&L this trade booked into each session, which is how a boundary-crossing trade is reconciled. */
+    grossBySession:   new Map(),
+    /** Contract-sides this trade filled in each session, for the same reason. */
+    sidesBySession:   new Map(),
+  };
+}
+
+/** Records an order id on a trade once, keeping the order the fills arrived in. */
+function noteOrderId(trade, orderId) {
+  if (trade.orderIds[trade.orderIds.length - 1] !== orderId && !trade.orderIds.includes(orderId)) {
+    trade.orderIds.push(orderId);
+  }
+}
+
+/** Adds a quantity to a trade's per-session side tally, used to split fees across a boundary. */
+function addSides(trade, sessionDate, qty) {
+  trade.sidesBySession.set(sessionDate, (trade.sidesBySession.get(sessionDate) || 0) + qty);
+}
+
 /**
  * Walks every fill through one continuous FIFO lot queue, booking realized P&L
  * to the session of the fill that CLOSES a lot. The queue is never reset at a
  * session boundary, which is how a position held through 17:00 carries forward.
+ *
+ * The same walk groups fills into TRADES. A trade is a flat-to-flat episode: it
+ * opens when the position leaves zero and closes when it returns. A fill that
+ * reverses through zero is split — part of it closes the running trade, the rest
+ * opens the next one — so a reversal is two trades, not one.
  */
 function runFifoLedger(fills, pointValue) {
   const lots = [];                 // { sign, qty, price, orderId, fillTime }
   const realizedBySession = new Map();
   const positionAtSessionStart = new Map();
   const matches = [];
+  const trades = [];
   let position = 0;
+  let openTrade = null;
+  let nextTradeId = 1;
 
   for (const f of fills) {
     if (!positionAtSessionStart.has(f.sessionDate)) positionAtSessionStart.set(f.sessionDate, position);
     const sign = f.side === 'Buy' ? 1 : -1;
     let remaining = f.qty;
+    let closedQty = 0;
 
     while (remaining > 0 && lots.length > 0 && lots[0].sign === -sign) {
       const lot = lots[0];
@@ -227,19 +273,165 @@ function runFifoLedger(fills, pointValue) {
         closeTime:    f.fillTime,
         closePrice:   f.price,
         pnl,
+        tradeId:      openTrade ? openTrade.id : null,
       });
+
+      if (openTrade) {
+        openTrade.grossRaw += pnl;
+        openTrade.grossBySession.set(f.sessionDate, (openTrade.grossBySession.get(f.sessionDate) || 0) + pnl);
+        openTrade.exitQty += matched;
+        openTrade.exitNotional += matched * f.price;
+        openTrade.matchCount++;
+      }
 
       lot.qty -= matched;
       remaining -= matched;
+      closedQty += matched;
       if (lot.qty === 0) lots.shift();
     }
 
-    if (remaining > 0) lots.push({ sign, qty: remaining, price: f.price, orderId: f.orderId, fillTime: f.fillTime });
+    // The closing portion of this fill belongs to the trade that was already running.
+    if (closedQty > 0 && openTrade) {
+      noteOrderId(openTrade, f.orderId);
+      addSides(openTrade, f.sessionDate, closedQty);
+      if (position + sign * closedQty === 0) {
+        openTrade.status     = 'CLOSED';
+        openTrade.closeTime  = f.fillTime;
+        openTrade.sessionDate = f.sessionDate;   // a trade belongs to the session it CLOSES in
+        trades.push(openTrade);
+        openTrade = null;
+      }
+    }
+
+    // Whatever is left opens exposure: either a scale-in, or the far side of a reversal.
+    if (remaining > 0) {
+      if (!openTrade) openTrade = startTrade(nextTradeId++, f, sign);
+      noteOrderId(openTrade, f.orderId);
+      addSides(openTrade, f.sessionDate, remaining);
+      openTrade.entryQty += remaining;
+      openTrade.entryNotional += remaining * f.price;
+      lots.push({ sign, qty: remaining, price: f.price, orderId: f.orderId, fillTime: f.fillTime });
+    }
+
     position += sign * f.qty;
+    if (openTrade) openTrade.maxPositionSize = Math.max(openTrade.maxPositionSize, Math.abs(position));
     if (!realizedBySession.has(f.sessionDate)) realizedBySession.set(f.sessionDate, 0);
   }
 
-  return { lots, realizedBySession, positionAtSessionStart, matches, positionAtEnd: position };
+  // A position still open when the data runs out is a real trade, just not a finished one.
+  if (openTrade) trades.push(openTrade);
+
+  return { lots, realizedBySession, positionAtSessionStart, matches, trades, positionAtEnd: position };
+}
+
+/** Turns a ledger trade into the shape callers consume, rounding money once at the end. */
+function finaliseTrade(t, rate) {
+  const contractSides = t.entryQty + t.exitQty;
+  const fees  = toCents(contractSides * rate);
+  const open  = t.status === 'OPEN';
+  const gross = open ? null : toCents(t.grossRaw);
+  return {
+    id:              t.id,
+    status:          t.status,
+    direction:       t.direction,
+    sessionDate:     t.sessionDate,       // the session it CLOSED in; null while open
+    openSessionDate: t.openSessionDate,
+    /** True when the trade opened in one session and closed in another. */
+    crossesBoundary: t.status === 'CLOSED' && t.sessionDate !== t.openSessionDate,
+    openTime:        t.openTime,
+    closeTime:       t.closeTime,
+    entryQty:        t.entryQty,
+    exitQty:         t.exitQty,
+    avgEntry:        t.entryQty > 0 ? t.entryNotional / t.entryQty : null,
+    // Left null while the trade is open: an unrealized exit price would be a guess.
+    avgExit:         open || t.exitQty === 0 ? null : t.exitNotional / t.exitQty,
+    maxPositionSize: t.maxPositionSize,
+    contractSides,
+    gross,
+    fees,                                  // sides already filled; a cost, not a forecast
+    net:             open ? null : toCents(gross - fees),
+    orderIds:        t.orderIds.slice(),
+    fillCount:       t.orderIds.length,
+    /** Realized P&L booked into each session, so a crossing trade can be reconciled. */
+    grossBySession:  Object.fromEntries(Array.from(t.grossBySession, ([k, v]) => [k, toCents(v)])),
+    /** Contract-sides filled in each session, which is how its fees split. */
+    sidesBySession:  Object.fromEntries(t.sidesBySession),
+  };
+}
+
+/**
+ * Explains, to the cent, the gap between "sum of the trades that closed in this
+ * session" and the session total. Session totals stay FIFO-per-session so they keep
+ * matching the broker statement; a trade, by contrast, is counted whole in the session
+ * it closed in. The two views differ only when a trade spans a 17:00 boundary, and the
+ * difference is attributed here rather than absorbed:
+ *
+ *   OUTBOUND — trades that closed in this session but booked some P&L into an earlier
+ *              one (counted in tradesNet, not in sessionNet).
+ *   INBOUND  — trades that booked P&L into this session but closed in a later one
+ *              (counted in sessionNet, not in tradesNet).
+ *
+ * Whatever is left after both is pure per-trade cent rounding, reported separately so a
+ * two-cent rounding artefact is never mistaken for a boundary effect.
+ */
+function reconcileTrades(session, trades, rate) {
+  const S = session.sessionDate;
+  const closedHere = trades.filter(t => t.status === 'CLOSED' && t.sessionDate === S);
+  const touchedHere = trades.filter(t => t.sidesBySession[S] != null);
+  const openHere = touchedHere.filter(t => t.status === 'OPEN');
+
+  const tradesGross = toCents(closedHere.reduce((x, t) => x + (t.gross ?? 0), 0));
+  const tradesFees  = toCents(closedHere.reduce((x, t) => x + t.fees, 0));
+  const tradesNet   = toCents(tradesGross - tradesFees);
+
+  // P&L and sides this session received from trades that closed somewhere else.
+  const inboundTrades = touchedHere.filter(t => !(t.status === 'CLOSED' && t.sessionDate === S));
+  const inboundGross  = toCents(inboundTrades.reduce((x, t) => x + (t.grossBySession[S] || 0), 0));
+  const inboundSides  = inboundTrades.reduce((x, t) => x + (t.sidesBySession[S] || 0), 0);
+
+  // P&L and sides that trades closing here booked into earlier sessions.
+  const outboundTrades = closedHere.filter(t => t.crossesBoundary);
+  const outboundGross  = toCents(outboundTrades.reduce((x, t) => x + ((t.gross ?? 0) - (t.grossBySession[S] || 0)), 0));
+  const outboundSides  = outboundTrades.reduce((x, t) => x + (t.contractSides - (t.sidesBySession[S] || 0)), 0);
+
+  const grossDelta = toCents(tradesGross - session.grossPnl);
+  const feesDelta  = toCents(tradesFees - session.fees);
+  const netDelta   = toCents(tradesNet - session.netPnl);
+
+  // Everything the boundary does not explain is per-trade rounding.
+  const boundaryGross = toCents(outboundGross - inboundGross);
+  const boundaryFees  = toCents((outboundSides - inboundSides) * rate);
+
+  return {
+    sessionDate: S,
+    tradeCount:  closedHere.length,
+    tradeIds:    closedHere.map(t => t.id),
+    openTradeIds: openHere.map(t => t.id),
+
+    sessionGross: session.grossPnl,
+    sessionFees:  session.fees,
+    sessionNet:   session.netPnl,
+    tradesGross, tradesFees, tradesNet,
+    grossDelta, feesDelta, netDelta,
+
+    /** Trades counted here that booked part of their P&L into an earlier session. */
+    outbound: { tradeIds: outboundTrades.map(t => t.id), gross: outboundGross, sides: outboundSides },
+    /** Trades that booked P&L here but are counted in a later session's trade list. */
+    inbound:  { tradeIds: inboundTrades.map(t => t.id),  gross: inboundGross,  sides: inboundSides },
+
+    /** The part of each delta the boundary accounts for. */
+    boundaryGross,
+    boundaryFees,
+    boundaryNet:   toCents(boundaryGross - boundaryFees),
+    /** What is left once the boundary is accounted for: cent rounding only. */
+    roundingDelta: toCents(netDelta - toCents(boundaryGross - boundaryFees)),
+
+    crossingTradeIds: outboundTrades.map(t => t.id),
+    /** True when the trade view and the session view agree to the cent. */
+    balanced:      netDelta === 0,
+    /** True when the delta is fully explained by boundary-crossing trades plus rounding. */
+    explained:     Math.abs(toCents(netDelta - toCents(boundaryGross - boundaryFees))) < 0.05,
+  };
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -276,7 +468,7 @@ function analyseOrderHistory(texts, options) {
   const fills = sortChronologically(unique);
 
   if (fills.length === 0) {
-    return { sessions: [], fills: [], skipped, replaced, errors, openLotsAtEnd: [], warning: 'TVCM-OH-NO-ROWS' };
+    return { sessions: [], trades: [], fills: [], skipped, replaced, errors, openLotsAtEnd: [], warning: 'TVCM-OH-NO-ROWS' };
   }
 
   const ledger = runFifoLedger(fills, pointValue);
@@ -295,6 +487,8 @@ function analyseOrderHistory(texts, options) {
   const positionAfter = new Map();
   let running = 0;
   for (const f of fills) { running += (f.side === 'Buy' ? 1 : -1) * f.qty; positionAfter.set(f.sessionDate, running); }
+
+  const trades = ledger.trades.map(t => finaliseTrade(t, rate));
 
   const sessions = Array.from(agg.keys()).sort().map(sessionDate => {
     const a = agg.get(sessionDate);
@@ -319,9 +513,11 @@ function analyseOrderHistory(texts, options) {
     };
   });
 
+  for (const s2 of sessions) s2.tradeReconciliation = reconcileTrades(s2, trades, rate);
 
   return {
     sessions,
+    trades,
     matches: ledger.matches,
     fills,
     skipped,
@@ -331,6 +527,18 @@ function analyseOrderHistory(texts, options) {
     positionAtEnd: ledger.positionAtEnd,
     warning: null,
   };
+}
+
+/**
+ * Every trade that CLOSED in the given session, oldest first. Pass
+ * `{ includeOpen: true }` to also get a still-running trade that OPENED in it, so a
+ * position carried past 17:00 is visible somewhere rather than vanishing.
+ */
+function sessionTrades(result, sessionDate, options) {
+  const includeOpen = !!(options && options.includeOpen);
+  return (result.trades || []).filter(t =>
+    (t.status === 'CLOSED' && t.sessionDate === sessionDate) ||
+    (includeOpen && t.status === 'OPEN' && t.openSessionDate === sessionDate));
 }
 
 /** The one session you asked for, or null when there were no fills that day. */
@@ -354,5 +562,8 @@ module.exports = {
   runFifoLedger,
   analyseOrderHistory,
   sessionSummary,
+  sessionTrades,
+  finaliseTrade,
+  reconcileTrades,
   toCents,
 };
