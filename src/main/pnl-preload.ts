@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('pnlApi', {
   /** One session's headline, trades and raw fills. */
   getDetail: (sessionDate: string): Promise<SessionDetail> =>
     ipcRenderer.invoke(IPC.ORDER_IMPORT_DETAIL, sessionDate),
+  /** Closes this window, for the Close button and the Esc / Cmd-W shortcuts. */
+  close: (): Promise<void> => ipcRenderer.invoke(IPC.PNL_WINDOW_CLOSE),
   /** Fires whenever a new export is imported, so the window refreshes itself. */
   onUpdate: (callback: (state: OrderImportState) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, state: OrderImportState) => callback(state);

@@ -100,21 +100,13 @@ export function summaryRows(detail, state) {
 }
 
 /**
- * The explanation under the carried line, naming which trades moved P&L across 17:00.
- * Returns null when nothing crossed, which is the normal day.
+ * The plain-English note under the carried line. Returns null when nothing crossed
+ * the 17:00 boundary, which is the normal day.
  */
 export function carriedExplanation(detail) {
   const b = detail && detail.boundary;
   if (!b || b.boundaryNet === 0) return null;
-  const parts = [];
-  if (b.outboundTradeIds.length) {
-    parts.push(`trade${b.outboundTradeIds.length > 1 ? 's' : ''} #${b.outboundTradeIds.join(', #')} ${b.outboundTradeIds.length > 1 ? 'are' : 'is'} counted here but ${b.outboundTradeIds.length > 1 ? 'were' : 'was'} realized in an earlier session`);
-  }
-  if (b.inboundTradeIds.length) {
-    parts.push(`trade${b.inboundTradeIds.length > 1 ? 's' : ''} #${b.inboundTradeIds.join(', #')} ${b.inboundTradeIds.length > 1 ? 'were' : 'was'} realized here but ${b.inboundTradeIds.length > 1 ? 'are' : 'is'} counted in a later session`);
-  }
-  const body = parts.join('; ');
-  return `The session total above is what the statement shows — ${body}.`;
+  return "Part of this day's P&L came from a trade that closed on another day.";
 }
 
 /** One Trades-tab row, already formatted, so the component only places strings. */
@@ -132,6 +124,15 @@ export function tradeRow(t) {
     isOpen:    t.status === 'OPEN',
     crosses:   t.crossesBoundary,
   };
+}
+
+/**
+ * The session's trades as display rows, numbered #1..N within the session. The global
+ * id travels along in `id` so the fills view and any log line can still name the trade
+ * the engine knows.
+ */
+export function tradeRows(trades) {
+  return (trades || []).map((t, i) => ({ ...tradeRow(t), number: i + 1 }));
 }
 
 /** The fills belonging to one trade, matched on the order ids the trade recorded. */

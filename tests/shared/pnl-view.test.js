@@ -118,18 +118,14 @@ test('a carried line appears, labelled, when P&L crossed a boundary', () => {
   assert.strictEqual(v.summaryRows(d, state())[0].value, '-$522.30');
 });
 
-test('the carried line names the trades that moved the money', () => {
-  const d = detail({ boundary: boundary({ boundaryNet: 312.30, inboundTradeIds: [58] }) });
-  const note = v.carriedExplanation(d);
-  assert.ok(note.includes('#58'), note);
-  assert.ok(note.includes('counted in a later session'), note);
-  assert.ok(note.includes('statement'), note);
-  assert.ok(!/\. [a-z]/.test(note), `sentence restarts in lower case: ${note}`);
-
-  const out = v.carriedExplanation(detail({ boundary: boundary({ boundaryNet: 49.60, outboundTradeIds: [157] }) }));
-  assert.ok(out.includes('#157'), out);
-  assert.ok(out.includes('realized in an earlier session'), out);
-  assert.ok(!/\. [a-z]/.test(out), out);
+test('the carried line is explained in one plain sentence', () => {
+  const expected = "Part of this day's P&L came from a trade that closed on another day.";
+  const inbound  = v.carriedExplanation(detail({ boundary: boundary({ boundaryNet: 312.30, inboundTradeIds: [58] }) }));
+  const outbound = v.carriedExplanation(detail({ boundary: boundary({ boundaryNet: 49.60, outboundTradeIds: [157] }) }));
+  assert.strictEqual(inbound, expected);
+  assert.strictEqual(outbound, expected, 'both directions read the same to the trader');
+  assert.ok(!/\$/.test(inbound), 'the amount belongs on its own row, not in the sentence');
+  assert.ok(!/#\d/.test(inbound), 'internal trade ids do not belong in the note');
 });
 
 test('per-trade cent rounding is never presented as a difference', () => {
@@ -232,4 +228,24 @@ test('expanding a trade shows exactly its own fills', () => {
 test('a trade with no matching fills yields an empty list, not a throw', () => {
   assert.deepStrictEqual(v.fillsForTrade(trade(), []), []);
   assert.deepStrictEqual(v.fillsForTrade(trade(), null), []);
+});
+
+// ── Session-local trade numbering ─────────────────────────────────────────
+test('trades are numbered #1..N within the session, keeping the global id', () => {
+  // Nov 13's trades carry global ids 279..349; the trader should see 1, 2, 3.
+  const rows = v.tradeRows([trade({ id: 279 }), trade({ id: 280 }), trade({ id: 281 })]);
+  assert.deepStrictEqual(rows.map(r => r.number), [1, 2, 3]);
+  assert.deepStrictEqual(rows.map(r => r.id), [279, 280, 281], 'the engine id must survive');
+});
+
+test('numbering restarts for each session, rather than continuing globally', () => {
+  const nov13 = v.tradeRows([trade({ id: 279 }), trade({ id: 280 })]);
+  const nov12 = v.tradeRows([trade({ id: 229 }), trade({ id: 230 })]);
+  assert.deepStrictEqual(nov13.map(r => r.number), nov12.map(r => r.number));
+  assert.strictEqual(nov13[0].number, 1);
+});
+
+test('an empty or missing trade list numbers nothing and does not throw', () => {
+  assert.deepStrictEqual(v.tradeRows([]), []);
+  assert.deepStrictEqual(v.tradeRows(null), []);
 });

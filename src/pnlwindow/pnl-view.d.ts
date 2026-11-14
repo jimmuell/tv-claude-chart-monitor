@@ -20,5 +20,6 @@ declare module '*/pnl-view.mjs' {
   export function summaryRows(detail: unknown, state: unknown): SummaryRow[];
   export function carriedExplanation(detail: unknown): string | null;
   export function tradeRow(trade: unknown): TradeRowView;
+  export function tradeRows(trades: unknown[]): Array<TradeRowView & { number: number }>;
   export function fillsForTrade<T>(trade: unknown, fills: T[] | null | undefined): T[];
 }

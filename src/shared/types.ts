@@ -44,6 +44,7 @@ export const IPC = {
   ORDER_IMPORT_PUSH:         'orderImport:push',
   ORDER_IMPORT_SESSIONS:     'orderImport:sessions',
   ORDER_IMPORT_DETAIL:       'orderImport:detail',
+  PNL_WINDOW_CLOSE:          'pnlWindow:close',
 } as const;
 
 // ---------------------------------------------------------------------------

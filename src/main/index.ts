@@ -77,9 +77,9 @@ function saveState(win: BrowserWindow): void {
 /** The Order History window's remembered size and position, or a sensible default. */
 function loadPnlState(): { x?: number; y?: number; width: number; height: number } {
   try {
-    return { width: 960, height: 680, ...JSON.parse(fs.readFileSync(PNL_STATE_PATH, 'utf8')) };
+    return { width: 1040, height: 760, ...JSON.parse(fs.readFileSync(PNL_STATE_PATH, 'utf8')) };
   } catch {
-    return { width: 960, height: 680 };
+    return { width: 1040, height: 760 };
   }
 }
 
@@ -646,6 +646,7 @@ function openPnlWindow(): void {
     if (pnlWindow.isMinimized()) pnlWindow.restore();
     pnlWindow.show();
     pnlWindow.focus();
+    app.focus({ steal: true });
     return;
   }
   const st = loadPnlState();
@@ -670,7 +671,8 @@ function openPnlWindow(): void {
     void pnlWindow.loadURL('http://localhost:5175');
   }
 
-  pnlWindow.once('ready-to-show', () => pnlWindow?.show());
+  // Opened from the menu, it must land in front — otherwise it hides behind the editor.
+  pnlWindow.once('ready-to-show', () => { pnlWindow?.show(); pnlWindow?.focus(); app.focus({ steal: true }); });
   pnlWindow.on('moved',   () => { if (pnlWindow) savePnlState(pnlWindow); });
   pnlWindow.on('resized', () => { if (pnlWindow) savePnlState(pnlWindow); });
   pnlWindow.on('closed',  () => { pnlWindow = null; });
@@ -948,6 +950,7 @@ app.on('ready', () => {
   // IPC: P&L
   ipcMain.handle(IPC.PNL_GET, () => pnlTracker?.getSnapshot() ?? null);
   ipcMain.handle(IPC.ORDER_IMPORT_GET, () => orderImport?.getState() ?? null);
+  ipcMain.handle(IPC.PNL_WINDOW_CLOSE, () => { pnlWindow?.close(); });
   ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => orderImport?.listSessions() ?? []);
   ipcMain.handle(IPC.ORDER_IMPORT_DETAIL, (_e, sessionDate: string) =>
     orderImport?.getSessionDetail(sessionDate) ?? { sessionDate, session: null, trades: [], fills: [], boundary: null });

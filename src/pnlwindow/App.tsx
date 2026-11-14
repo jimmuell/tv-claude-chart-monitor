@@ -82,8 +82,8 @@ const Trades: React.FC<{ detail: SessionDetail }> = ({ detail }) => {
         </tr>
       </thead>
       <tbody>
-        {detail.trades.map((t: ImportedTrade, idx: number) => {
-          const r = view.tradeRow(t);
+        {view.tradeRows(detail.trades).map((r, idx: number) => {
+          const t: ImportedTrade = detail.trades[idx];
           const expanded = openId === t.id;
           const atCursor = idx === cursor;
           const fills: ImportedFill[] = expanded ? view.fillsForTrade(t, detail.fills) : [];
@@ -93,7 +93,7 @@ const Trades: React.FC<{ detail: SessionDetail }> = ({ detail }) => {
                 className={`row${expanded ? ' expanded' : ''}${atCursor ? ' cursor' : ''}`}
                 onClick={() => { setCursor(idx); setOpenId(expanded ? null : t.id); }}
               >
-                <td className="num">{r.id}</td>
+                <td className="num">{r.number}</td>
                 <td>{r.time}{r.isOpen && <span className="tag open">OPEN</span>}{r.crosses && <span className="tag cross">CROSSES</span>}</td>
                 <td><span className={`dir ${r.direction}`}>{r.direction}</span></td>
                 <td className="num">{r.size}</td>
@@ -106,7 +106,9 @@ const Trades: React.FC<{ detail: SessionDetail }> = ({ detail }) => {
                 <tr className="detail-row">
                   <td colSpan={8}>
                     <div className="fills-inline">
-                      <div className="fills-title">Fills in trade #{t.id}</div>
+                      <div className="fills-title">
+                        Fills in trade #{r.number} <span className="dim">· id {t.id}</span>
+                      </div>
                       <table className="grid inner">
                         <thead><tr><th>Time</th><th>Side</th><th className="num">Qty</th><th className="num">Price</th><th>Status</th><th>Order ID</th></tr></thead>
                         <tbody>
@@ -240,9 +242,11 @@ export function App() {
   /** Keyboard: Cmd-1..4 pick a tab, Cmd-[ / Cmd-] step through sessions. */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); window.pnlApi.close(); return; }
       if (!e.metaKey) return;
       const tabIndex = TABS.findIndex((_, i) => String(i + 1) === e.key);
       if (tabIndex >= 0) { e.preventDefault(); setTab(TABS[tabIndex].key); return; }
+      if (e.key === 'w') { e.preventDefault(); window.pnlApi.close(); return; }
       if (e.key === '[' || e.key === ']') {
         e.preventDefault();
         const i = sessions.findIndex(x => x.sessionDate === selected);
@@ -264,7 +268,10 @@ export function App() {
           Order History &amp; P&amp;L
           {selected && <span className="session-chip">{selected}</span>}
         </div>
-        <div className="source">{state?.fileName ?? 'no file'}</div>
+        <div className="head-right">
+          <span className="source">{state?.fileName ?? 'no file'}</span>
+          <button className="btn-close" onClick={() => window.pnlApi.close()} title="Close (Esc)">Close</button>
+        </div>
       </header>
 
       <nav className="tabs">
