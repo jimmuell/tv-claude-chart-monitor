@@ -431,6 +431,10 @@ function reconcileTrades(session, trades, rate) {
     balanced:      netDelta === 0,
     /** True when the delta is fully explained by boundary-crossing trades plus rounding. */
     explained:     Math.abs(toCents(netDelta - toCents(boundaryGross - boundaryFees))) < 0.05,
+    /** Set only when the gap is NOT explained — the trade split would then be wrong. */
+    warning:       Math.abs(toCents(netDelta - toCents(boundaryGross - boundaryFees))) < 0.05
+      ? null
+      : 'TVCM-OH-TRADE-UNEXPLAINED',
   };
 }
 

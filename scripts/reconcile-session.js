@@ -10,6 +10,7 @@
  *   node scripts/reconcile-session.js <csv-path> --all
  *
  * Options:
+ *   --trades    list every flat-to-flat trade in the session, with its own net
  *   --fee=<n>   $ per contract per side (default 0.60, AMP's rate)
  *   --verbose   also list skipped rows and the position carried in/out
  *
@@ -25,9 +26,10 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Splits argv into csv paths, session dates and flags. */
 function parseArgs(argv) {
-  const files = [], dates = [], opts = { all: false, verbose: false, fee: null };
+  const files = [], dates = [], opts = { all: false, verbose: false, fee: null, trades: false };
   for (const a of argv) {
     if (a === '--all') opts.all = true;
+    else if (a === '--trades') opts.trades = true;
     else if (a === '--verbose' || a === '-v') opts.verbose = true;
     else if (a.startsWith('--fee=')) opts.fee = Number(a.slice(6));
     else if (DATE_RE.test(a)) dates.push(a);
@@ -49,8 +51,60 @@ function priorDay(dateText) {
   return dt.toISOString().slice(0, 10);
 }
 
+/** A fill time trimmed to HH:MM:SS, since the date is already the session heading. */
+const clock = (t) => (t ? String(t).slice(11) : '—');
+
+/**
+ * Prints every flat-to-flat trade in a session, then reconciles the sum of their nets
+ * against the session total. The two agree unless a trade spans the 17:00 boundary,
+ * and the difference is spelled out rather than hidden.
+ */
+function printTrades(result, date, session) {
+  const trades = oh.sessionTrades(result, date, { includeOpen: true });
+  if (trades.length === 0) { console.log('\n  (no trades closed in this session)'); return; }
+
+  console.log(`\n  ${trades.length} trade(s)  —  a trade is flat-to-flat; it belongs to the session it CLOSED in`);
+  console.log('   #   dir    open      close     size  sides   avg entry    avg exit      gross      fees        net  flags');
+  for (const t of trades) {
+    const flags = [t.status === 'OPEN' ? 'OPEN' : '', t.crossesBoundary ? `CROSSES from ${t.openSessionDate}` : '']
+      .filter(Boolean).join(' ');
+    console.log(
+      `${String(t.id).padStart(4)}  ${t.direction.padEnd(5)}  ${clock(t.openTime)}  ${clock(t.closeTime)}` +
+      `  ${String(t.maxPositionSize).padStart(4)}  ${String(t.contractSides).padStart(5)}` +
+      `  ${px(t.avgEntry).padStart(10)}  ${px(t.avgExit).padStart(10)}` +
+      `  ${(t.gross == null ? '—' : signed(t.gross)).padStart(9)}  ${t.fees.toFixed(2).padStart(8)}` +
+      `  ${(t.net == null ? '—' : signed(t.net)).padStart(9)}  ${flags}`);
+  }
+
+  const x = session.tradeReconciliation;
+  console.log(`\n  ── trades vs session ──`);
+  console.log(`  closed trades            ${x.tradeCount}${x.openTradeIds.length ? `  (+${x.openTradeIds.length} still open: #${x.openTradeIds.join(', #')})` : ''}`);
+  console.log(`  sum of trade gross       ${signed(x.tradesGross)}     session gross  ${signed(x.sessionGross)}`);
+  console.log(`  sum of trade fees        ${x.tradesFees.toFixed(2)}     session fees   ${x.sessionFees.toFixed(2)}`);
+  console.log(`  sum of trade net         ${signed(x.tradesNet)}     session net    ${signed(x.sessionNet)}`);
+  if (x.balanced) {
+    console.log(`  difference               none — the two views agree to the cent`);
+  } else {
+    console.log(`  difference               ${signed(x.netDelta)}`);
+    if (x.outbound.tradeIds.length) {
+      console.log(`    outbound  ${signed(x.outbound.gross)} gross / ${x.outbound.sides} sides — counted here, realized in an earlier session (trade #${x.outbound.tradeIds.join(', #')})`);
+    }
+    if (x.inbound.tradeIds.length) {
+      console.log(`    inbound   ${signed(x.inbound.gross)} gross / ${x.inbound.sides} sides — realized here, counted in a later session (trade #${x.inbound.tradeIds.join(', #')})`);
+    }
+    console.log(`    boundary accounts for  ${signed(x.boundaryNet)}`);
+    console.log(`    per-trade rounding     ${signed(x.roundingDelta)}`);
+    console.log(`    fully explained        ${x.explained ? 'yes' : `NO — ${x.warning}`}`);
+  }
+
+  const best  = trades.filter(t => t.net != null).reduce((a, t) => (a && a.net >= t.net ? a : t), null);
+  const worst = trades.filter(t => t.net != null).reduce((a, t) => (a && a.net <= t.net ? a : t), null);
+  if (best)  console.log(`  best trade               #${best.id} ${signed(best.net)} (${best.direction})`);
+  if (worst) console.log(`  worst trade              #${worst.id} ${signed(worst.net)} (${worst.direction})`);
+}
+
 /** Prints one session as a labelled block plus a single comparable summary line. */
-function printSession(date, s) {
+function printSession(date, s, result, opts) {
   if (!s) {
     console.log(`\n${date}  — no fills in this session (TVCM-OH-NO-ROWS)`);
     return;
@@ -71,13 +125,14 @@ function printSession(date, s) {
     `avg sell ${px(s.avgSell)}, gross ${signed(s.grossPnl)}, fees ${s.fees.toFixed(2)}, ` +
     `net ${signed(s.netPnl)}, open position ${s.openPositionAtEnd}`
   );
+  if (opts && opts.trades) printTrades(result, date, s);
 }
 
 function main() {
   const { files, dates, opts } = parseArgs(process.argv.slice(2));
 
   if (files.length === 0 || (dates.length === 0 && !opts.all)) {
-    console.error('usage: node scripts/reconcile-session.js <csv-path> <YYYY-MM-DD> [more dates...] [--all] [--fee=0.60] [--verbose]');
+    console.error('usage: node scripts/reconcile-session.js <csv-path> <YYYY-MM-DD> [more dates...] [--all] [--trades] [--fee=0.60] [--verbose]');
     process.exit(2);
   }
 
@@ -104,7 +159,7 @@ function main() {
   }
 
   const wanted = opts.all ? result.sessions.map(s => s.sessionDate) : dates;
-  for (const d of wanted) printSession(d, oh.sessionSummary(result, d));
+  for (const d of wanted) printSession(d, oh.sessionSummary(result, d), result, opts);
 
   if (opts.verbose) {
     console.log(`\nposition at end of file: ${result.positionAtEnd}`);

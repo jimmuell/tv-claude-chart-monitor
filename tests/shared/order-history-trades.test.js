@@ -315,3 +315,43 @@ test('trade ids are unique and assigned in the order trades opened', () => {
   assert.deepStrictEqual(r.trades.map(t => t.id), [1, 2]);
   assert.deepStrictEqual(r.trades.map(t => t.direction), ['long', 'short']);
 });
+
+test('a balanced session carries no unexplained-gap warning', () => {
+  const r = run([
+    row({ side: 'Buy',  qty: 2, price: 7000, time: '2026-11-12 09:00:00', id: 'A' }),
+    row({ side: 'Sell', qty: 2, price: 7010, time: '2026-11-12 09:30:00', id: 'B' }),
+  ]);
+  const x = sessionSummary(r, '2026-11-12').tradeReconciliation;
+  assert.strictEqual(x.warning, null);
+  assert.strictEqual(x.explained, true);
+});
+
+test('a boundary-crossing session is explained, so it carries no warning either', () => {
+  const r = run([
+    row({ side: 'Buy',  qty: 4, price: 7000, time: '2026-11-10 15:00:00', id: 'A' }),
+    row({ side: 'Sell', qty: 1, price: 7020, time: '2026-11-10 16:00:00', id: 'B' }),
+    row({ side: 'Sell', qty: 3, price: 7010, time: '2026-11-10 18:00:00', id: 'C' }),
+  ]);
+  for (const d of ['2026-11-10', '2026-11-11']) {
+    const x = sessionSummary(r, d).tradeReconciliation;
+    assert.strictEqual(x.warning, null, `${d} should be explained`);
+  }
+});
+
+test('the reconciler raises TVCM-OH-TRADE-UNEXPLAINED when the split really is wrong', () => {
+  // Fed directly, because a correct ledger cannot produce this state from any input —
+  // the guard exists for a future regression in the trade split, so it is tested here
+  // rather than through the engine.
+  const session = { sessionDate: '2026-11-12', grossPnl: 100, fees: 2.40, netPnl: 97.60 };
+  const bogus = [{
+    id: 1, status: 'CLOSED', sessionDate: '2026-11-12', openSessionDate: '2026-11-12',
+    crossesBoundary: false, gross: 500, fees: 2.40, contractSides: 4,
+    grossBySession: { '2026-11-12': 500 }, sidesBySession: { '2026-11-12': 4 },
+  }];
+  const x = oh.reconcileTrades(session, bogus, 0.60);
+  assert.strictEqual(x.netDelta, 400);
+  assert.strictEqual(x.boundaryNet, 0, 'no boundary trade, so the boundary explains nothing');
+  assert.strictEqual(x.roundingDelta, 400);
+  assert.strictEqual(x.explained, false);
+  assert.strictEqual(x.warning, 'TVCM-OH-TRADE-UNEXPLAINED');
+});
