@@ -572,6 +572,11 @@ function autoDrawResult(result: AnalysisResult): void {
 
 }
 
+/** True only when the developer asked for DevTools with TVCM_DEVTOOLS=1. */
+function wantsDevTools(): boolean {
+  return process.env.TVCM_DEVTOOLS === '1';
+}
+
 app.on('ready', () => {
   const initialSettings = loadSettings();
   // Apply persisted overrides so bridge/scheduler honour stored settings from first use
@@ -620,7 +625,9 @@ app.on('ready', () => {
     mainWindow.loadFile(path.join(app.getAppPath(), 'dist', 'renderer', 'index.html'));
   } else {
     mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    // Detached DevTools is its own top-level Chromium window, which looks like a stray
+    // Chrome window sitting behind TradingView. Opt in with TVCM_DEVTOOLS=1 instead.
+    if (wantsDevTools()) mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
   // A blank panel has more than one cause. Every way the renderer can die,
