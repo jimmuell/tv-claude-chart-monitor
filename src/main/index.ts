@@ -41,6 +41,32 @@ function readMinConfidence(): number {
 
 // ── Window state persistence ──────────────────────────────────────────────
 
+// ── Single instance ───────────────────────────────────────────────────────
+// This runs before anything else in the main process: before the tray exists,
+// before the order-history watcher polls, before the scheduler starts and before
+// the bridge opens a CDP connection to TradingView. A second copy must never
+// reach any of that — two trays showing the same number, two watchers on the same
+// folder and two processes polling the live account is exactly the confusion this
+// prevents.
+
+/**
+ * Claims the single-instance lock. Returns false in a second copy, which then has
+ * nothing started to tear down and can leave immediately.
+ */
+function acquireSingleInstanceLock(): boolean {
+  if (app.requestSingleInstanceLock()) return true;
+  console.log(
+    '[index] TVCM-SECOND-INSTANCE: TVCM is already running for this profile — quitting. ' +
+    'The running copy has been brought forward.'
+  );
+  // exit(), not quit(): nothing has been initialised, so there is nothing to unwind,
+  // and this guarantees the ready handler never runs.
+  app.exit(0);
+  return false;
+}
+
+const isPrimaryInstance = acquireSingleInstanceLock();
+
 interface WindowState {
   x?: number;
   y?: number;
@@ -712,7 +738,26 @@ function wantsDevTools(): boolean {
   return process.env.TVCM_DEVTOOLS === '1';
 }
 
+/**
+ * Someone tried to launch TVCM again. Show them the copy that is already running,
+ * so "nothing happened" is never the answer.
+ */
+function revealRunningInstance(): void {
+  console.log('[index] TVCM-SECOND-INSTANCE: a second launch was refused; showing the running copy');
+  try {
+    openPnlWindow();
+  } catch {
+    // No window yet (still starting up) — the tray menu still proves which copy is live.
+    rebuildMenu();
+    tray?.popUpContextMenu();
+  }
+}
+
+if (isPrimaryInstance) app.on('second-instance', revealRunningInstance);
+
 app.on('ready', () => {
+  // Belt and braces: app.exit() above should mean this never fires in a second copy.
+  if (!isPrimaryInstance) return;
   const initialSettings = loadSettings();
   // Apply persisted overrides so bridge/scheduler honour stored settings from first use
   setCdpPort(initialSettings.cdpPort);
