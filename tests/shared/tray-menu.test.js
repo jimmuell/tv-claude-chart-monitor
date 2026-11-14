@@ -7,7 +7,7 @@ const test   = require('node:test');
 const assert = require('node:assert');
 const path   = require('path');
 
-const { trayMenuTemplate, menuItemIds } = require(path.join(__dirname, '../../src/shared/tray-menu.js'));
+const { trayMenuTemplate, menuItemIds, escapeMenuLabel } = require(path.join(__dirname, '../../src/shared/tray-menu.js'));
 
 const labels = (items) => items.filter(i => i.label).map(i => i.label);
 
@@ -62,4 +62,22 @@ test('every item carries an id so a handler can be attached, and ids are unique'
 test('missing state still produces a usable menu', () => {
   assert.doesNotThrow(() => trayMenuTemplate(undefined));
   assert.ok(trayMenuTemplate(undefined).length > 0);
+});
+
+test('ampersands are doubled, or Electron eats them as mnemonics', () => {
+  // Seen for real: "Order History & P&L" rendered as "Order History  PL".
+  assert.strictEqual(escapeMenuLabel('Order History & P&L'), 'Order History && P&&L');
+  assert.strictEqual(escapeMenuLabel('Quit'), 'Quit');
+  assert.strictEqual(escapeMenuLabel(undefined), '');
+});
+
+test('every label with an ampersand survives escaping intact', () => {
+  const walk = (items) => items.forEach(i => {
+    if (i.label) {
+      const rendered = escapeMenuLabel(i.label).replace(/&&/g, '&');
+      assert.strictEqual(rendered, i.label, `"${i.label}" would not render as written`);
+    }
+    if (i.submenu) walk(i.submenu);
+  });
+  walk(trayMenuTemplate({}));
 });

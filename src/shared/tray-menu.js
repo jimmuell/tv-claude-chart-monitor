@@ -32,6 +32,14 @@ function trayMenuTemplate(state) {
   ];
 }
 
+/**
+ * Doubles every ampersand. Electron treats a single "&" in a menu label as a mnemonic
+ * marker and swallows it, which turned "Order History & P&L" into "Order History  PL".
+ */
+function escapeMenuLabel(label) {
+  return String(label == null ? '' : label).replace(/&/g, '&&');
+}
+
 /** Every item id in the template, including nested ones, for wiring and for tests. */
 function menuItemIds(template) {
   const out = [];
@@ -42,4 +50,4 @@ function menuItemIds(template) {
   return out;
 }
 
-module.exports = { trayMenuTemplate, menuItemIds };
+module.exports = { trayMenuTemplate, menuItemIds, escapeMenuLabel };

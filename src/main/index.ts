@@ -117,8 +117,9 @@ function debounceSave(win: BrowserWindow): void {
 
 // ── Context menu ──────────────────────────────────────────────────────────
 
-const { trayMenuTemplate } = sharedModule('tray-menu.js') as {
+const { trayMenuTemplate, escapeMenuLabel } = sharedModule('tray-menu.js') as {
   trayMenuTemplate: (s: { panelVisible: boolean; alwaysOnTop: boolean }) => TrayMenuItem[];
+  escapeMenuLabel:  (label: string | undefined) => string;
 };
 
 interface TrayMenuItem {
@@ -146,7 +147,7 @@ function trayMenuActions(): Record<string, (checked: boolean) => void> {
 function toElectronTemplate(items: TrayMenuItem[], actions: Record<string, (checked: boolean) => void>): Electron.MenuItemConstructorOptions[] {
   return items.map((item) => {
     if (item.type === 'separator') return { type: 'separator' as const };
-    const out: Electron.MenuItemConstructorOptions = { label: item.label };
+    const out: Electron.MenuItemConstructorOptions = { label: escapeMenuLabel(item.label) };
     if (item.type === 'checkbox') { out.type = 'checkbox'; out.checked = item.checked; }
     if (item.submenu) out.submenu = toElectronTemplate(item.submenu, actions);
     const action = item.id ? actions[item.id] : undefined;
