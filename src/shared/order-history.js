@@ -199,7 +199,7 @@ function sortChronologically(fills) {
  * session boundary, which is how a position held through 17:00 carries forward.
  */
 function runFifoLedger(fills, pointValue) {
-  const lots = [];                 // { sign: +1 long / -1 short, qty, price }
+  const lots = [];                 // { sign, qty, price, orderId, fillTime }
   const realizedBySession = new Map();
   const positionAtSessionStart = new Map();
   const matches = [];
@@ -216,13 +216,25 @@ function runFifoLedger(fills, pointValue) {
       // A long lot closed by a sell earns (sell - cost); a short lot closed by a buy earns (proceeds - buy).
       const pnl = (lot.sign === 1 ? f.price - lot.price : lot.price - f.price) * matched * pointValue;
       realizedBySession.set(f.sessionDate, (realizedBySession.get(f.sessionDate) || 0) + pnl);
-      matches.push({ sessionDate: f.sessionDate, qty: matched, openPrice: lot.price, closePrice: f.price, pnl, closedBy: f.orderId });
+      matches.push({
+        sessionDate:  f.sessionDate,        // the session this P&L is booked to
+        qty:          matched,
+        side:         lot.sign === 1 ? 'long' : 'short',
+        openOrderId:  lot.orderId,
+        openTime:     lot.fillTime,
+        openPrice:    lot.price,
+        closeOrderId: f.orderId,
+        closeTime:    f.fillTime,
+        closePrice:   f.price,
+        pnl,
+      });
+
       lot.qty -= matched;
       remaining -= matched;
       if (lot.qty === 0) lots.shift();
     }
 
-    if (remaining > 0) lots.push({ sign, qty: remaining, price: f.price });
+    if (remaining > 0) lots.push({ sign, qty: remaining, price: f.price, orderId: f.orderId, fillTime: f.fillTime });
     position += sign * f.qty;
     if (!realizedBySession.has(f.sessionDate)) realizedBySession.set(f.sessionDate, 0);
   }
@@ -307,8 +319,10 @@ function analyseOrderHistory(texts, options) {
     };
   });
 
+
   return {
     sessions,
+    matches: ledger.matches,
     fills,
     skipped,
     replaced,
