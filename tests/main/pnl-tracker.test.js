@@ -9,6 +9,14 @@ const Module = require('module');
 
 const DIST_DIR = path.join(__dirname, '../../dist/main/main');
 
+const { sqliteUnavailableReason } = require('../helpers/native-sqlite');
+const SQLITE_SKIP = sqliteUnavailableReason();
+if (SQLITE_SKIP) {
+  test('pnl-tracker suite (needs a loadable better-sqlite3)', { skip: SQLITE_SKIP }, () => {});
+  return;
+}
+
+
 // ── Stubs for Electron + heavy dependencies ────────────────────────────────────
 
 const electronStub = {

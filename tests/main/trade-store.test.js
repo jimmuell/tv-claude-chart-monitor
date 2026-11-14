@@ -22,6 +22,13 @@ const fs = require('fs');
 
 // The compiled output goes to dist/main/main/ because tsconfig.main.json has
 // outDir=dist/main and rootDir=src, so src/main/trade-store.ts → dist/main/main/trade-store.js
+const { sqliteUnavailableReason } = require('../helpers/native-sqlite');
+const SQLITE_SKIP = sqliteUnavailableReason();
+if (SQLITE_SKIP) {
+  test('trade-store suite (needs a loadable better-sqlite3)', { skip: SQLITE_SKIP }, () => {});
+  return;
+}
+
 const TradeStore = require('../../dist/main/main/trade-store').TradeStore;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
