@@ -10,6 +10,15 @@ npm run build    # compile main + Vite production build
 npm run package  # build then package with electron-builder (macOS DMG)
 ```
 
+Tests. `npm test` cannot load `better-sqlite3` (postinstall rebuilds it against
+Electron's ABI), so the store tests run under Electron instead — they are skipped, not
+excluded:
+```bash
+npm test           # everything that runs under plain node
+npm run test:electron  # the better-sqlite3 tests (trade-store, pnl-tracker)
+npm run test:all       # both
+```
+
 Type-check renderer only (Vite handles this at build time):
 ```bash
 npx tsc --noEmit

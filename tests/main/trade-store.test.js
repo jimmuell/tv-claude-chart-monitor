@@ -25,7 +25,7 @@ const fs = require('fs');
 const { sqliteUnavailableReason } = require('../helpers/native-sqlite');
 const SQLITE_SKIP = sqliteUnavailableReason();
 if (SQLITE_SKIP) {
-  test('trade-store suite (needs a loadable better-sqlite3)', { skip: SQLITE_SKIP }, () => {});
+  test('trade-store suite — run it with `npm run test:electron`', { skip: SQLITE_SKIP }, () => {});
   return;
 }
 

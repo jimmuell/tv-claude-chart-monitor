@@ -12,7 +12,7 @@ const DIST_DIR = path.join(__dirname, '../../dist/main/main');
 const { sqliteUnavailableReason } = require('../helpers/native-sqlite');
 const SQLITE_SKIP = sqliteUnavailableReason();
 if (SQLITE_SKIP) {
-  test('pnl-tracker suite (needs a loadable better-sqlite3)', { skip: SQLITE_SKIP }, () => {});
+  test('pnl-tracker suite — run it with `npm run test:electron`', { skip: SQLITE_SKIP }, () => {});
   return;
 }
 
@@ -110,7 +110,12 @@ function makeAccountData(overrides = {}) {
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-test('PnlTracker rescue — direction unknown when all signals dark: writes "unknown" NOT "long"', async () => {
+// TVCM-9 changed this contract deliberately ("stop phantom trade records"): when the
+// direction is unknown AND no fill rows are visible, the gross change alone is too weak
+// to prove a trade happened — a paper-trading P&L reset looks identical — so nothing is
+// written at all. The original intent (never fabricate "long") is kept, and strengthened:
+// the old behaviour wrote an "unknown" row, the current one writes none.
+test('PnlTracker rescue — suppressed entirely when direction AND fills are both dark', async () => {
   const tmpDir = makeTmpDir();
   const store  = new TradeStore(tmpDir);
   const feeConfig = { perContractSideFee: 0, liquidationDaily: 0, dataFeedMonthly: 0, tradingDaysPerMonth: 21 };
@@ -126,7 +131,7 @@ test('PnlTracker rescue — direction unknown when all signals dark: writes "unk
     mockAccountData = makeAccountData({ realizedPnl: 0, unrealizedPnl: null });
     await tracker.poll();
 
-    // Poll 2: gross=50, flat, ALL direction signals null — rescue must fire
+    // Poll 2: gross=50, flat, ALL direction signals null — queues a rescue
     mockAccountData = makeAccountData({
       realizedPnl:          50,
       unrealizedPnl:        null,
@@ -138,17 +143,12 @@ test('PnlTracker rescue — direction unknown when all signals dark: writes "unk
     });
     await tracker.poll();
 
-    const all = store.getAll();
-    assert.strictEqual(all.length, 1, 'rescue should create exactly one trade');
-    const trade = all[0];
+    // Poll 3: the rescue is queued on the poll that sees the change and only acted on
+    // the next one, so that a position appearing in between can cancel it.
+    await tracker.poll();
 
-    assert.strictEqual(trade.direction, 'unknown',
-      `direction must be 'unknown' when all signals are null, got '${trade.direction}'`);
-    assert.strictEqual(trade.needs_review, true,
-      'needs_review must be true for unknown-direction rescue');
-    assert.ok(trade.exit_at !== null, 'rescue trade must be closed (exit_at set)');
-    assert.strictEqual(trade.entry_source, 'rescued');
-    assert.strictEqual(trade.direction_source, 'unknown');
+    assert.deepStrictEqual(store.getAll(), [],
+      'a rescue with no direction and no fill evidence must write nothing at all');
   } finally {
     store.close();
     fs.rmSync(tmpDir, { recursive: true });
@@ -173,7 +173,7 @@ test('PnlTracker rescue — direction recorded correctly when lastKnownDirection
     await tracker.poll();
     store.clearAll(); // remove the entry so rescue fires on next close
 
-    // Poll 2: gross changed, flat — direction signals now absent (Balances tab), but cache has 'short'
+    // Poll 2: gross changed, flat — signals absent (Balances tab), but the cache has 'short'
     mockAccountData = makeAccountData({
       realizedPnl:          -25,
       unrealizedPnl:        null,
@@ -183,6 +183,9 @@ test('PnlTracker rescue — direction recorded correctly when lastKnownDirection
       positionsTabCount:    null,
       openPosition:         null,
     });
+    await tracker.poll();
+
+    // Poll 3: confirms the position really is gone, which is when the rescue fires.
     await tracker.poll();
 
     const all = store.getAll();
