@@ -344,3 +344,104 @@ test('emptyState carries the folder and no numbers', () => {
   assert.strictEqual(s.importedAt, null);
   assert.strictEqual(s.errorCode, null);
 });
+
+// ── What the Order History window reads over IPC ──────────────────────────
+test('listSessions returns every session newest first, with its trade count', async () => {
+  const folder = tmpFolder();
+  const w = makeWatcher(folder);
+  write(folder, 'amp-order-history-all-1.csv', csv([
+    row({ side: 'Buy',  qty: 1, price: 7000, time: '2026-11-11 09:00:00', id: 'A' }),
+    row({ side: 'Sell', qty: 1, price: 7010, time: '2026-11-11 10:00:00', id: 'B' }),
+    row({ side: 'Sell', qty: 2, price: 7020, time: '2026-11-12 09:00:00', id: 'C' }),
+    row({ side: 'Buy',  qty: 2, price: 7000, time: '2026-11-12 10:00:00', id: 'D' }),
+  ]));
+  await settle(w);
+
+  const list = w.listSessions();
+  assert.deepStrictEqual(list.map(s => s.sessionDate), ['2026-11-12', '2026-11-11'], 'newest first');
+  assert.strictEqual(list[0].tradeCount, 1);
+  assert.strictEqual(list[0].netPnl, 197.60);   // 200 gross - 2.40 fees
+  assert.strictEqual(list[1].netPnl, 48.80);    //  50 gross - 1.20 fees
+  assert.strictEqual(list[0].contractSides, 4);
+});
+
+test('getSessionDetail returns that session only — headline, trades and fills', async () => {
+  const folder = tmpFolder();
+  const w = makeWatcher(folder);
+  write(folder, 'amp-order-history-all-1.csv', csv([
+    row({ side: 'Buy',  qty: 1, price: 7000, time: '2026-11-11 09:00:00', id: 'A' }),
+    row({ side: 'Sell', qty: 1, price: 7010, time: '2026-11-11 10:00:00', id: 'B' }),
+    row({ side: 'Sell', qty: 2, price: 7020, time: '2026-11-12 09:00:00', id: 'C' }),
+    row({ side: 'Buy',  qty: 2, price: 7000, time: '2026-11-12 10:00:00', id: 'D' }),
+  ]));
+  await settle(w);
+
+  const d = w.getSessionDetail('2026-11-12');
+  assert.strictEqual(d.sessionDate, '2026-11-12');
+  assert.strictEqual(d.session.netPnl, 197.60);
+  assert.strictEqual(d.trades.length, 1);
+  assert.strictEqual(d.trades[0].direction, 'short');
+  assert.strictEqual(d.fills.length, 2, 'only this session\'s fills');
+  assert.ok(d.fills.every(f => f.sessionDate === '2026-11-12'));
+  assert.strictEqual(d.boundary.boundaryNet, 0);
+});
+
+test('a session that nothing traded in returns empty rather than null fields', async () => {
+  const folder = tmpFolder();
+  const w = makeWatcher(folder);
+  write(folder, 'amp-order-history-all-1.csv', sessionCsv(10));
+  await settle(w);
+  const d = w.getSessionDetail('2026-01-01');
+  assert.strictEqual(d.session, null);
+  assert.deepStrictEqual(d.trades, []);
+  assert.deepStrictEqual(d.fills, []);
+  assert.strictEqual(d.boundary, null);
+});
+
+test('a boundary-crossing trade is surfaced to the window on both sessions', async () => {
+  const folder = tmpFolder();
+  const w = makeWatcher(folder, { now: () => Date.parse('2026-11-11T15:00:00Z') });
+  write(folder, 'amp-order-history-all-1.csv', csv([
+    row({ side: 'Buy',  qty: 4, price: 7000, time: '2026-11-10 15:00:00', id: 'A' }),
+    row({ side: 'Sell', qty: 1, price: 7020, time: '2026-11-10 16:00:00', id: 'B' }),
+    row({ side: 'Sell', qty: 3, price: 7010, time: '2026-11-10 18:00:00', id: 'C' }),
+  ]));
+  await settle(w);
+
+  const d10 = w.getSessionDetail('2026-11-10');
+  const d11 = w.getSessionDetail('2026-11-11');
+  assert.strictEqual(d10.trades.length, 0, 'the trade closed on the 11th');
+  assert.ok(d10.boundary.inboundTradeIds.length === 1, 'the 10th must declare the inbound trade');
+  assert.strictEqual(d11.trades.length, 1);
+  assert.deepStrictEqual(d11.boundary.outboundTradeIds, d10.boundary.inboundTradeIds);
+  assert.notStrictEqual(d11.boundary.boundaryNet, 0, 'the carried amount must be non-zero');
+});
+
+test('an open trade is listed under the session it opened in', async () => {
+  const folder = tmpFolder();
+  const w = makeWatcher(folder);
+  write(folder, 'amp-order-history-all-1.csv', csv([
+    row({ side: 'Buy', qty: 3, price: 7000, time: '2026-11-12 09:00:00', id: 'A' }),
+    row({ side: 'Sell', qty: 1, price: 7020, time: '2026-11-12 10:00:00', id: 'B' }),
+  ]));
+  await settle(w);
+  const d = w.getSessionDetail('2026-11-12');
+  assert.strictEqual(d.trades.length, 1);
+  assert.strictEqual(d.trades[0].status, 'OPEN');
+  assert.strictEqual(d.trades[0].net, null, 'an open trade must not carry a guessed net');
+});
+
+test('trades and fills survive a restart through the cache', async () => {
+  const folder = tmpFolder();
+  const statePath = path.join(tmpFolder(), 'order-import.json');
+  const first = makeWatcher(folder, { statePath });
+  write(folder, 'amp-order-history-all-1.csv', sessionCsv(10));
+  await settle(first);
+  assert.strictEqual(first.getSessionDetail('2026-11-12').trades.length, 1);
+
+  const second = makeWatcher(folder, { statePath });
+  const d = second.getSessionDetail('2026-11-12');
+  assert.strictEqual(d.trades.length, 1, 'trades were not cached');
+  assert.strictEqual(d.fills.length, 2, 'fills were not cached');
+  assert.strictEqual(second.listSessions().length, 1);
+});

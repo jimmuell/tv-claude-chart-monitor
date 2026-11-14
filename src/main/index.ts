@@ -49,6 +49,7 @@ interface WindowState {
 }
 
 const STATE_PATH = path.join(app.getPath('userData'), 'window-state.json');
+const PNL_STATE_PATH = path.join(app.getPath('userData'), 'pnl-window-state.json');
 const MIN_WIDTH  = 380;
 const MIN_HEIGHT = 500;
 const DEF_WIDTH  = 420;
@@ -73,6 +74,23 @@ function saveState(win: BrowserWindow): void {
   } catch { /* ignore */ }
 }
 
+/** The Order History window's remembered size and position, or a sensible default. */
+function loadPnlState(): { x?: number; y?: number; width: number; height: number } {
+  try {
+    return { width: 960, height: 680, ...JSON.parse(fs.readFileSync(PNL_STATE_PATH, 'utf8')) };
+  } catch {
+    return { width: 960, height: 680 };
+  }
+}
+
+/** Remembers where the Order History window was left. */
+function savePnlState(win: BrowserWindow): void {
+  try {
+    const b = win.getBounds();
+    fs.writeFileSync(PNL_STATE_PATH, JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }));
+  } catch { /* ignore */ }
+}
+
 // ── Globals ───────────────────────────────────────────────────────────────
 
 let mainWindow: BrowserWindow | null = null;
@@ -82,6 +100,7 @@ let lastResult: AnalysisResult | null = null;
 
 let pnlTracker:      PnlTracker     | null = null;
 let orderImport:     OrderImportWatcher | null = null;
+let pnlWindow:       BrowserWindow | null = null;
 let trayTitleTimer:  ReturnType<typeof setInterval> | null = null;
 let tradeStore:      TradeStore     | null = null;
 let recStore:        RecommendationStore | null = null;
@@ -134,6 +153,7 @@ function rebuildMenu(): void {
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
   ]));
 }
+
 
 // ── Renderer watchdogs (TVCM-UI-*) ────────────────────────────────────────
 
@@ -605,6 +625,45 @@ function refreshTrayTitle(): void {
   }
 }
 
+/**
+ * Opens the Order History & P&L window, or focuses it if it is already up. It reads the
+ * imported export over IPC — there is no server and no connection to TradingView.
+ */
+function openPnlWindow(): void {
+  if (pnlWindow && !pnlWindow.isDestroyed()) {
+    if (pnlWindow.isMinimized()) pnlWindow.restore();
+    pnlWindow.show();
+    pnlWindow.focus();
+    return;
+  }
+  const st = loadPnlState();
+  pnlWindow = new BrowserWindow({
+    x: st.x, y: st.y, width: st.width, height: st.height,
+    minWidth: 720, minHeight: 420,
+    title: 'Order History & P&L',
+    backgroundColor: '#1e222d',
+    titleBarStyle: 'hiddenInset',
+    show: false,
+    webPreferences: {
+      nodeIntegration:  false,
+      contextIsolation: true,
+      sandbox:          false,
+      preload:          path.join(__dirname, 'pnl-preload.js'),
+    },
+  });
+
+  if (app.isPackaged) {
+    void pnlWindow.loadFile(path.join(app.getAppPath(), 'dist', 'pnlwindow', 'index.html'));
+  } else {
+    void pnlWindow.loadURL('http://localhost:5175');
+  }
+
+  pnlWindow.once('ready-to-show', () => pnlWindow?.show());
+  pnlWindow.on('moved',   () => { if (pnlWindow) savePnlState(pnlWindow); });
+  pnlWindow.on('resized', () => { if (pnlWindow) savePnlState(pnlWindow); });
+  pnlWindow.on('closed',  () => { pnlWindow = null; });
+}
+
 /** True only when the developer asked for DevTools with TVCM_DEVTOOLS=1. */
 function wantsDevTools(): boolean {
   return process.env.TVCM_DEVTOOLS === '1';
@@ -756,6 +815,7 @@ app.on('ready', () => {
     statePath: path.join(app.getPath('userData'), 'order-import.json'),
     onChange:  (state) => {
       mainWindow?.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
+      if (pnlWindow && !pnlWindow.isDestroyed()) pnlWindow.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
       refreshTrayTitle();
     },
   });
@@ -880,6 +940,9 @@ app.on('ready', () => {
     refreshTrayTitle();
     return orderImport?.getState() ?? null;
   });
+  ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => orderImport?.listSessions() ?? []);
+  ipcMain.handle(IPC.ORDER_IMPORT_DETAIL, (_e, sessionDate: string) =>
+    orderImport?.getSessionDetail(sessionDate) ?? { sessionDate, session: null, trades: [], fills: [], boundary: null });
 
   // IPC: trade plan bracket
   ipcMain.handle(IPC.ANNOTATE_TRADE_PLAN, async (_e, entry: number, stop: number, target: number) => {

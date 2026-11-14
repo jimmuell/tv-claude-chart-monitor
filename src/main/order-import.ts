@@ -3,7 +3,7 @@ import os   from 'os';
 import path from 'path';
 import { currentSessionDate } from './session-clock-bridge';
 import { sharedModule } from './shared-require';
-import type { ImportedSession, OrderImportState } from '../shared/types';
+import type { ImportedSession, OrderImportState, ImportedTrade, ImportedFill, SessionBoundary, SessionDetail, SessionListItem } from '../shared/types';
 
 // The engine proved against AMP's statement in TVCM-13. It is a shared CommonJS
 // module that tsc does not compile, so it is loaded at runtime.
@@ -66,6 +66,41 @@ function toImportedSession(s: any): ImportedSession {
   };
 }
 
+/** Copies one engine trade into the shape the window consumes. */
+function toImportedTrade(t: any): ImportedTrade {
+  return {
+    id: t.id, status: t.status, direction: t.direction,
+    sessionDate: t.sessionDate, openSessionDate: t.openSessionDate,
+    crossesBoundary: t.crossesBoundary,
+    openTime: t.openTime, closeTime: t.closeTime,
+    entryQty: t.entryQty, exitQty: t.exitQty,
+    avgEntry: t.avgEntry, avgExit: t.avgExit,
+    maxPositionSize: t.maxPositionSize, contractSides: t.contractSides,
+    gross: t.gross, fees: t.fees, net: t.net,
+    orderIds: t.orderIds,
+  };
+}
+
+/** Copies one engine fill into the shape the window consumes. */
+function toImportedFill(f: any): ImportedFill {
+  return {
+    orderId: f.orderId, symbol: f.symbol, side: f.side, qty: f.qty, price: f.price,
+    fillTime: f.fillTime, sessionDate: f.sessionDate, status: f.status, orderType: f.orderType,
+  };
+}
+
+/** Reduces a session's trade reconciliation to the few numbers the window shows. */
+function toBoundary(rec: any): SessionBoundary | null {
+  if (!rec) return null;
+  return {
+    boundaryNet:      rec.boundaryNet,
+    outboundTradeIds: rec.outbound ? rec.outbound.tradeIds : [],
+    inboundTradeIds:  rec.inbound ? rec.inbound.tradeIds : [],
+    tradeCount:       rec.tradeCount,
+    openTradeIds:     rec.openTradeIds || [],
+  };
+}
+
 /** An empty state, used before the first import and when the cache cannot be read. */
 export function emptyState(watchFolder: string | null): OrderImportState {
   return {
@@ -98,6 +133,12 @@ export class OrderImportWatcher {
   private state:       OrderImportState;
   /** Everything the last successful parse produced, kept so the session can be re-resolved as time passes. */
   private lastSessions: ImportedSession[] = [];
+  /** Every flat-to-flat trade in the file, for the window's Trades tab. */
+  private lastTrades: ImportedTrade[] = [];
+  /** Every fill in the file, for the window's Fills tab. */
+  private lastFills: ImportedFill[] = [];
+  /** How each session's trade list relates to its statement total. */
+  private lastBoundaries = new Map<string, SessionBoundary>();
 
   constructor(opts: OrderImportOptions = {}) {
     this.folder    = resolveWatchFolder(opts.folder);
@@ -126,6 +167,35 @@ export class OrderImportWatcher {
   getState(): OrderImportState {
     this.resolveSession();
     return { ...this.state };
+  }
+
+  /** Every session in the file, newest first, for the past-days picker. */
+  listSessions(): SessionListItem[] {
+    return this.lastSessions
+      .slice()
+      .sort((a, b) => (a.sessionDate < b.sessionDate ? 1 : -1))
+      .map(s => ({
+        sessionDate:       s.sessionDate,
+        netPnl:            s.netPnl,
+        grossPnl:          s.grossPnl,
+        fees:              s.fees,
+        contractSides:     s.contractSides,
+        tradeCount:        this.lastBoundaries.get(s.sessionDate)?.tradeCount ?? 0,
+        openPositionAtEnd: s.openPositionAtEnd,
+      }));
+  }
+
+  /** One session's headline, its trades and its raw fills; empty when nothing matches. */
+  getSessionDetail(sessionDate: string): SessionDetail {
+    return {
+      sessionDate,
+      session:  this.lastSessions.find(s => s.sessionDate === sessionDate) ?? null,
+      trades:   this.lastTrades.filter(t =>
+        (t.status === 'CLOSED' && t.sessionDate === sessionDate) ||
+        (t.status === 'OPEN'   && t.openSessionDate === sessionDate)),
+      fills:    this.lastFills.filter(f => f.sessionDate === sessionDate),
+      boundary: this.lastBoundaries.get(sessionDate) ?? null,
+    };
   }
 
   /** Points the watcher at a different folder, forgetting what it had seen in the old one. */
@@ -211,6 +281,13 @@ export class OrderImportWatcher {
     }
 
     this.lastSessions = result.sessions.map(toImportedSession);
+    this.lastTrades   = (result.trades || []).map(toImportedTrade);
+    this.lastFills    = (result.fills  || []).map(toImportedFill);
+    this.lastBoundaries.clear();
+    for (const sess of result.sessions) {
+      const b = toBoundary(sess.tradeReconciliation);
+      if (b) this.lastBoundaries.set(sess.sessionDate, b);
+    }
     this.importedSig  = { ...sig, filePath };
     this.state = {
       ...this.state,
@@ -271,7 +348,10 @@ export class OrderImportWatcher {
     if (!this.statePath) return;
     try {
       fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
-      fs.writeFileSync(this.statePath, JSON.stringify({ state: this.state, sessions: this.lastSessions }, null, 2));
+      fs.writeFileSync(this.statePath, JSON.stringify({
+        state: this.state, sessions: this.lastSessions, trades: this.lastTrades,
+        fills: this.lastFills, boundaries: Array.from(this.lastBoundaries),
+      }));
     } catch (err) {
       this.log(`[order-import] TVCM-OI-CACHE-WRITE: could not cache the import — ${(err as Error).message}`);
     }
@@ -285,6 +365,9 @@ export class OrderImportWatcher {
       if (raw && raw.state) {
         this.state        = { ...emptyState(this.folder), ...raw.state, watchFolder: this.folder };
         this.lastSessions = Array.isArray(raw.sessions) ? raw.sessions : [];
+        this.lastTrades   = Array.isArray(raw.trades)   ? raw.trades   : [];
+        this.lastFills    = Array.isArray(raw.fills)    ? raw.fills    : [];
+        this.lastBoundaries = new Map(Array.isArray(raw.boundaries) ? raw.boundaries : []);
         this.resolveSession();
       }
     } catch { /* no cache yet, or unreadable — start empty */ }

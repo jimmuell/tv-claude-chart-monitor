@@ -43,6 +43,8 @@ export const IPC = {
   ORDER_IMPORT_GET:          'orderImport:get',
   ORDER_IMPORT_PUSH:         'orderImport:push',
   ORDER_IMPORT_RESCAN:       'orderImport:rescan',
+  ORDER_IMPORT_SESSIONS:     'orderImport:sessions',
+  ORDER_IMPORT_DETAIL:       'orderImport:detail',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -192,6 +194,71 @@ export interface ImportedSession {
   netPnl:              number;
   openPositionAtStart: number;
   openPositionAtEnd:   number;  // signed contracts still open when the session ended
+}
+
+/** One fill as the engine parsed it, for the raw-rows view. */
+export interface ImportedFill {
+  orderId:     string;
+  symbol:      string;
+  side:        'Buy' | 'Sell';
+  qty:         number;
+  price:       number;
+  fillTime:    string;   // 'YYYY-MM-DD HH:MM:SS', Chicago wall clock
+  sessionDate: string;
+  status:      string;   // TradingView's Status; a Cancelled row can still have filled
+  orderType:   string;
+}
+
+/** One flat-to-flat trade: opens when the position leaves zero, closes when it returns. */
+export interface ImportedTrade {
+  id:              number;
+  status:          'OPEN' | 'CLOSED';
+  direction:       'long' | 'short';
+  sessionDate:     string | null;   // the session it CLOSED in; null while open
+  openSessionDate: string;
+  crossesBoundary: boolean;
+  openTime:        string;
+  closeTime:       string | null;
+  entryQty:        number;
+  exitQty:         number;
+  avgEntry:        number | null;
+  avgExit:         number | null;   // null while open — never guessed
+  maxPositionSize: number;          // peak exposure, not contracts entered
+  contractSides:   number;
+  gross:           number | null;   // null while open
+  fees:            number;          // sides already filled; a cost, not a forecast
+  net:             number | null;   // null while open
+  orderIds:        string[];
+}
+
+/** How a session's trade list relates to its statement-matching total. */
+export interface SessionBoundary {
+  /** P&L carried in from or out to other sessions by trades that spanned 17:00 CT. */
+  boundaryNet:      number;
+  outboundTradeIds: number[];
+  inboundTradeIds:  number[];
+  tradeCount:       number;
+  openTradeIds:     number[];
+}
+
+/** One row of the past-days picker. */
+export interface SessionListItem {
+  sessionDate:       string;
+  netPnl:            number;
+  grossPnl:          number;
+  fees:              number;
+  contractSides:     number;
+  tradeCount:        number;
+  openPositionAtEnd: number;
+}
+
+/** Everything the Order History window needs for one session. */
+export interface SessionDetail {
+  sessionDate: string;
+  session:     ImportedSession | null;
+  trades:      ImportedTrade[];
+  fills:       ImportedFill[];
+  boundary:    SessionBoundary | null;
 }
 
 /** The state of the order-history import: what was read, when, and whether it worked. */

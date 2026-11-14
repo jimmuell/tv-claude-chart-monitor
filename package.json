@@ -6,16 +6,18 @@
   "private": true,
   "scripts": {
     "postinstall": "electron-rebuild -f -w better-sqlite3",
-    "dev": "tsc -p tsconfig.main.json && concurrently -k -n \"MAIN,VITE,APP\" -c \"cyan,yellow,green\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "dev:all": "tsc -p tsconfig.main.json && concurrently --kill-others-on-fail -n \"MAIN,VITE,APP,JOURNAL\" -c \"cyan,yellow,green,magenta\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"wait-on http://localhost:5173 && electron .\" \"node scripts/start-journal.js\"",
-    "build": "tsc -p tsconfig.main.json && vite build && npm run build:journal",
+    "dev": "tsc -p tsconfig.main.json && concurrently -k -n \"MAIN,VITE,PNL,APP\" -c \"cyan,yellow,blue,green\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"vite --config vite.pnl.config.ts\" \"wait-on http://localhost:5173 http://localhost:5175 && electron .\"",
+    "dev:all": "tsc -p tsconfig.main.json && concurrently --kill-others-on-fail -n \"MAIN,VITE,PNL,APP,JOURNAL\" -c \"cyan,yellow,blue,green,magenta\" \"tsc -w -p tsconfig.main.json\" \"vite\" \"vite --config vite.pnl.config.ts\" \"wait-on http://localhost:5173 http://localhost:5175 && electron .\" \"node scripts/start-journal.js\"",
+    "build": "tsc -p tsconfig.main.json && vite build && npm run build:pnl && npm run build:journal",
     "build:journal": "vite build --config vite.journal.config.ts",
     "dev:journal": "vite --config vite.journal.config.ts",
     "journal": "node scripts/start-journal.js",
     "train": "node scripts/train-replay.js",
     "check:safety": "node scripts/check-live-safety.js",
     "package": "npm run build && electron-builder",
-    "test": "node --test 'tests/shared/**/*.test.js' 'tests/main/**/*.test.js'"
+    "test": "node --test 'tests/shared/**/*.test.js' 'tests/main/**/*.test.js'",
+    "build:pnl": "vite build --config vite.pnl.config.ts",
+    "dev:pnl": "vite --config vite.pnl.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
