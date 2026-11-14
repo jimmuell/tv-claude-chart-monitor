@@ -1,4 +1,4 @@
-import type { OrderImportState, SessionDetail, SessionListItem } from '../shared/types';
+import type { OrderImportState, SessionDetail, SessionListItem, ScorecardView } from '../shared/types';
 
 declare global {
   interface Window {
@@ -8,6 +8,7 @@ declare global {
       getDetail(sessionDate: string): Promise<SessionDetail>;
       onUpdate(cb: (state: OrderImportState) => void): () => void;
       close(): Promise<void>;
+      getScorecard(mode: 'live' | 'replay', rulesVersion: string | null): Promise<ScorecardView | null>;
     };
   }
 }

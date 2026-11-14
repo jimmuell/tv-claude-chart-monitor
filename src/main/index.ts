@@ -951,6 +951,16 @@ app.on('ready', () => {
   ipcMain.handle(IPC.PNL_GET, () => pnlTracker?.getSnapshot() ?? null);
   ipcMain.handle(IPC.ORDER_IMPORT_GET, () => orderImport?.getState() ?? null);
   ipcMain.handle(IPC.PNL_WINDOW_CLOSE, () => { pnlWindow?.close(); });
+  ipcMain.handle(IPC.SCORECARD_GET, (_e, mode: 'live' | 'replay', rulesVersion: string | null) => {
+    if (!recStore) return null;
+    const card = recStore.getScorecard({
+      replayMode:   mode === 'replay' ? 1 : 0,
+      rulesVersion: rulesVersion || null,
+    });
+    // The versions list rides along so the window can offer the same filter the
+    // journal's Scorecard page did, without a second round trip.
+    return { ...card, versions: recStore.listRulesVersions() };
+  });
   ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => orderImport?.listSessions() ?? []);
   ipcMain.handle(IPC.ORDER_IMPORT_DETAIL, (_e, sessionDate: string) =>
     orderImport?.getSessionDetail(sessionDate) ?? { sessionDate, session: null, trades: [], fills: [], boundary: null });

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { OrderImportState, SessionDetail, SessionListItem } from '../shared/types';
+import type { OrderImportState, SessionDetail, SessionListItem, ScorecardView } from '../shared/types';
 
 // The Order History & P&L window's only link to the app. It reads; it never writes,
 // never touches TradingView, and never places an order.
@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('pnlApi', {
   /** One session's headline, trades and raw fills. */
   getDetail: (sessionDate: string): Promise<SessionDetail> =>
     ipcRenderer.invoke(IPC.ORDER_IMPORT_DETAIL, sessionDate),
+  /** The recommendation scorecard for one call source and rules version. */
+  getScorecard: (mode: 'live' | 'replay', rulesVersion: string | null): Promise<ScorecardView | null> =>
+    ipcRenderer.invoke(IPC.SCORECARD_GET, mode, rulesVersion),
   /** Closes this window, for the Close button and the Esc / Cmd-W shortcuts. */
   close: (): Promise<void> => ipcRenderer.invoke(IPC.PNL_WINDOW_CLOSE),
   /** Fires whenever a new export is imported, so the window refreshes itself. */
