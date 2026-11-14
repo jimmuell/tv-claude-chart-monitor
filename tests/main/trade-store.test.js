@@ -507,3 +507,111 @@ test('clearAll — id counter restarts at 1 after reset', () => {
     fs.rmSync(dir, { recursive: true });
   }
 });
+
+// ── Lessons: the approval gate the analyzer prompt reads ──────────────────
+// getApprovedLessons() is what reaches the LLM. Everything here is about the one
+// rule that matters: nothing is given to the analyzer until a human approves it.
+
+/** A lesson fixture; synthetic, nothing from the real database. */
+function lesson(over = {}) {
+  return {
+    trade_id: null, symbol: 'MESZ26', timeframe: '5', direction: 'long',
+    pattern: 'failed_retest', outcome: 'loss',
+    lesson_text: 'Do not buy the first retest of a broken level.',
+    context_text: 'After an impulsive break, in the first hour.', ...over,
+  };
+}
+
+test('a newly extracted lesson is NOT approved, so the analyzer never sees it', () => {
+  const store = new TradeStore(makeTmpDir());
+  const id = store.insertLesson(lesson());
+  const listed = store.listLessons();
+  assert.strictEqual(listed.length, 1);
+  assert.strictEqual(listed[0].id, id);
+  assert.strictEqual(listed[0].approved, 0, 'extraction must never auto-approve');
+  assert.deepStrictEqual(store.getApprovedLessons(), [], 'an unapproved lesson must not reach the prompt');
+  store.close();
+});
+
+test('an approved lesson reaches getApprovedLessons()', () => {
+  const store = new TradeStore(makeTmpDir());
+  const id = store.insertLesson(lesson());
+  store.setLessonApproved(id, true);
+
+  const approved = store.getApprovedLessons();
+  assert.strictEqual(approved.length, 1);
+  assert.strictEqual(approved[0].id, id);
+  assert.strictEqual(approved[0].lesson_text, 'Do not buy the first retest of a broken level.');
+  assert.strictEqual(approved[0].pattern, 'failed_retest');
+  store.close();
+});
+
+test('a rejected lesson does not reach getApprovedLessons(), and is gone from the list', () => {
+  const store = new TradeStore(makeTmpDir());
+  const keep = store.insertLesson(lesson({ lesson_text: 'Keep me.' }));
+  const drop = store.insertLesson(lesson({ lesson_text: 'Reject me.' }));
+  store.setLessonApproved(keep, true);
+  store.deleteLesson(drop);
+
+  const approved = store.getApprovedLessons();
+  assert.deepStrictEqual(approved.map(l => l.lesson_text), ['Keep me.']);
+  assert.deepStrictEqual(store.listLessons().map(l => l.id), [keep]);
+  store.close();
+});
+
+test('un-approving takes a lesson back out of the prompt', () => {
+  const store = new TradeStore(makeTmpDir());
+  const id = store.insertLesson(lesson());
+  store.setLessonApproved(id, true);
+  assert.strictEqual(store.getApprovedLessons().length, 1);
+  store.setLessonApproved(id, false);
+  assert.deepStrictEqual(store.getApprovedLessons(), [], 'un-approving must remove it again');
+  store.close();
+});
+
+test('only approved lessons are returned, however many are waiting', () => {
+  const store = new TradeStore(makeTmpDir());
+  const ids = [1, 2, 3, 4].map(n => store.insertLesson(lesson({ lesson_text: `Lesson ${n}` })));
+  store.setLessonApproved(ids[1], true);
+  store.setLessonApproved(ids[3], true);
+  assert.deepStrictEqual(
+    store.getApprovedLessons().map(l => l.lesson_text).sort(),
+    ['Lesson 2', 'Lesson 4']);
+  assert.strictEqual(store.listLessons().length, 4);
+  store.close();
+});
+
+test('a trade gets at most one lesson, so extraction cannot duplicate', () => {
+  const store = new TradeStore(makeTmpDir());
+  assert.strictEqual(store.hasLessonForTrade(7), false);
+  store.insertLesson(lesson({ trade_id: 7 }));
+  assert.strictEqual(store.hasLessonForTrade(7), true);
+  assert.strictEqual(store.hasLessonForTrade(8), false);
+  store.close();
+});
+
+test('extraction candidates are closed, critiqued trades with no lesson yet', () => {
+  const store = new TradeStore(makeTmpDir());
+
+  // Each trade is opened on its own symbol so recordExitForOpenTrade closes the one meant.
+  const openId = store.recordEntry(makeEntry({ symbol: 'OPEN' }));
+
+  const noCritiqueId = store.recordEntry(makeEntry({ symbol: 'NOCRIT' }));
+  store.recordExitForOpenTrade(makeExit(), 'NOCRIT');
+
+  const readyId = store.recordEntry(makeEntry({ symbol: 'READY' }));
+  store.recordExitForOpenTrade(makeExit(), 'READY');
+  store.addCritique(readyId, 'It failed at the retest.');
+
+  const alreadyId = store.recordEntry(makeEntry({ symbol: 'DONE' }));
+  store.recordExitForOpenTrade(makeExit(), 'DONE');
+  store.addCritique(alreadyId, 'Same again.');
+  store.insertLesson(lesson({ trade_id: alreadyId }));
+
+  const ids = store.lessonCandidates(20).map(t => t.id);
+  assert.ok(ids.includes(readyId), 'a closed, critiqued trade with no lesson is a candidate');
+  assert.ok(!ids.includes(openId), 'an open trade is not a candidate');
+  assert.ok(!ids.includes(noCritiqueId), 'a trade with no critique is not a candidate');
+  assert.ok(!ids.includes(alreadyId), 'a trade that already has a lesson is not a candidate');
+  store.close();
+});

@@ -9,6 +9,7 @@ import { notifyVerdict, resetNotifier, notifyProblem } from './notifier';
 import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './order-executor';
 import { PnlTracker } from './pnl-tracker';
 import { OrderImportWatcher } from './order-import';
+import { extractLessons } from './lesson-extractor';
 import { sharedModule } from './shared-require';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
@@ -951,6 +952,22 @@ app.on('ready', () => {
   ipcMain.handle(IPC.PNL_GET, () => pnlTracker?.getSnapshot() ?? null);
   ipcMain.handle(IPC.ORDER_IMPORT_GET, () => orderImport?.getState() ?? null);
   ipcMain.handle(IPC.PNL_WINDOW_CLOSE, () => { pnlWindow?.close(); });
+  ipcMain.handle(IPC.LESSONS_LIST, () =>
+    (tradeStore?.listLessons() ?? []).map(l => ({ ...l, approved: l.approved === 1 })));
+  ipcMain.handle(IPC.LESSONS_SET_APPROVED, (_e, id: number, approved: boolean) => {
+    tradeStore?.setLessonApproved(id, approved);
+    return (tradeStore?.listLessons() ?? []).map(l => ({ ...l, approved: l.approved === 1 }));
+  });
+  ipcMain.handle(IPC.LESSONS_DELETE, (_e, id: number) => {
+    tradeStore?.deleteLesson(id);
+    return (tradeStore?.listLessons() ?? []).map(l => ({ ...l, approved: l.approved === 1 }));
+  });
+  ipcMain.handle(IPC.LESSONS_EXTRACT, async () => {
+    if (!tradeStore) return { extracted: 0, skipped: 0, errors: ['no trade store'], remaining: 0 };
+    const r = await extractLessons(tradeStore);
+    for (const e of r.errors) console.error('[lessons]', e);
+    return { ...r, remaining: tradeStore.lessonCandidates(50).length };
+  });
   ipcMain.handle(IPC.SCORECARD_GET, (_e, mode: 'live' | 'replay', rulesVersion: string | null) => {
     if (!recStore) return null;
     const card = recStore.getScorecard({

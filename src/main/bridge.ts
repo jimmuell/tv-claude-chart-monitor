@@ -84,7 +84,7 @@ interface AppConfig {
  * back-compat path for configs written before providers existed (and stays in
  * config.json as a ready-made block to switch back to).
  */
-function resolveLlm(cfg: AppConfig): LlmConfig {
+export function resolveLlm(cfg: AppConfig): LlmConfig {
   const block = cfg.llm ?? cfg.anthropic;
   if (!block) {
     throw new Error('config.json is missing both an `llm` and an `anthropic` block');
@@ -92,7 +92,7 @@ function resolveLlm(cfg: AppConfig): LlmConfig {
   return { provider: 'anthropic', ...block };
 }
 
-function loadConfig(): AppConfig {
+export function loadConfig(): AppConfig {
   const configPath = path.join(app.getAppPath(), 'config', 'config.json');
   const raw = fs.readFileSync(configPath, 'utf-8');
   return JSON.parse(raw) as AppConfig;

@@ -105,6 +105,21 @@ function rowToRecord(row: Record<string, unknown>): TradeRecord {
   };
 }
 
+/** One row of trade_lessons as the Lessons tab reads it. */
+export interface LessonRow {
+  id:           number;
+  created_at:   number;
+  trade_id:     number | null;
+  symbol:       string;
+  timeframe:    string | null;
+  direction:    string | null;
+  pattern:      string | null;
+  outcome:      string | null;
+  lesson_text:  string;
+  context_text: string | null;
+  approved:     number;
+}
+
 export class TradeStore {
   private db: Database.Database;
 
@@ -272,6 +287,65 @@ export class TradeStore {
         id: number; pattern: string | null; direction: string | null;
         outcome: string | null; lesson_text: string; context_text: string | null;
       }>;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Every lesson, newest first, approved or not — what the Lessons tab lists. */
+  listLessons(limit = 200): LessonRow[] {
+    try {
+      return this.db.prepare(`
+        SELECT id, created_at, trade_id, symbol, timeframe, direction, pattern,
+               outcome, lesson_text, context_text, approved
+        FROM trade_lessons ORDER BY created_at DESC LIMIT ?
+      `).all(limit) as LessonRow[];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Approves or un-approves one lesson; only approved ones reach the analyzer prompt. */
+  setLessonApproved(id: number, approved: boolean): void {
+    this.db.prepare('UPDATE trade_lessons SET approved=? WHERE id=?').run(approved ? 1 : 0, id);
+  }
+
+  /** Deletes one lesson outright, for a rejection the user does not want to see again. */
+  deleteLesson(id: number): void {
+    this.db.prepare('DELETE FROM trade_lessons WHERE id=?').run(id);
+  }
+
+  /** Saves a newly extracted lesson, unapproved — a lesson only counts once a human says so. */
+  insertLesson(l: {
+    trade_id: number | null; symbol: string; timeframe: string | null;
+    direction: string | null; pattern: string | null; outcome: string | null;
+    lesson_text: string; context_text: string | null;
+  }): number {
+    const info = this.db.prepare(`
+      INSERT INTO trade_lessons
+        (created_at, trade_id, symbol, timeframe, direction, pattern, outcome,
+         lesson_text, context_text, approved)
+      VALUES (?,?,?,?,?,?,?,?,?,0)
+    `).run(Date.now(), l.trade_id, l.symbol, l.timeframe, l.direction, l.pattern,
+           l.outcome, l.lesson_text, l.context_text);
+    return Number(info.lastInsertRowid);
+  }
+
+  /** True when this trade already has a lesson, so extraction never duplicates one. */
+  hasLessonForTrade(tradeId: number): boolean {
+    const row = this.db.prepare('SELECT id FROM trade_lessons WHERE trade_id=?').get(tradeId);
+    return !!row;
+  }
+
+  /** Closed trades with a critique but no lesson yet — the candidates for extraction. */
+  lessonCandidates(limit = 20): TradeRecord[] {
+    try {
+      return this.db.prepare(`
+        SELECT * FROM trades
+        WHERE exit_at IS NOT NULL AND critique_json IS NOT NULL
+          AND id NOT IN (SELECT COALESCE(trade_id, -1) FROM trade_lessons)
+        ORDER BY exit_at DESC LIMIT ?
+      `).all(limit) as TradeRecord[];
     } catch {
       return [];
     }

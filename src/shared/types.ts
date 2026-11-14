@@ -46,6 +46,10 @@ export const IPC = {
   ORDER_IMPORT_DETAIL:       'orderImport:detail',
   PNL_WINDOW_CLOSE:          'pnlWindow:close',
   SCORECARD_GET:             'scorecard:get',
+  LESSONS_LIST:              'lessons:list',
+  LESSONS_SET_APPROVED:      'lessons:setApproved',
+  LESSONS_DELETE:            'lessons:delete',
+  LESSONS_EXTRACT:           'lessons:extract',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -289,6 +293,30 @@ export interface ScorecardView {
   };
   /** Every rules version present in the data, newest first. */
   versions: Array<{ rules_version: string; n: number; firstSeen: number; lastSeen: number }>;
+}
+
+/** One extracted lesson as the Lessons tab shows it. */
+export interface LessonView {
+  id:           number;
+  created_at:   number;
+  trade_id:     number | null;
+  symbol:       string;
+  timeframe:    string | null;
+  direction:    string | null;
+  pattern:      string | null;
+  outcome:      string | null;
+  lesson_text:  string;
+  context_text: string | null;
+  approved:     boolean;
+}
+
+/** What one run of lesson extraction did. */
+export interface LessonExtractResult {
+  extracted: number;
+  skipped:   number;
+  errors:    string[];
+  /** Closed, critiqued trades still waiting for a lesson. */
+  remaining: number;
 }
 
 /** Everything the Order History window needs for one session. */
