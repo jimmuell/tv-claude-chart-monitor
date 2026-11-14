@@ -9,6 +9,7 @@ import { notifyVerdict, resetNotifier, notifyProblem } from './notifier';
 import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './order-executor';
 import { PnlTracker } from './pnl-tracker';
 import { OrderImportWatcher } from './order-import';
+import { sharedModule } from './shared-require';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
 import { TradeStore } from './trade-store';
@@ -81,6 +82,7 @@ let lastResult: AnalysisResult | null = null;
 
 let pnlTracker:      PnlTracker     | null = null;
 let orderImport:     OrderImportWatcher | null = null;
+let trayTitleTimer:  ReturnType<typeof setInterval> | null = null;
 let tradeStore:      TradeStore     | null = null;
 let recStore:        RecommendationStore | null = null;
 let gradeRunner:     GradeRunner    | null = null;
@@ -574,6 +576,24 @@ function autoDrawResult(result: AnalysisResult): void {
 
 }
 
+const { trayTitle, trayTooltip } = sharedModule('tray-title.js') as {
+  trayTitle:   (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
+  trayTooltip: (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
+};
+
+/** Repaints the menu-bar title and tooltip from the latest import state. */
+function refreshTrayTitle(): void {
+  if (!tray) return;
+  const state = orderImport?.getState() ?? null;
+  const staleMinutes = getSettings().orderImportStaleMinutes ?? 30;
+  try {
+    tray.setTitle(trayTitle(state, { staleMinutes }));
+    tray.setToolTip(trayTooltip(state, { staleMinutes }));
+  } catch (err) {
+    console.error('[tray] TVCM-OI-TITLE: could not set the menu-bar title —', (err as Error).message);
+  }
+}
+
 /** True only when the developer asked for DevTools with TVCM_DEVTOOLS=1. */
 function wantsDevTools(): boolean {
   return process.env.TVCM_DEVTOOLS === '1';
@@ -723,9 +743,14 @@ app.on('ready', () => {
     statePath: path.join(app.getPath('userData'), 'order-import.json'),
     onChange:  (state) => {
       mainWindow?.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
+      refreshTrayTitle();
     },
   });
   if (importSettings.orderImportEnabled !== false) orderImport.start();
+  refreshTrayTitle();
+  // The title also has to change on its own: the stale marker appears with the
+  // passage of time, and the session rolls over at 17:00 CT with nothing happening.
+  trayTitleTimer = setInterval(refreshTrayTitle, 60_000);
 
   // Scheduler
   scheduler = new Scheduler(
@@ -819,6 +844,9 @@ app.on('ready', () => {
     if ('orderImportEnabled' in partial) {
       if (partial.orderImportEnabled) orderImport?.start(); else orderImport?.stop();
     }
+    if ('orderImportStaleMinutes' in partial || 'orderImportEnabled' in partial) {
+      refreshTrayTitle();
+    }
 
     return updated;
   });
@@ -834,6 +862,7 @@ app.on('ready', () => {
   ipcMain.handle(IPC.ORDER_IMPORT_GET, () => orderImport?.getState() ?? null);
   ipcMain.handle(IPC.ORDER_IMPORT_RESCAN, async () => {
     await orderImport?.scanOnce();
+    refreshTrayTitle();
     return orderImport?.getState() ?? null;
   });
 
@@ -950,5 +979,6 @@ app.on('before-quit', () => {
   isQuitting = true;
   pnlTracker?.stop();
   orderImport?.stop();
+  if (trayTitleTimer) { clearInterval(trayTitleTimer); trayTitleTimer = null; }
   void disconnect();
 });

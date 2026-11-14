@@ -1,0 +1,82 @@
+'use strict';
+
+/**
+ * The text that sits next to the tray icon in the macOS menu bar.
+ *
+ * Two rules drive it. First, never show a number the trader could mistake for
+ * today's: with no usable import the title is a dash, never "$0.00", because a
+ * fake flat day and a real flat day look identical and only one of them is safe
+ * to act on. Second, a warning marker when the numbers have gone stale *while the
+ * market is open* — a stale figure on a Saturday is simply Friday's result and
+ * needs no warning.
+ */
+
+const { isMarketOpen } = require('./session-clock.js');
+
+/** The dash shown when there is nothing trustworthy to display. */
+const NO_DATA_TITLE = 'P&L —';
+
+/** Appended when the import has gone stale during live trading. */
+const STALE_MARKER = ' ⚠';
+
+const DEFAULT_STALE_MINUTES = 30;
+
+/**
+ * Money with an explicit sign and no thousands separator, e.g. "+$896.65".
+ * The sign is taken from the ROUNDED value, so a figure that rounds to zero
+ * never renders as the nonsensical "-$0.00".
+ */
+function formatNet(value) {
+  const n = Number(value) || 0;
+  const rounded = Math.round(n * 100) / 100;
+  return `${rounded < 0 ? '-' : '+'}$${Math.abs(rounded).toFixed(2)}`;
+}
+
+/**
+ * True when the last import is older than the threshold AND the market is open,
+ * which is the only combination where an old number is actually misleading.
+ */
+function isStale(importedAt, now, staleMinutes) {
+  if (importedAt == null) return false;
+  const minutes = staleMinutes == null ? DEFAULT_STALE_MINUTES : staleMinutes;
+  if (!(minutes > 0)) return false;
+  if (!isMarketOpen(now)) return false;
+  return (Number(now) - Number(importedAt)) > minutes * 60_000;
+}
+
+/**
+ * Builds the menu-bar title from the import state: a signed net, a stale marker
+ * when it applies, or a dash when there is nothing to show.
+ */
+function trayTitle(state, options) {
+  const opts = options || {};
+  const now = opts.now == null ? Date.now() : Number(opts.now);
+
+  if (!state || !state.session || state.importedAt == null) return NO_DATA_TITLE;
+
+  const base = formatNet(state.session.netPnl);
+  return isStale(state.importedAt, now, opts.staleMinutes) ? base + STALE_MARKER : base;
+}
+
+/** A longer line for the tray tooltip, where there is room to say which session it is. */
+function trayTooltip(state, options) {
+  const opts = options || {};
+  const now = opts.now == null ? Date.now() : Number(opts.now);
+  if (!state || !state.session || state.importedAt == null) {
+    return 'Trading Analyzer — no order-history import yet';
+  }
+  const s = state.session;
+  const when = new Date(state.importedAt).toLocaleTimeString('en-US',
+    { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' });
+  const lines = [
+    `Session ${s.sessionDate}${state.isFallback ? ' (last session with fills)' : ''}`,
+    `Net ${formatNet(s.netPnl)}  ·  Gross ${formatNet(s.grossPnl)}  ·  Fees $${s.fees.toFixed(2)}`,
+    `${s.contractSides} contract-sides (${s.roundTrips} RT)`,
+    `Imported ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
+  ];
+  if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
+  if (state.errorCode) lines.push(`Last import failed: ${state.errorCode}`);
+  return lines.join('\n');
+}
+
+module.exports = { NO_DATA_TITLE, STALE_MARKER, DEFAULT_STALE_MINUTES, formatNet, isStale, trayTitle, trayTooltip };
