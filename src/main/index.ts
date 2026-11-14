@@ -200,6 +200,17 @@ function toggleWindow(): void {
 }
 
 /**
+ * Open the panel at launch without a tray click, so an unattended run can be
+ * screenshotted or driven. Same opt-in shape as TVCM_AUTOSTART_SCHEDULER.
+ */
+function maybeShowPanel(): void {
+  if (process.env.TVCM_SHOW_PANEL === '1') {
+    console.log('[index] TVCM_SHOW_PANEL=1 — opening the panel without a tray click');
+    toggleWindow();
+  }
+}
+
+/**
  * Start the scheduler without the panel. The training runner needs the app
  * analysing unattended, and the only other way in is a tray click.
  */
@@ -739,7 +750,9 @@ app.on('ready', () => {
   // Order-history import: the source of truth for session P&L and fees.
   const importSettings = getSettings();
   orderImport = new OrderImportWatcher({
-    folder:    importSettings.orderImportFolder,
+    // The env override exists so the watcher can be pointed at a scratch folder
+    // for testing without editing the real settings file.
+    folder:    process.env.TVCM_ORDER_IMPORT_FOLDER || importSettings.orderImportFolder,
     statePath: path.join(app.getPath('userData'), 'order-import.json'),
     onChange:  (state) => {
       mainWindow?.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
@@ -780,6 +793,8 @@ app.on('ready', () => {
   );
 
   maybeAutostartScheduler();
+
+  maybeShowPanel();
 
   // IPC: on-demand analysis (awaitable; status updates via callback)
   ipcMain.handle(IPC.ANALYZE_RUN, async () => {

@@ -192,6 +192,37 @@ const SettingsPanel: React.FC = () => {
 
       {/* Fees */}
       <div className="settings-section">
+        <div className="settings-section-title">Order history import</div>
+        <div className="settings-row">
+          <span className="settings-label">Watch for exports</span>
+          <SettingsToggle
+            checked={settings.orderImportEnabled ?? true}
+            onChange={v => update({ orderImportEnabled: v })}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Export folder</span>
+          <input
+            type="text"
+            className="settings-input"
+            placeholder="~/Downloads"
+            value={settings.orderImportFolder ?? ''}
+            onChange={e => update({ orderImportFolder: e.target.value })}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Stale warning (min)</span>
+          <input
+            type="number"
+            className="settings-input settings-input-sm"
+            value={settings.orderImportStaleMinutes ?? 30}
+            step={5}
+            min={0}
+            max={600}
+            onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v) && v >= 0) update({ orderImportStaleMinutes: v }); }}
+          />
+        </div>
+
         <div className="settings-section-title">Fees (MES / AMP)</div>
         <div className="settings-row">
           <span className="settings-label">Subtract commissions</span>
