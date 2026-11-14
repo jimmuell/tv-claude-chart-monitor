@@ -154,3 +154,54 @@ test('the tooltip marks a stale import', () => {
   const t = trayTooltip(state({ importedAt: FRI_OPEN - 45 * MIN }), { now: FRI_OPEN });
   assert.ok(t.includes('— stale'), t);
 });
+
+// ── Colour, for the number-only menu bar ──────────────────────────────────
+test('a gain is wrapped in green, a loss in red', () => {
+  const green = tt.trayTitleColoured(state({ net: 896.65 }), { now: FRI_OPEN });
+  const red   = tt.trayTitleColoured(state({ net: -810.49 }), { now: FRI_OPEN });
+  assert.ok(green.startsWith(tt.ANSI.green), 'a gain should be green');
+  assert.ok(red.startsWith(tt.ANSI.red), 'a loss should be red');
+  assert.ok(green.endsWith(tt.ANSI.reset));
+  assert.ok(red.endsWith(tt.ANSI.reset));
+});
+
+test('colour never changes what the number says', () => {
+  for (const n of [896.65, -810.49, 0, -0.004, 1234.5]) {
+    const s = state({ net: n });
+    assert.strictEqual(tt.stripAnsi(tt.trayTitleColoured(s, { now: FRI_OPEN })), tt.trayTitle(s, { now: FRI_OPEN }));
+  }
+});
+
+test('a flat day is left uncoloured rather than painted green', () => {
+  const t = tt.trayTitleColoured(state({ net: 0 }), { now: FRI_OPEN });
+  assert.strictEqual(t, '+$0.00');
+  assert.strictEqual(tt.ansiFor(0), '');
+});
+
+test('the no-data title carries no colour escapes at all', () => {
+  const t = tt.trayTitleColoured(null, { now: FRI_OPEN });
+  assert.strictEqual(t, 'P&L —');
+  assert.strictEqual(tt.stripAnsi(t), t);
+});
+
+test('the stale marker survives colouring', () => {
+  const t = tt.trayTitleColoured(state({ importedAt: FRI_OPEN - 45 * MIN }), { now: FRI_OPEN });
+  assert.ok(tt.stripAnsi(t).endsWith(' ⚠'), tt.stripAnsi(t));
+});
+
+test('the title is never empty, in any state — an empty tray cannot be clicked', () => {
+  const cases = [null, undefined, {}, state({ session: false }), state({ net: 0 }), state({ net: -1 })];
+  for (const s of cases) {
+    for (const fn of [tt.trayTitle, tt.trayTitleColoured]) {
+      const out = fn(s, { now: FRI_OPEN });
+      assert.ok(typeof out === 'string' && tt.stripAnsi(out).trim().length > 0,
+        `empty title for ${JSON.stringify(s)}`);
+    }
+  }
+});
+
+test('stripAnsi survives nothing and non-strings', () => {
+  assert.strictEqual(tt.stripAnsi(null), '');
+  assert.strictEqual(tt.stripAnsi(undefined), '');
+  assert.strictEqual(tt.stripAnsi('plain'), 'plain');
+});

@@ -117,41 +117,51 @@ function debounceSave(win: BrowserWindow): void {
 
 // ── Context menu ──────────────────────────────────────────────────────────
 
+const { trayMenuTemplate } = sharedModule('tray-menu.js') as {
+  trayMenuTemplate: (s: { panelVisible: boolean; alwaysOnTop: boolean }) => TrayMenuItem[];
+};
+
+interface TrayMenuItem {
+  id?: string; label?: string; type?: string; checked?: boolean; submenu?: TrayMenuItem[];
+}
+
+/** What each tray menu id does. The template itself knows only labels and nesting. */
+function trayMenuActions(): Record<string, (checked: boolean) => void> {
+  return {
+    togglePanel:   () => toggleWindow(),
+    refreshNow:    () => scheduler?.triggerNow(),
+    alwaysOnTop:   (checked) => {
+      mainWindow?.setAlwaysOnTop(checked, 'floating');
+      if (mainWindow) saveState(mainWindow);
+      rebuildMenu();
+    },
+    pnlWindow:     () => openPnlWindow(),
+    openJournal:   () => { void shell.openExternal('http://localhost:3001'); },
+    openLogFolder: () => { void shell.openPath(logDir()); },
+    quit:          () => { isQuitting = true; app.quit(); },
+  };
+}
+
+/** Turns the pure template into an Electron menu by attaching each id's action. */
+function toElectronTemplate(items: TrayMenuItem[], actions: Record<string, (checked: boolean) => void>): Electron.MenuItemConstructorOptions[] {
+  return items.map((item) => {
+    if (item.type === 'separator') return { type: 'separator' as const };
+    const out: Electron.MenuItemConstructorOptions = { label: item.label };
+    if (item.type === 'checkbox') { out.type = 'checkbox'; out.checked = item.checked; }
+    if (item.submenu) out.submenu = toElectronTemplate(item.submenu, actions);
+    const action = item.id ? actions[item.id] : undefined;
+    if (action) out.click = (mi) => action(!!mi.checked);
+    return out;
+  });
+}
+
 function rebuildMenu(): void {
   if (!tray || !mainWindow) return;
-  const visible = mainWindow.isVisible();
-  tray.setContextMenu(Menu.buildFromTemplate([
-    {
-      label: visible ? 'Hide Panel' : 'Show Panel',
-      click: () => toggleWindow(),
-    },
-    {
-      label: 'Refresh Now',
-      click: () => scheduler?.triggerNow(),
-    },
-    { type: 'separator' },
-    {
-      label: 'Always on Top',
-      type: 'checkbox',
-      checked: mainWindow.isAlwaysOnTop(),
-      click: (item) => {
-        mainWindow?.setAlwaysOnTop(item.checked, 'floating');
-        if (mainWindow) saveState(mainWindow);
-        rebuildMenu();
-      },
-    },
-    { type: 'separator' },
-    {
-      label: 'Open Journal',
-      click: () => shell.openExternal('http://localhost:3001'),
-    },
-    {
-      label: 'Open Log Folder',
-      click: () => { void shell.openPath(logDir()); },
-    },
-    { type: 'separator' },
-    { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
-  ]));
+  const template = trayMenuTemplate({
+    panelVisible: mainWindow.isVisible(),
+    alwaysOnTop:  mainWindow.isAlwaysOnTop(),
+  });
+  tray.setContextMenu(Menu.buildFromTemplate(toElectronTemplate(template, trayMenuActions())));
 }
 
 
@@ -607,9 +617,9 @@ function autoDrawResult(result: AnalysisResult): void {
 
 }
 
-const { trayTitle, trayTooltip } = sharedModule('tray-title.js') as {
-  trayTitle:   (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
-  trayTooltip: (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
+const { trayTitleColoured, trayTooltip } = sharedModule('tray-title.js') as {
+  trayTitleColoured: (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
+  trayTooltip:       (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
 };
 
 /** Repaints the menu-bar title and tooltip from the latest import state. */
@@ -618,7 +628,8 @@ function refreshTrayTitle(): void {
   const state = orderImport?.getState() ?? null;
   const staleMinutes = getSettings().orderImportStaleMinutes ?? 30;
   try {
-    tray.setTitle(trayTitle(state, { staleMinutes }));
+    // monospacedDigit stops the title's width jittering as the number changes.
+    tray.setTitle(trayTitleColoured(state, { staleMinutes }), { fontType: 'monospacedDigit' });
     tray.setToolTip(trayTooltip(state, { staleMinutes }));
   } catch (err) {
     console.error('[tray] TVCM-OI-TITLE: could not set the menu-bar title —', (err as Error).message);
@@ -677,12 +688,13 @@ app.on('ready', () => {
   app.dock?.hide();
 
   // Tray
-  const icon = nativeImage.createFromPath(
-    path.join(app.getAppPath(), 'assets', 'iconTemplate.png')
-  );
-  icon.setTemplateImage(true);
-  tray = new Tray(icon);
+  // No icon: macOS always draws a status item's title to the RIGHT of its image, and
+  // Electron's TitleOptions has no positioning option, so the only way to put the
+  // number first is to have no image at all. refreshTrayTitle() guarantees the title
+  // is never empty, which is what keeps the item visible and clickable.
+  tray = new Tray(nativeImage.createEmpty());
   tray.setToolTip('Trading Analyzer');
+  refreshTrayTitle();
 
   // Window
   const state = loadState();
