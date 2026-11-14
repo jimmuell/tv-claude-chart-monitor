@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { liveSafetyBanner } from '../shared/live-safety';
 import ErrorBoundary from './ErrorBoundary';
-import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult, AutoTradeStatus, OrderImportState } from '../shared/types';
+import type { AnalysisResult, CommentaryResult, SetupVerdict, KeyLevel, LevelAnnotation, HighestProbabilityTrade, PnlSnapshot, CandlestickPattern, AlertCreatePayload, AlertCreateResult, AutoTradeStatus } from '../shared/types';
 import { parsePrice } from '../shared/utils';
 import SettingsPanel from './SettingsPanel';
 
@@ -244,126 +244,6 @@ function formatAnalysis(result: AnalysisResult): string {
 
   return lines.join('\n');
 }
-
-// ── PnlBar ────────────────────────────────────────────────────────────────
-
-function pnlColor(net: number): string {
-  if (net > 5)  return 'var(--accent)';
-  if (net < -5) return 'var(--bearish)';
-  return '#f59e0b';
-}
-
-function fmtDollar(n: number): string {
-  const abs  = Math.abs(n).toFixed(2);
-  const sign = n < 0 ? '-' : n > 0 ? '+' : '';
-  return `${sign}$${abs}`;
-}
-
-/** The import time as a short Chicago clock reading, e.g. "9:41 AM CT". */
-function fmtImportTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString('en-US',
-    { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' }) + ' CT';
-}
-
-/**
- * The session P&L bar. Everything here comes from the Order history import, which
- * is the only source that knows real contract counts — the trading panel's DOM
- * reports round trips without contract size, so fees derived from it were ~5x low
- * for a 5-lot trader. When there is no import, the bar says so instead of showing
- * zeros that look like a flat day.
- */
-const PnlBar: React.FC<{ state: OrderImportState; expanded: boolean; onToggle: () => void }> = ({
-  state, expanded, onToggle,
-}) => {
-  const s = state.session;
-
-  if (!s) {
-    return (
-      <div className="pnl-bar pnl-bar-empty" onClick={onToggle} role="button">
-        <span className="pnl-unavailable">
-          {state.errorCode
-            ? `Last import failed — ${state.errorCode}`
-            : 'No order-history import yet — export Order History from TradingView'}
-        </span>
-        {expanded && (
-          <div className="pnl-breakdown">
-            <div className="pnl-bd-row"><span>Watching</span><span>{state.watchFolder ?? '—'}</span></div>
-            {state.errorMessage && <div className="pnl-bd-row"><span>Reason</span><span>{state.errorMessage}</span></div>}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  const netColor = pnlColor(s.netPnl);
-
-  return (
-    <div className="pnl-bar" onClick={onToggle} role="button" title="Click to expand the import details">
-      <div className="pnl-row1">
-        <span className="pnl-net" style={{ color: netColor }}>
-          Net&nbsp;<strong>{fmtDollar(s.netPnl)}</strong>
-        </span>
-        <span className="pnl-gross">Gross&nbsp;{fmtDollar(s.grossPnl)}</span>
-        <span className="pnl-fees">Fees&nbsp;${s.fees.toFixed(2)}</span>
-      </div>
-      <div className="pnl-row2">
-        <span className="pnl-trades">{s.contractSides}&nbsp;sides&nbsp;({s.roundTrips}&nbsp;RT)</span>
-        {s.openPositionAtEnd !== 0 && (
-          <>
-            <span className="pnl-sep">│</span>
-            <span className="pnl-unreal" style={{ color: pnlColor(s.openPositionAtEnd) }}>
-              Open&nbsp;{s.openPositionAtEnd > 0 ? '+' : ''}{s.openPositionAtEnd}
-            </span>
-          </>
-        )}
-        <span className="pnl-sep">│</span>
-        <span className="pnl-account-type">
-          {state.isFallback ? `${s.sessionDate} (last session)` : s.sessionDate}
-        </span>
-        {state.importedAt != null && (
-          <>
-            <span className="pnl-sep">│</span>
-            <span className="pnl-be">as of {fmtImportTime(state.importedAt)}</span>
-          </>
-        )}
-      </div>
-      {expanded && (
-        <div className="pnl-breakdown">
-          <div className="pnl-bd-row">
-            <span>Bought / sold</span>
-            <span>{s.buys} / {s.sells} contracts</span>
-          </div>
-          <div className="pnl-bd-row">
-            <span>Avg buy / sell</span>
-            <span>{s.avgBuy?.toFixed(4) ?? '—'} / {s.avgSell?.toFixed(4) ?? '—'}</span>
-          </div>
-          <div className="pnl-bd-row">
-            <span>Fees ({s.contractSides} sides)</span>
-            <span>${s.fees.toFixed(2)}</span>
-          </div>
-          <div className="pnl-bd-row pnl-bd-total">
-            <span>Net</span>
-            <span>{fmtDollar(s.netPnl)}</span>
-          </div>
-          <div className="pnl-bd-row">
-            <span>Source</span>
-            <span>{state.fileName ?? '—'}</span>
-          </div>
-          <div className="pnl-bd-row">
-            <span>Fills in file</span>
-            <span>{state.fillCount}{state.skippedRows > 0 ? ` (${state.skippedRows} unreadable)` : ''}</span>
-          </div>
-          {state.errorCode && (
-            <div className="pnl-bd-row">
-              <span>Last import</span>
-              <span>failed — {state.errorCode}</span>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 // ── CommentaryCard ─────────────────────────────────────────────────────────
 
@@ -783,12 +663,9 @@ const App: React.FC = () => {
   const [isAnnotationStale, setIsAnnotationStale] = useState(false);
   const [tpDrawn, setTpDrawn]                 = useState(false);
   const [tpPending, setTpPending]             = useState(false);
-  const [pnlImport, setPnlImport]             = useState<OrderImportState | null>(null);
-  // Kept only for accountType, which drives the live-money safety banner. The P&L
-  // numbers come from the import; the trade recorder is unchanged.
+  // Kept only for accountType, which drives the live-money safety banner. P&L itself
+  // lives in the Order History & P&L window now.
   const [pnlSnap, setPnlSnap]                 = useState<PnlSnapshot | null>(null);
-  const [pnlExpanded, setPnlExpanded]         = useState(false);
-  const [pnlVisible, setPnlVisible]           = useState(true);
   const countdownRef                          = useRef<ReturnType<typeof setInterval> | null>(null);
   const copiedTimerRef                        = useRef<ReturnType<typeof setTimeout> | null>(null);
   const annotateErrTimerRef                   = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -907,23 +784,19 @@ const App: React.FC = () => {
 
     const unsubNextTick = window.api.onNextTick((_nextMs) => { /* barCloseMs drives countdown */ });
 
-    const unsubPnl = window.api.onOrderImportUpdate((state) => { setPnlImport(state); });
     const unsubAcct = window.api.onPnlUpdate((snap) => { setPnlSnap(snap); });
 
     const unsubAutoTrade = window.api.onAutoTradeStatus((status) => { setAutoTradeStatus(status); });
 
-    // Fetch initial P&L snapshot and pnlVisible setting
-    window.api.getOrderImport().then(setPnlImport).catch(() => {});
+    // accountType only; the P&L numbers live in the Order History & P&L window.
     window.api.getPnl().then(setPnlSnap).catch(() => {});
     window.api.getSettings().then(s => {
-      setPnlVisible(s.pnlVisible ?? true);
     }).catch(() => {});
 
     return () => {
       unsubStatus();
       unsubAnalysis();
       unsubNextTick();
-      unsubPnl();
       unsubAcct();
       unsubAutoTrade();
     };
@@ -956,8 +829,7 @@ const App: React.FC = () => {
         setPersistLevels(s.persistLevels);
         persistLevelsRef.current = s.persistLevels;
         if (!s.persistLevels) setIsAnnotationStale(false);
-        setPnlVisible(s.pnlVisible ?? true);
-        setAutoTrade(s.autoTrade);
+          setAutoTrade(s.autoTrade);
         setAutoTradeTestMode(s.autoTradeTestMode);
         setAutoTradeStopDollars(s.autoTradeStopDollars ?? 15);
         setAutoTradeTargetDollars(s.autoTradeTargetDollars ?? 30);
@@ -1215,29 +1087,15 @@ const App: React.FC = () => {
         </div>
       );
     }
-    // The P&L bar comes from the order-history import, not from the analysis, so
-    // it shows in every state — a trader should not have to run an analysis to
-    // find out where the day stands.
-    const pnlBarNode = pnlVisible && pnlImport ? (
-      <ErrorBoundary section="P&L bar">
-        <PnlBar
-          state={pnlImport}
-          expanded={pnlExpanded}
-          onToggle={() => setPnlExpanded(v => !v)}
-        />
-      </ErrorBoundary>
-    ) : null;
-
     if (uiStatus === 'loading') {
-      return <div className="result-body-wrap">{pnlBarNode}<div className="body"><p className="loading-text">{loadingMessage}</p></div></div>;
+      return <div className="body"><p className="loading-text">{loadingMessage}</p></div>;
     }
     if (uiStatus === 'error') {
-      return <div className="result-body-wrap">{pnlBarNode}<div className="body"><p className="error-text">{errorMessage}</p></div></div>;
+      return <div className="body"><p className="error-text">{errorMessage}</p></div>;
     }
     if (uiStatus === 'complete' && result) {
       return (
         <div className="result-body-wrap">
-          {pnlBarNode}
           <div className="result-body">
             <ErrorBoundary section="analysis card">
             <CommentaryCard
@@ -1272,12 +1130,7 @@ const App: React.FC = () => {
         </div>
       );
     }
-    return (
-      <div className="result-body-wrap">
-        {pnlBarNode}
-        <div className="body"><p className="placeholder-text">No analysis yet. Click refresh to capture.</p></div>
-      </div>
-    );
+    return <div className="body"><p className="placeholder-text">No analysis yet. Click refresh to capture.</p></div>;
   };
 
   return (

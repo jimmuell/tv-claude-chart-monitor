@@ -1304,66 +1304,6 @@ body {
   margin-top: 8px;
 }
 
-/* ── P&L bar ──────────────────────────────────────────────────────────────── */
-
-.pnl-bar {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 7px 12px 6px;
-  cursor: pointer;
-  user-select: none;
-  flex-shrink: 0;
-}
-.pnl-bar:hover { background: #2a2f42; }
-
-.pnl-unavailable {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.pnl-row1, .pnl-row2 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.pnl-row2 { margin-top: 3px; }
-
-.pnl-net { font-size: 13px; }
-.pnl-net strong { font-weight: 700; }
-
-.pnl-gross, .pnl-fees, .pnl-trades, .pnl-be, .pnl-unreal {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.pnl-sep { font-size: 11px; color: var(--border); }
-.pnl-account-type {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.pnl-breakdown {
-  margin-top: 7px;
-  border-top: 1px solid var(--border);
-  padding-top: 6px;
-}
-.pnl-bd-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin-bottom: 3px;
-}
-.pnl-bd-total {
-  color: var(--text-primary);
-  font-weight: 600;
-  border-top: 1px solid var(--border);
-  padding-top: 4px;
-  margin-top: 2px;
-}
-
 /* Live-money safety banner — the app's answer to "can this place an order?" */
 .live-safety {
   font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;

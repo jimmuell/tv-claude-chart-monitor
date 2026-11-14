@@ -1,4 +1,4 @@
-import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, AlertCreatePayload, AlertCreateResult, AutoTradeAttempt, AutoTradeStatus, OrderImportState } from '../shared/types';
+import type { AnalysisResult, AnalysisStatus, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, AlertCreatePayload, AlertCreateResult, AutoTradeAttempt, AutoTradeStatus } from '../shared/types';
 
 declare global {
   interface Window {
@@ -22,9 +22,6 @@ declare global {
       clearTradePlan(): Promise<void>;
       getPnl(): Promise<PnlSnapshot>;
       onPnlUpdate(cb: (snapshot: PnlSnapshot) => void): () => void;
-      getOrderImport(): Promise<OrderImportState>;
-      onOrderImportUpdate(cb: (state: OrderImportState) => void): () => void;
-      rescanOrderImport(): Promise<OrderImportState>;
       exportToDrive(): Promise<{ filePath?: string; cancelled?: boolean }>;
       writePatternMarkers(markers: import('../shared/types').PatternMarker[]): Promise<void>;
       createAlert(payload: AlertCreatePayload): Promise<AlertCreateResult>;

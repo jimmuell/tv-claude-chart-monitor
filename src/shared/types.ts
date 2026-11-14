@@ -42,7 +42,6 @@ export const IPC = {
   LOG_RENDERER:              'log:renderer',
   ORDER_IMPORT_GET:          'orderImport:get',
   ORDER_IMPORT_PUSH:         'orderImport:push',
-  ORDER_IMPORT_RESCAN:       'orderImport:rescan',
   ORDER_IMPORT_SESSIONS:     'orderImport:sessions',
   ORDER_IMPORT_DETAIL:       'orderImport:detail',
 } as const;
@@ -312,7 +311,7 @@ export interface AppSettings {
   feeDataMonthly:      number;   // $/month, default 0 — AMP bills none; excluded from net
   feeTradingDays:      number;   // trading days/month, default 21 (only amortises feeDataMonthly)
   subtractCommissions: boolean;  // deduct commissions from pnl_net; default false (off for paper trading)
-  pnlVisible:          boolean;  // show P&L bar
+  pnlVisible:          boolean;  // legacy: the panel's P&L bar is gone; kept so old settings.json still parses
   // Order-history import (the source of truth for P&L and fees)
   orderImportEnabled:       boolean;  // watch for exports at all; default true
   orderImportFolder:        string;   // '' means ~/Downloads

@@ -947,11 +947,6 @@ app.on('ready', () => {
   // IPC: P&L
   ipcMain.handle(IPC.PNL_GET, () => pnlTracker?.getSnapshot() ?? null);
   ipcMain.handle(IPC.ORDER_IMPORT_GET, () => orderImport?.getState() ?? null);
-  ipcMain.handle(IPC.ORDER_IMPORT_RESCAN, async () => {
-    await orderImport?.scanOnce();
-    refreshTrayTitle();
-    return orderImport?.getState() ?? null;
-  });
   ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => orderImport?.listSessions() ?? []);
   ipcMain.handle(IPC.ORDER_IMPORT_DETAIL, (_e, sessionDate: string) =>
     orderImport?.getSessionDetail(sessionDate) ?? { sessionDate, session: null, trades: [], fills: [], boundary: null });

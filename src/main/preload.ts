@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, PatternMarker, AlertCreatePayload, AlertCreateResult, AutoTradeAttempt, AutoTradeStatus, OrderImportState } from '../shared/types';
+import { IPC, AnalysisResult, LevelAnnotation, AppSettings, KeyStatus, PnlSnapshot, PatternMarker, AlertCreatePayload, AlertCreateResult, AutoTradeAttempt, AutoTradeStatus } from '../shared/types';
 
 contextBridge.exposeInMainWorld('api', {
   requestAnalysis: () => ipcRenderer.invoke(IPC.ANALYZE_RUN),
@@ -51,15 +51,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on(IPC.PNL_PUSH, handler);
     return () => ipcRenderer.removeListener(IPC.PNL_PUSH, handler);
   },
-  getOrderImport: (): Promise<OrderImportState> =>
-    ipcRenderer.invoke(IPC.ORDER_IMPORT_GET),
-  onOrderImportUpdate: (callback: (state: OrderImportState) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: OrderImportState) => callback(state);
-    ipcRenderer.on(IPC.ORDER_IMPORT_PUSH, handler);
-    return () => ipcRenderer.removeListener(IPC.ORDER_IMPORT_PUSH, handler);
-  },
-  rescanOrderImport: (): Promise<OrderImportState> =>
-    ipcRenderer.invoke(IPC.ORDER_IMPORT_RESCAN),
   exportToDrive: (): Promise<{ filePath?: string; cancelled?: boolean }> =>
     ipcRenderer.invoke(IPC.GDRIVE_EXPORT),
   writePatternMarkers: (markers: PatternMarker[]): Promise<void> =>

@@ -181,13 +181,6 @@ const SettingsPanel: React.FC = () => {
             </div>
           </>
         )}
-        <div className="settings-row">
-          <span className="settings-label">P&amp;L Bar</span>
-          <SettingsToggle
-            checked={settings.pnlVisible}
-            onChange={v => update({ pnlVisible: v })}
-          />
-        </div>
       </div>
 
       {/* Fees */}
