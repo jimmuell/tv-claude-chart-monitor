@@ -40,6 +40,9 @@ export const IPC = {
   COOLDOWN_STATUS:           'cooldown:status',
   TRADE_WINDOW_STATUS:       'tradeWindow:status',
   LOG_RENDERER:              'log:renderer',
+  ORDER_IMPORT_GET:          'orderImport:get',
+  ORDER_IMPORT_PUSH:         'orderImport:push',
+  ORDER_IMPORT_RESCAN:       'orderImport:rescan',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -174,6 +177,45 @@ export interface PnlSnapshot {
   message?:        string;   // e.g. "trading panel not open"
 }
 
+/** One session's numbers as computed from a TradingView Order history export. */
+export interface ImportedSession {
+  sessionDate:         string;  // 'YYYY-MM-DD', the day the 17:00→17:00 session ends
+  fillCount:           number;
+  buys:                number;  // contracts bought
+  sells:               number;  // contracts sold
+  avgBuy:              number | null;
+  avgSell:             number | null;
+  grossPnl:            number;  // realized, FIFO
+  contractSides:       number;  // buys + sells
+  roundTrips:          number;  // contractSides / 2, for display only
+  fees:                number;
+  netPnl:              number;
+  openPositionAtStart: number;
+  openPositionAtEnd:   number;  // signed contracts still open when the session ended
+}
+
+/** The state of the order-history import: what was read, when, and whether it worked. */
+export interface OrderImportState {
+  /** The session being shown — the current one, or the newest in the file when the market is shut. */
+  session:        ImportedSession | null;
+  /** True when `session` is an earlier session shown because the current one has no fills. */
+  isFallback:     boolean;
+  /** The session date "now" belongs to, regardless of whether it has any fills. */
+  currentSession: string | null;
+  importedAt:     number | null;   // epoch ms of the last SUCCESSFUL import
+  fileName:       string | null;
+  filePath:       string | null;
+  fillCount:      number;          // fills in the whole file
+  skippedRows:    number;
+  sessionCount:   number;
+  /** Set when the most recent attempt failed; the numbers above are then the last good ones. */
+  errorCode:      string | null;
+  errorMessage:   string | null;
+  /** Epoch ms of the last attempt, successful or not. */
+  lastAttemptAt:  number | null;
+  watchFolder:    string | null;
+}
+
 // ---------------------------------------------------------------------------
 // App settings — persisted to userData/settings.json
 // ---------------------------------------------------------------------------
@@ -204,6 +246,10 @@ export interface AppSettings {
   feeTradingDays:      number;   // trading days/month, default 21 (only amortises feeDataMonthly)
   subtractCommissions: boolean;  // deduct commissions from pnl_net; default false (off for paper trading)
   pnlVisible:          boolean;  // show P&L bar
+  // Order-history import (the source of truth for P&L and fees)
+  orderImportEnabled:       boolean;  // watch for exports at all; default true
+  orderImportFolder:        string;   // '' means ~/Downloads
+  orderImportStaleMinutes:  number;   // menu bar warns past this age while the market is open; default 30
   /** The rules lever. Applied AFTER analysis; blocked calls are saved and graded anyway. */
   rules:               TradingRules;
 }

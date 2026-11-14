@@ -26,6 +26,9 @@ const DEFAULTS: AppSettings = {
   feeTradingDays:        21,
   subtractCommissions:   false,
   pnlVisible:            true,
+  orderImportEnabled:      true,
+  orderImportFolder:       '',   // '' resolves to ~/Downloads
+  orderImportStaleMinutes: 30,
   // Default lever: the 08:30-11:00 Chicago window only, nothing blocked.
   rules: {
     enabled:          true,

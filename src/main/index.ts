@@ -8,6 +8,7 @@ import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, 
 import { notifyVerdict, resetNotifier, notifyProblem } from './notifier';
 import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './order-executor';
 import { PnlTracker } from './pnl-tracker';
+import { OrderImportWatcher } from './order-import';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
 import { TradeStore } from './trade-store';
@@ -15,7 +16,7 @@ import { analysisErrorPayload } from './status-payload';
 import { runStartupStep, startupFailureText, type StartupFailure } from './startup-guard';
 import { RecommendationStore } from './recommendation-store';
 import { GradeRunner } from './grade-runner';
-import type { AnalysisResult, PatternMarker, AlertCreatePayload, AutoTradeOutcome, AutoTradeStatus } from '../shared/types';
+import type { AnalysisResult, PatternMarker, AlertCreatePayload, AutoTradeOutcome, AutoTradeStatus, OrderImportState } from '../shared/types';
 import { Scheduler } from './scheduler';
 import { IPC } from '../shared/types';
 import { parsePrice } from '../shared/utils';
@@ -79,6 +80,7 @@ let scheduler:  Scheduler      | null = null;
 let lastResult: AnalysisResult | null = null;
 
 let pnlTracker:      PnlTracker     | null = null;
+let orderImport:     OrderImportWatcher | null = null;
 let tradeStore:      TradeStore     | null = null;
 let recStore:        RecommendationStore | null = null;
 let gradeRunner:     GradeRunner    | null = null;
@@ -714,6 +716,17 @@ app.on('ready', () => {
   );
   pnlTracker.start();
 
+  // Order-history import: the source of truth for session P&L and fees.
+  const importSettings = getSettings();
+  orderImport = new OrderImportWatcher({
+    folder:    importSettings.orderImportFolder,
+    statePath: path.join(app.getPath('userData'), 'order-import.json'),
+    onChange:  (state) => {
+      mainWindow?.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
+    },
+  });
+  if (importSettings.orderImportEnabled !== false) orderImport.start();
+
   // Scheduler
   scheduler = new Scheduler(
     (result) => {
@@ -799,6 +812,13 @@ app.on('ready', () => {
         scheduler.stop();
       }
     }
+    if ('orderImportFolder' in partial) {
+      orderImport?.setFolder(partial.orderImportFolder);
+      void orderImport?.scanOnce();
+    }
+    if ('orderImportEnabled' in partial) {
+      if (partial.orderImportEnabled) orderImport?.start(); else orderImport?.stop();
+    }
 
     return updated;
   });
@@ -811,6 +831,11 @@ app.on('ready', () => {
 
   // IPC: P&L
   ipcMain.handle(IPC.PNL_GET, () => pnlTracker?.getSnapshot() ?? null);
+  ipcMain.handle(IPC.ORDER_IMPORT_GET, () => orderImport?.getState() ?? null);
+  ipcMain.handle(IPC.ORDER_IMPORT_RESCAN, async () => {
+    await orderImport?.scanOnce();
+    return orderImport?.getState() ?? null;
+  });
 
   // IPC: trade plan bracket
   ipcMain.handle(IPC.ANNOTATE_TRADE_PLAN, async (_e, entry: number, stop: number, target: number) => {
@@ -924,5 +949,6 @@ app.on('ready', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   pnlTracker?.stop();
+  orderImport?.stop();
   void disconnect();
 });
