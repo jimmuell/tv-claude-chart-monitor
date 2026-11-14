@@ -1,9 +1,10 @@
 'use strict';
 
-// better-sqlite3 is rebuilt against Electron's ABI by the postinstall step, so a
-// plain `node --test` run cannot load it. These tests are NOT excluded — they run in
-// full under `npm run test:electron` (and `npm run test:all` runs both suites). The
-// skip below exists only so plain `npm test` stays green and says where to go.
+// better-sqlite3 is rebuilt against Electron's ABI by the postinstall step, so a plain
+// `node --test` run cannot load it. Files that need it are named *.electron.test.js:
+// `npm test` excludes that pattern and `npm run test:electron` runs exactly it, so the
+// split is by filename rather than by a hand-maintained list. The guard below is the
+// safety net for someone running one of those files directly with node.
 
 /** Why better-sqlite3 cannot be loaded under this runtime, or null when it can. */
 function sqliteUnavailableReason() {

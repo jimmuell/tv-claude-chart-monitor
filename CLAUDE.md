@@ -11,13 +11,16 @@ npm run package  # build then package with electron-builder (macOS DMG)
 ```
 
 Tests. `npm test` cannot load `better-sqlite3` (postinstall rebuilds it against
-Electron's ABI), so the store tests run under Electron instead — they are skipped, not
-excluded:
+Electron's ABI), so those tests run under Electron instead. The split is by **filename**:
+a file needing a real database is named `*.electron.test.js`, which `npm test` excludes
+and `test:electron` globs — add one and it is picked up automatically.
 ```bash
-npm test           # everything that runs under plain node
-npm run test:electron  # the better-sqlite3 tests (trade-store, pnl-tracker)
+npm test               # everything that runs under plain node
+npm run test:electron  # tests/main/*.electron.test.js, under Electron's ABI
 npm run test:all       # both
 ```
+Note: Electron 30 bundles Node 20, whose `--test` does not expand glob patterns, so
+`test:electron`'s pattern is left unquoted for the shell to expand.
 
 Type-check renderer only (Vite handles this at build time):
 ```bash
