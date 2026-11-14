@@ -4,8 +4,7 @@ import type {
 } from '../shared/types';
 
 // Display rules live outside the component tree so they can be tested without a DOM.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const view = require('../shared/pnl-view.js');
+import * as view from '../shared/pnl-view.mjs';
 
 type TabKey = 'summary' | 'trades' | 'fills' | 'days';
 
@@ -25,10 +24,8 @@ const Empty: React.FC<{ state: OrderImportState | null }> = ({ state }) => (
 
 /** The Summary tab: the session total leads, everything else explains it. */
 const Summary: React.FC<{ detail: SessionDetail; state: OrderImportState | null }> = ({ detail, state }) => {
-  const rows = view.summaryRows(detail, state) as Array<{
-    key: string; label: string; value: string; tone: string; headline?: boolean; note?: boolean;
-  }>;
-  const explanation = view.carriedExplanation(detail) as string | null;
+  const rows = view.summaryRows(detail, state);
+  const explanation = view.carriedExplanation(detail);
 
   return (
     <div className="summary">
@@ -50,6 +47,28 @@ const Summary: React.FC<{ detail: SessionDetail; state: OrderImportState | null 
 /** The Trades tab: one row per flat-to-flat trade; a click reveals that trade's fills. */
 const Trades: React.FC<{ detail: SessionDetail }> = ({ detail }) => {
   const [openId, setOpenId] = useState<number | null>(null);
+  const [cursor, setCursor] = useState(0);
+
+  // Arrow keys move the cursor and Enter opens a trade's fills, so the breakdown is
+  // reachable without a mouse — the same toggle a click runs.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || detail.trades.length === 0) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCursor(c => Math.min(detail.trades.length - 1, Math.max(0, c + (e.key === 'ArrowDown' ? 1 : -1))));
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        const t = detail.trades[cursor];
+        if (t) setOpenId(prev => (prev === t.id ? null : t.id));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detail.trades, cursor]);
+
+  useEffect(() => { setCursor(0); setOpenId(null); }, [detail.sessionDate]);
+
   if (detail.trades.length === 0) {
     return <div className="empty"><p>No trades closed in this session.</p></div>;
   }
@@ -63,13 +82,17 @@ const Trades: React.FC<{ detail: SessionDetail }> = ({ detail }) => {
         </tr>
       </thead>
       <tbody>
-        {detail.trades.map((t: ImportedTrade) => {
+        {detail.trades.map((t: ImportedTrade, idx: number) => {
           const r = view.tradeRow(t);
           const expanded = openId === t.id;
-          const fills = expanded ? (view.fillsForTrade(t, detail.fills) as ImportedFill[]) : [];
+          const atCursor = idx === cursor;
+          const fills: ImportedFill[] = expanded ? view.fillsForTrade(t, detail.fills) : [];
           return (
             <React.Fragment key={t.id}>
-              <tr className={`row${expanded ? ' expanded' : ''}`} onClick={() => setOpenId(expanded ? null : t.id)}>
+              <tr
+                className={`row${expanded ? ' expanded' : ''}${atCursor ? ' cursor' : ''}`}
+                onClick={() => { setCursor(idx); setOpenId(expanded ? null : t.id); }}
+              >
                 <td className="num">{r.id}</td>
                 <td>{r.time}{r.isOpen && <span className="tag open">OPEN</span>}{r.crosses && <span className="tag cross">CROSSES</span>}</td>
                 <td><span className={`dir ${r.direction}`}>{r.direction}</span></td>
@@ -213,6 +236,24 @@ export function App() {
     void window.pnlApi.getDetail(selected).then(d => { if (alive) setDetail(d); });
     return () => { alive = false; };
   }, [selected, state?.importedAt]);
+
+  /** Keyboard: Cmd-1..4 pick a tab, Cmd-[ / Cmd-] step through sessions. */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey) return;
+      const tabIndex = TABS.findIndex((_, i) => String(i + 1) === e.key);
+      if (tabIndex >= 0) { e.preventDefault(); setTab(TABS[tabIndex].key); return; }
+      if (e.key === '[' || e.key === ']') {
+        e.preventDefault();
+        const i = sessions.findIndex(x => x.sessionDate === selected);
+        // The list is newest first, so "]" (forward) means older.
+        const next = e.key === ']' ? i + 1 : i - 1;
+        if (next >= 0 && next < sessions.length) setSelected(sessions[next].sessionDate);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sessions, selected]);
 
   const hasData = !!(detail && detail.session);
 

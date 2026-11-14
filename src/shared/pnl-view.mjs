@@ -1,7 +1,8 @@
-'use strict';
-
 /**
  * Display rules for the Order History & P&L window.
+ *
+ * ESM on purpose: Vite serves source files to the window as native modules, so a
+ * CommonJS file here would arrive in the browser as unparsed text.
  *
  * Kept out of the React tree so the rules that matter can be tested without a DOM.
  * Two of them are not cosmetic:
@@ -14,7 +15,7 @@
  */
 
 /** Money to the cent with thousands separators and an explicit sign, e.g. "+$1,296.25". */
-function fmtMoney(value, opts) {
+export function fmtMoney(value, opts) {
   const signed = !opts || opts.signed !== false;
   const n = Number(value) || 0;
   const rounded = Math.round(n * 100) / 100;
@@ -24,7 +25,7 @@ function fmtMoney(value, opts) {
 }
 
 /** 'gain' above zero, 'loss' below, 'flat' at zero — the window's only colour decision. */
-function moneyClass(value) {
+export function moneyClass(value) {
   const rounded = Math.round((Number(value) || 0) * 100) / 100;
   if (rounded > 0) return 'gain';
   if (rounded < 0) return 'loss';
@@ -32,33 +33,33 @@ function moneyClass(value) {
 }
 
 /** The clock part of a "YYYY-MM-DD HH:MM:SS" fill time, which is already Chicago local. */
-function fmtClock(fillTime) {
+export function fmtClock(fillTime) {
   if (!fillTime) return '—';
   return String(fillTime).slice(11, 19) || '—';
 }
 
 /** A fill time as "MM-DD HH:MM:SS", used when a row can belong to the previous day. */
-function fmtStamp(fillTime) {
+export function fmtStamp(fillTime) {
   if (!fillTime) return '—';
   const s = String(fillTime);
   return `${s.slice(5, 10)} ${s.slice(11, 19)}`;
 }
 
 /** An import time as a short Chicago clock reading, e.g. "9:41 AM CT". */
-function fmtImportedAt(ms) {
+export function fmtImportedAt(ms) {
   if (ms == null) return '—';
   return new Date(ms).toLocaleTimeString('en-US',
     { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' }) + ' CT';
 }
 
 /** Contracts phrased both ways, because fees are per side and traders count round trips. */
-function fmtContracts(contractSides) {
+export function fmtContracts(contractSides) {
   const sides = Number(contractSides) || 0;
   return `${sides.toLocaleString('en-US')} sides (${(sides / 2).toLocaleString('en-US')} RT)`;
 }
 
 /** Why there is nothing to show, in the user's terms — never a zero. */
-function emptyMessage(state) {
+export function emptyMessage(state) {
   if (!state) return 'Waiting for the first import…';
   if (state.errorCode) return `Last import failed — ${state.errorCode}. Showing nothing rather than stale numbers.`;
   const where = state.watchFolder ? ` Watching ${state.watchFolder}.` : '';
@@ -70,7 +71,7 @@ function emptyMessage(state) {
  * only when a trade actually spanned 17:00, and per-trade cent rounding is never shown
  * as an accounting difference because it is not one.
  */
-function summaryRows(detail, state) {
+export function summaryRows(detail, state) {
   const s = detail && detail.session;
   if (!s) return [];
   const rows = [
@@ -102,21 +103,22 @@ function summaryRows(detail, state) {
  * The explanation under the carried line, naming which trades moved P&L across 17:00.
  * Returns null when nothing crossed, which is the normal day.
  */
-function carriedExplanation(detail) {
+export function carriedExplanation(detail) {
   const b = detail && detail.boundary;
   if (!b || b.boundaryNet === 0) return null;
   const parts = [];
   if (b.outboundTradeIds.length) {
-    parts.push(`counted here but realized earlier: trade${b.outboundTradeIds.length > 1 ? 's' : ''} #${b.outboundTradeIds.join(', #')}`);
+    parts.push(`trade${b.outboundTradeIds.length > 1 ? 's' : ''} #${b.outboundTradeIds.join(', #')} ${b.outboundTradeIds.length > 1 ? 'are' : 'is'} counted here but ${b.outboundTradeIds.length > 1 ? 'were' : 'was'} realized in an earlier session`);
   }
   if (b.inboundTradeIds.length) {
-    parts.push(`realized here but counted in a later session: trade${b.inboundTradeIds.length > 1 ? 's' : ''} #${b.inboundTradeIds.join(', #')}`);
+    parts.push(`trade${b.inboundTradeIds.length > 1 ? 's' : ''} #${b.inboundTradeIds.join(', #')} ${b.inboundTradeIds.length > 1 ? 'were' : 'was'} realized here but ${b.inboundTradeIds.length > 1 ? 'are' : 'is'} counted in a later session`);
   }
-  return `The session total above is what the statement shows. ${parts.join('; ')}.`;
+  const body = parts.join('; ');
+  return `The session total above is what the statement shows — ${body}.`;
 }
 
 /** One Trades-tab row, already formatted, so the component only places strings. */
-function tradeRow(t) {
+export function tradeRow(t) {
   return {
     id:        t.id,
     time:      `${fmtClock(t.openTime)} – ${t.closeTime ? fmtClock(t.closeTime) : 'open'}`,
@@ -133,12 +135,8 @@ function tradeRow(t) {
 }
 
 /** The fills belonging to one trade, matched on the order ids the trade recorded. */
-function fillsForTrade(trade, fills) {
+export function fillsForTrade(trade, fills) {
   const ids = new Set(trade.orderIds);
   return (fills || []).filter(f => ids.has(f.orderId));
 }
 
-module.exports = {
-  fmtMoney, moneyClass, fmtClock, fmtStamp, fmtImportedAt, fmtContracts,
-  emptyMessage, summaryRows, carriedExplanation, tradeRow, fillsForTrade,
-};

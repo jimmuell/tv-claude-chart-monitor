@@ -4,11 +4,17 @@
 // the headline must be the statement-matching session total, and "no import" must
 // never render as a zero.
 
-const test   = require('node:test');
+const { test, before } = require('node:test');
 const assert = require('node:assert');
 const path   = require('path');
+const url    = require('url');
 
-const v = require(path.join(__dirname, '../../src/shared/pnl-view.js'));
+// pnl-view is ESM (the window loads it natively through Vite), so it is imported
+// rather than required.
+let v;
+before(async () => {
+  v = await import(url.pathToFileURL(path.join(__dirname, '../../src/shared/pnl-view.mjs')).href);
+});
 
 /** A session summary shaped like the engine's, with overridable fields. */
 function session(over = {}) {
@@ -118,10 +124,12 @@ test('the carried line names the trades that moved the money', () => {
   assert.ok(note.includes('#58'), note);
   assert.ok(note.includes('counted in a later session'), note);
   assert.ok(note.includes('statement'), note);
+  assert.ok(!/\. [a-z]/.test(note), `sentence restarts in lower case: ${note}`);
 
   const out = v.carriedExplanation(detail({ boundary: boundary({ boundaryNet: 49.60, outboundTradeIds: [157] }) }));
   assert.ok(out.includes('#157'), out);
-  assert.ok(out.includes('realized earlier'), out);
+  assert.ok(out.includes('realized in an earlier session'), out);
+  assert.ok(!/\. [a-z]/.test(out), out);
 });
 
 test('per-trade cent rounding is never presented as a difference', () => {
