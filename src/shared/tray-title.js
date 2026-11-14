@@ -24,6 +24,13 @@ const NO_DATA_TITLE = 'P&L —';
 /** Appended when the import has gone stale during live trading. */
 const STALE_MARKER = ' ⚠';
 
+/**
+ * Prefixed when TVCM is running on a non-default userData profile. A test copy puts a
+ * second tray in the menu bar next to the real one, and three prompts running they were
+ * read as the same thing. This makes them impossible to confuse.
+ */
+const TEST_PREFIX = 'TEST ';
+
 const DEFAULT_STALE_MINUTES = 30;
 
 /**
@@ -71,11 +78,12 @@ function isStale(importedAt, now, staleMinutes) {
 function trayTitle(state, options) {
   const opts = options || {};
   const now = opts.now == null ? Date.now() : Number(opts.now);
+  const prefix = opts.isTestProfile ? TEST_PREFIX : '';
 
-  if (!state || !state.session || state.importedAt == null) return NO_DATA_TITLE;
+  if (!state || !state.session || state.importedAt == null) return prefix + NO_DATA_TITLE;
 
   const base = formatNet(state.session.netPnl);
-  return isStale(state.importedAt, now, opts.staleMinutes) ? base + STALE_MARKER : base;
+  return prefix + (isStale(state.importedAt, now, opts.staleMinutes) ? base + STALE_MARKER : base);
 }
 
 /**
@@ -101,23 +109,25 @@ function trayTooltip(state, options) {
   const opts = options || {};
   const now = opts.now == null ? Date.now() : Number(opts.now);
   if (!state || !state.session || state.importedAt == null) {
-    return 'Trading Analyzer — no order-history import yet';
+    return (opts.isTestProfile ? 'TEST PROFILE — ' : '') + 'Trading Analyzer — no order-history import yet';
   }
   const s = state.session;
   const when = new Date(state.importedAt).toLocaleTimeString('en-US',
     { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' });
-  const lines = [
+  const lines = [];
+  if (opts.isTestProfile) lines.push('TEST PROFILE — not your everyday TVCM');
+  lines.push(
     `Session ${s.sessionDate}${state.isFallback ? ' (last session with fills)' : ''}`,
     `Net ${formatNet(s.netPnl)}  ·  Gross ${formatNet(s.grossPnl)}  ·  Fees $${s.fees.toFixed(2)}`,
     `${s.contractSides} contract-sides (${s.roundTrips} RT)`,
     `Imported ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
-  ];
+  );
   if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
   if (state.errorCode) lines.push(`Last import failed: ${state.errorCode}`);
   return lines.join('\n');
 }
 
 module.exports = {
-  NO_DATA_TITLE, STALE_MARKER, DEFAULT_STALE_MINUTES, ANSI,
+  NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, DEFAULT_STALE_MINUTES, ANSI,
   formatNet, ansiFor, isStale, trayTitle, trayTitleColoured, stripAnsi, trayTooltip,
 };

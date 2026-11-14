@@ -644,9 +644,10 @@ function autoDrawResult(result: AnalysisResult): void {
 
 }
 
+type TrayTitleOpts = { now?: number; staleMinutes?: number; isTestProfile?: boolean };
 const { trayTitleColoured, trayTooltip } = sharedModule('tray-title.js') as {
-  trayTitleColoured: (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
-  trayTooltip:       (s: OrderImportState | null, o?: { now?: number; staleMinutes?: number }) => string;
+  trayTitleColoured: (s: OrderImportState | null, o?: TrayTitleOpts) => string;
+  trayTooltip:       (s: OrderImportState | null, o?: TrayTitleOpts) => string;
 };
 
 /** Repaints the menu-bar title and tooltip from the latest import state. */
@@ -654,10 +655,11 @@ function refreshTrayTitle(): void {
   if (!tray) return;
   const state = orderImport?.getState() ?? null;
   const staleMinutes = getSettings().orderImportStaleMinutes ?? 30;
+  const opts = { staleMinutes, isTestProfile: isTestProfile() };
   try {
     // monospacedDigit stops the title's width jittering as the number changes.
-    tray.setTitle(trayTitleColoured(state, { staleMinutes }), { fontType: 'monospacedDigit' });
-    tray.setToolTip(trayTooltip(state, { staleMinutes }));
+    tray.setTitle(trayTitleColoured(state, opts), { fontType: 'monospacedDigit' });
+    tray.setToolTip(trayTooltip(state, opts));
   } catch (err) {
     console.error('[tray] TVCM-OI-TITLE: could not set the menu-bar title —', (err as Error).message);
   }
@@ -735,6 +737,18 @@ async function confirmResetTradeRecorder(): Promise<void> {
 /** True only when the developer asked for DevTools with TVCM_DEVTOOLS=1. */
 function wantsDevTools(): boolean {
   return process.env.TVCM_DEVTOOLS === '1';
+}
+
+/**
+ * True when this copy is running on a userData profile that is not the everyday one —
+ * i.e. somebody passed --user-data-dir. The single-instance lock is per profile, so a
+ * test copy legitimately runs alongside the real one and puts a second tray in the menu
+ * bar; this is what lets the two be told apart at a glance.
+ */
+function isTestProfile(): boolean {
+  const actual = app.getPath('userData');
+  const everyday = path.join(app.getPath('appData'), app.getName());
+  return path.resolve(actual) !== path.resolve(everyday);
 }
 
 /**

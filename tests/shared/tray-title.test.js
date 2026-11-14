@@ -205,3 +205,54 @@ test('stripAnsi survives nothing and non-strings', () => {
   assert.strictEqual(tt.stripAnsi(undefined), '');
   assert.strictEqual(tt.stripAnsi('plain'), 'plain');
 });
+
+// ── TEST prefix for a non-default userData profile ────────────────────────
+// A test copy runs alongside the everyday one (the single-instance lock is per
+// profile) and puts a second tray in the menu bar. Three prompts running, the two
+// were read as the same thing; the prefix is what stops that.
+
+test('the everyday profile shows no prefix', () => {
+  assert.strictEqual(tt.trayTitle(state(), { now: FRI_OPEN }), '+$896.65');
+  assert.strictEqual(tt.trayTitle(state(), { now: FRI_OPEN, isTestProfile: false }), '+$896.65');
+});
+
+test('a test profile is prefixed with "TEST "', () => {
+  assert.strictEqual(tt.trayTitle(state(), { now: FRI_OPEN, isTestProfile: true }), 'TEST +$896.65');
+  assert.strictEqual(tt.TEST_PREFIX, 'TEST ');
+});
+
+test('the prefix applies to a loss and to the no-data dash too', () => {
+  assert.strictEqual(tt.trayTitle(state({ net: -810.49 }), { now: FRI_OPEN, isTestProfile: true }), 'TEST -$810.49');
+  assert.strictEqual(tt.trayTitle(null, { now: FRI_OPEN, isTestProfile: true }), 'TEST P&L —');
+  assert.strictEqual(tt.trayTitle(null, { now: FRI_OPEN }), 'P&L —');
+});
+
+test('the prefix survives the stale marker and the colour wrapper', () => {
+  const stale = tt.trayTitle(state({ importedAt: FRI_OPEN - 45 * MIN }), { now: FRI_OPEN, isTestProfile: true });
+  assert.strictEqual(stale, 'TEST +$896.65 ⚠');
+  const coloured = tt.trayTitleColoured(state(), { now: FRI_OPEN, isTestProfile: true });
+  assert.strictEqual(tt.stripAnsi(coloured), 'TEST +$896.65');
+});
+
+test('the prefix never produces an empty or ambiguous title', () => {
+  for (const s of [null, undefined, {}, state(), state({ net: 0 })]) {
+    const out = tt.trayTitle(s, { now: FRI_OPEN, isTestProfile: true });
+    assert.ok(out.startsWith('TEST '), `missing prefix: ${out}`);
+    assert.ok(out.length > 'TEST '.length, `nothing after the prefix: ${out}`);
+  }
+});
+
+test('the tooltip says which copy this is', () => {
+  const real = tt.trayTooltip(state(), { now: FRI_OPEN });
+  const test = tt.trayTooltip(state(), { now: FRI_OPEN, isTestProfile: true });
+  assert.ok(!/TEST PROFILE/.test(real), real);
+  assert.ok(test.startsWith('TEST PROFILE — not your everyday TVCM'), test);
+  assert.ok(test.includes('Net +$896.65'), 'the rest of the tooltip must survive');
+});
+
+test('the empty tooltip is labelled on a test profile too', () => {
+  assert.strictEqual(tt.trayTooltip(null, { now: FRI_OPEN, isTestProfile: true }),
+    'TEST PROFILE — Trading Analyzer — no order-history import yet');
+  assert.strictEqual(tt.trayTooltip(null, { now: FRI_OPEN }),
+    'Trading Analyzer — no order-history import yet');
+});
