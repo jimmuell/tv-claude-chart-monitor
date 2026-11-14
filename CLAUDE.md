@@ -27,6 +27,12 @@ node scripts/probe-account-fields.js  # reads accountSummaryField DOM selectors
 node scripts/test-llm-provider.js     # smoke-tests the configured LLM provider
 ```
 
+Order-history P&L (no CDP, no build — reads a TradingView CSV export):
+```bash
+node scripts/reconcile-session.js <csv> <YYYY-MM-DD>   # one session's P&L vs a statement
+node scripts/reconcile-session.js <csv> --all          # every session in the file
+```
+
 ## Prerequisites
 
 **TradingView Desktop** must be launched with the CDP debugging port enabled:
@@ -114,6 +120,7 @@ Two-process Electron app with no dock icon (macOS menubar only).
 | `filter.js` | Cooldown / zone-proximity filter; `fireOn` gates control which event types trigger |
 | `detectors/swing-pivots.js` | 3-bar pivot cluster detector; returns `SuggestedLevel[]` with `touchCount`, `strength`, etc. |
 | `strategies/orb.js` | Opening Range Breakout strategy; `computeOrbState()` returns phase, breakouts, signal, levels, zones |
+| `order-history.js` | Parses a TradingView Order history CSV into per-session realized P&L, contract-sides and fees. Session = 17:00→17:00 America/Chicago named for the day it ends; counts any row with `Fill quantity > 0` regardless of Status; dedupes by Order ID; FIFO lot queue carried across sessions. Pure — no Electron, no CDP |
 | `utils.ts` | `parsePrice()` — extracts first numeric value from a free-text price string |
 
 ## Annotator: Pine indicator slot layout
