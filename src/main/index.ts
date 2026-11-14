@@ -138,8 +138,8 @@ function trayMenuActions(): Record<string, (checked: boolean) => void> {
       rebuildMenu();
     },
     pnlWindow:     () => openPnlWindow(),
-    openJournal:   () => { void shell.openExternal('http://localhost:3001'); },
     openLogFolder: () => { void shell.openPath(logDir()); },
+    resetRecorder: () => { void confirmResetTradeRecorder(); },
     quit:          () => { isQuitting = true; app.quit(); },
   };
 }
@@ -679,6 +679,34 @@ function openPnlWindow(): void {
   pnlWindow.on('closed',  () => { pnlWindow = null; });
 }
 
+/**
+ * Wipes the trade recorder's `trades` table, behind a confirmation. It calls the same
+ * clearAll() the journal's reset used, which drops and rebuilds ONLY that table —
+ * recommendations and lessons are untouched, and the dialog says so.
+ */
+async function confirmResetTradeRecorder(): Promise<void> {
+  const count = tradeStore?.getAll().length ?? 0;
+  const { response } = await dialog.showMessageBox({
+    type:      'warning',
+    buttons:   ['Cancel', 'Delete trade records'],
+    defaultId: 0,
+    cancelId:  0,
+    title:     'Reset trade recorder data',
+    message:   `Delete all ${count} recorded trade${count === 1 ? '' : 's'}?`,
+    detail:    'This clears the trade recorder only. Your recommendations and lessons are '
+             + 'not touched, and your order-history P&L comes from the TradingView export, '
+             + 'so it is unaffected. This cannot be undone.',
+  });
+  if (response !== 1) return;
+  try {
+    tradeStore?.clearAll();
+    console.log('[index] trade recorder reset by the user — trades table rebuilt');
+  } catch (err) {
+    console.error('[index] TVCM-RESET-FAILED:', (err as Error).message);
+    dialog.showErrorBox('Reset failed', (err as Error).message);
+  }
+}
+
 /** True only when the developer asked for DevTools with TVCM_DEVTOOLS=1. */
 function wantsDevTools(): boolean {
   return process.env.TVCM_DEVTOOLS === '1';
@@ -757,7 +785,8 @@ app.on('ready', () => {
 
   rebuildMenu();
 
-  // Trade journal store (standalone journal server runs separately via `pnpm journal`)
+  // Trade recorder store. It also owns the database handle RecommendationStore borrows,
+  // so it stays even though its own UI is gone.
   // Startup failures must be visible. A throw here used to leave a working tray
   // and a dead app with nothing on screen and nothing in any log a user reads.
   const startupFailures: StartupFailure[] = [];
@@ -790,21 +819,6 @@ app.on('ready', () => {
   void gradeRunner?.run().catch((err: unknown) =>
     console.error('[grade-runner] startup catch-up failed:', (err as Error).message));
 
-  // Watch for journal-reset signal written by the journal server's DELETE /api/trades.
-  // The journal could now delete rows itself (it speaks real SQLite since TVCM-7), but
-  // reset is more than a delete: clearAll() drops and rebuilds `trades` through
-  // trade-store's own schema init and restarts the id counter. Keeping it here leaves
-  // one owner of the table's shape instead of duplicating CREATE TABLE in two processes.
-  const resetSignalPath = path.join(app.getPath('userData'), 'trades.db.reset');
-  setInterval(() => {
-    if (fs.existsSync(resetSignalPath)) {
-      try { fs.unlinkSync(resetSignalPath); } catch { /* ignore race */ }
-      tradeStore?.clearAll();
-      // Notify the journal server that drop+recreate is complete
-      try { fs.writeFileSync(resetSignalPath + '.done', '1'); } catch { /* ignore */ }
-      console.log('[index] journal reset complete — schema rebuilt, done signal written');
-    }
-  }, 2000);
 
   // P&L tracker
   pnlTracker = new PnlTracker(

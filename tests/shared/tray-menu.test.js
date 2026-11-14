@@ -11,11 +11,11 @@ const { trayMenuTemplate, menuItemIds, escapeMenuLabel } = require(path.join(__d
 
 const labels = (items) => items.filter(i => i.label).map(i => i.label);
 
-test('the top level offers the panel, P&L, the journal and Troubleshooting', () => {
+test('the top level offers the panel, P&L and Troubleshooting', () => {
   const t = trayMenuTemplate({ panelVisible: false, alwaysOnTop: true });
   assert.deepStrictEqual(labels(t), [
     'Show Panel', 'Refresh Now', 'Always on Top',
-    'Order History & P&L', 'Open Journal', 'Troubleshooting', 'Quit',
+    'Order History & P&L', 'Troubleshooting', 'Quit',
   ]);
 });
 
@@ -24,16 +24,24 @@ test('Order History & P&L is present and opens from the tray', () => {
   assert.ok(ids.includes('pnlWindow'), 'the window must be reachable from the tray menu');
 });
 
-test('Open Log Folder moved under Troubleshooting and is no longer top level', () => {
+test('Troubleshooting holds the log folder and the recorder reset', () => {
   const t = trayMenuTemplate({});
-  assert.ok(!labels(t).includes('Open Log Folder'), 'it must not be at the top level any more');
+  assert.ok(!labels(t).includes('Open Log Folder'), 'it must not be at the top level');
   const trouble = t.find(i => i.id === 'troubleshooting');
   assert.ok(trouble, 'a Troubleshooting item must exist');
-  assert.deepStrictEqual(labels(trouble.submenu), ['Open Log Folder']);
+  assert.deepStrictEqual(labels(trouble.submenu), ['Open Log Folder', 'Reset trade recorder data…']);
 });
 
-test('Open Journal is kept for now', () => {
-  assert.ok(menuItemIds(trayMenuTemplate({})).includes('openJournal'));
+test('the reset item is worded as a dialog, not an instant action', () => {
+  const reset = trayMenuTemplate({}).find(i => i.id === 'troubleshooting')
+    .submenu.find(i => i.id === 'resetRecorder');
+  assert.ok(reset.label.endsWith('…'), 'an ellipsis promises a confirmation step');
+});
+
+test('the journal is gone from the menu', () => {
+  const ids = menuItemIds(trayMenuTemplate({}));
+  assert.ok(!ids.includes('openJournal'), 'the journal has been retired');
+  assert.ok(!labels(trayMenuTemplate({})).some(l => /journal/i.test(l)));
 });
 
 test('the panel item reflects whether the panel is showing', () => {

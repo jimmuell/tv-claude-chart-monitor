@@ -18,13 +18,13 @@ function trayMenuTemplate(state) {
     { id: 'alwaysOnTop', label: 'Always on Top', type: 'checkbox', checked: !!s.alwaysOnTop },
     { type: 'separator' },
     { id: 'pnlWindow',   label: 'Order History & P&L' },
-    { id: 'openJournal', label: 'Open Journal' },
     { type: 'separator' },
     {
       id: 'troubleshooting',
       label: 'Troubleshooting',
       submenu: [
         { id: 'openLogFolder', label: 'Open Log Folder' },
+        { id: 'resetRecorder', label: 'Reset trade recorder data…' },
       ],
     },
     { type: 'separator' },

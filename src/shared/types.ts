@@ -596,7 +596,7 @@ export interface TradeRecord extends TradeEntry {
   critique_json: string | null;  // JSON-encoded TradeCritique
 }
 
-/** Stats returned by GET /api/stats */
+/** Aggregate stats over the recorded trades, from TradeStore.getStats(). */
 export interface TradeStats {
   totalTrades:      number;
   winCount:         number;   // pnl_net > 0

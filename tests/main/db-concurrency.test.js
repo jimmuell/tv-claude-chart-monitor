@@ -1,10 +1,12 @@
 'use strict';
 
-// The journal server and the Electron app hold trades.db at the same time.
+// Two processes can hold trades.db at once — the app writes, and the replay trainer
+// reads. (Written when the journal server was the second process; it has since been
+// retired, but the property it guards still matters.)
 // These tests pin the property that makes that safe: a write by one process
 // must not be erased by the other closing its handle.
 //
-// The helpers below mirror scripts/start-journal.js:
+// The helpers below mirror how a second process must open the file:
 //   openDb()/saveAndClose()  — the node:sqlite versions now in use
 //   exportWholeFile()        — the sql.js pattern they replaced, kept here ONLY
 //                              so the test can prove it detects the old defect.
@@ -49,7 +51,7 @@ function freshDb() {
   return path.join(dir, 'trades.db');
 }
 
-/** What the journal server does now — scripts/start-journal.js openDb(). */
+/** The safe pattern: open the real file with node:sqlite, never export-and-rewrite. */
 function openDb(dbPath) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA busy_timeout = 5000');
@@ -82,23 +84,23 @@ function counts(dbPath) {
   return out;
 }
 
-test('a journal write does not erase rows the app wrote while it was open', () => {
+test('a second process writing does not erase rows the app wrote', () => {
   const dbPath = freshDb();
 
-  const jdb = openDb(dbPath);                       // journal begins a request
+  const jdb = openDb(dbPath);                       // second process begins a read
   const id  = appSavesRecommendation(dbPath, 1000); // app saves a call meanwhile
   assert.ok(id > 0, 'app wrote its row');
   assert.strictEqual(counts(dbPath).recs, 1);
 
   jdb.prepare("UPDATE trades SET notes = 'note' WHERE id = 1").run();
-  jdb.close();                                      // journal saveAndClose()
+  jdb.close();                                      // second process closes its handle
 
   assert.strictEqual(counts(dbPath).recs, 1,
-    'the recommendation must survive the journal closing its handle');
+    'the recommendation must survive the other process closing its handle');
 
   const check = new DatabaseSync(dbPath, { readOnly: true });
   assert.strictEqual(check.prepare('SELECT notes FROM trades WHERE id = 1').get().notes, 'note',
-    "the journal's own write must persist too");
+    "the other process's own write must persist too");
   check.close();
 });
 
@@ -114,14 +116,14 @@ test('the sql.js whole-file pattern this replaced would have lost the row', () =
   fs.writeFileSync(dbPath, snapshot);                // sql.js saveAndClose(): whole file back
 
   assert.strictEqual(counts(dbPath).recs, 0,
-    'the old pattern erases it — which is why the journal no longer does this');
+    'the old export-and-rewrite pattern erases it, which is why nothing does that now');
 });
 
 test('both processes can write concurrently without losing either write', () => {
   const dbPath = freshDb();
   const jdb = openDb(dbPath);
 
-  // Interleave ten app saves with ten journal note updates on one open handle.
+  // Interleave ten app saves with ten note updates from the other process.
   for (let i = 0; i < 10; i++) {
     appSavesRecommendation(dbPath, 3000 + i);
     jdb.prepare('UPDATE trades SET notes = ? WHERE id = 1').run(`note ${i}`);
@@ -131,11 +133,11 @@ test('both processes can write concurrently without losing either write', () => 
   assert.strictEqual(counts(dbPath).recs, 10, 'every app write survived');
   const check = new DatabaseSync(dbPath, { readOnly: true });
   assert.strictEqual(check.prepare('SELECT notes FROM trades WHERE id = 1').get().notes, 'note 9',
-    'the last journal write survived');
+    'the last write from the other process survived');
   check.close();
 });
 
-test('trades and user_version are untouched by journal activity', () => {
+test('trades and user_version are untouched by another process', () => {
   const dbPath = freshDb();
   const before = new DatabaseSync(dbPath, { readOnly: true });
   const version = before.prepare('PRAGMA user_version').get().user_version;
