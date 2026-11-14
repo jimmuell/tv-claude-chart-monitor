@@ -86,3 +86,19 @@ test('breakeven points are MES dollars at $5/point, zero when green', () => {
 test('zero sides costs nothing', () => {
   assert.strictEqual(calculateFees(0, DEFAULT_FEE_CONFIG).totalFees, 0);
 });
+
+// ── The order-history engine must charge the same rate ────────────────────
+test('order-history default rate has not drifted from the fee config', () => {
+  const oh = require(path.join(__dirname, '../../src/shared/order-history.js'));
+  assert.strictEqual(
+    cents(oh.DEFAULT_PER_CONTRACT_SIDE_FEE),
+    cents(DEFAULT_FEE_CONFIG.perContractSideFee),
+    'src/shared/order-history.js and src/main/fee-calculator.ts disagree on the per-side rate'
+  );
+});
+
+test('order-history uses the same MES point value', () => {
+  const oh = require(path.join(__dirname, '../../src/shared/order-history.js'));
+  assert.strictEqual(oh.MES_POINT_VALUE, 5.0);
+  assert.strictEqual(getBreakevenPoints(-oh.MES_POINT_VALUE), 1);
+});
