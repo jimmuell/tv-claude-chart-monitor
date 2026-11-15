@@ -11,9 +11,11 @@
  * Two further rules drive it. First, never show a number the trader could mistake for
  * today's: with no usable import the title is a dash, never "$0.00", because a
  * fake flat day and a real flat day look identical and only one of them is safe
- * to act on. Second, a warning marker when the numbers have gone stale *while the
- * market is open* — a stale figure on a Saturday is simply Friday's result and
- * needs no warning.
+ * to act on. Second, a warning marker when the number cannot be trusted — either the
+ * numbers have gone stale *while the market is open* (a stale figure on a Saturday is
+ * simply Friday's result and needs no warning), or the most recent import ATTEMPT
+ * failed, which is marked at once: a failure that only reached the tooltip left the
+ * menu bar showing an old number with nothing to say it had stopped being refreshed.
  */
 
 const { isMarketOpen } = require('./session-clock.js');
@@ -21,8 +23,11 @@ const { isMarketOpen } = require('./session-clock.js');
 /** The dash shown when there is nothing trustworthy to display. */
 const NO_DATA_TITLE = 'P&L —';
 
-/** Appended when the import has gone stale during live trading. */
+/** Appended when the number cannot be trusted — stale during trading, or a failed import. */
 const STALE_MARKER = ' ⚠';
+
+/** How much of an error message the tooltip will carry before cutting it short. */
+const MAX_TOOLTIP_REASON = 120;
 
 /**
  * Prefixed when TVCM is running on a non-default userData profile. A test copy puts a
@@ -72,18 +77,41 @@ function isStale(importedAt, now, staleMinutes) {
 }
 
 /**
- * Builds the menu-bar title from the import state: a signed net, a stale marker
- * when it applies, or a dash when there is nothing to show.
+ * True when the most recent import attempt failed. The watcher clears `errorCode` on
+ * every success and sets it on every failure, so a latched code *is* "the last attempt
+ * failed" — there is no time threshold and no market-hours gate, because a number that
+ * has stopped being refreshed is misleading at any hour.
+ */
+function hasFailedImport(state) {
+  return !!(state && state.errorCode);
+}
+
+/** An error message shortened to fit one tooltip line, with an ellipsis when it was cut. */
+function shortReason(message) {
+  const text = String(message == null ? '' : message).replace(/\s+/g, ' ').trim();
+  if (text.length <= MAX_TOOLTIP_REASON) return text;
+  return text.slice(0, MAX_TOOLTIP_REASON - 1) + '…';
+}
+
+/**
+ * Builds the menu-bar title from the import state: a signed net, a warning marker when
+ * the import is stale or the last attempt failed, or a dash when there is nothing to show.
  */
 function trayTitle(state, options) {
   const opts = options || {};
   const now = opts.now == null ? Date.now() : Number(opts.now);
   const prefix = opts.isTestProfile ? TEST_PREFIX : '';
+  const failed = hasFailedImport(state);
 
-  if (!state || !state.session || state.importedAt == null) return prefix + NO_DATA_TITLE;
+  // Nothing good to fall back on. The dash already says "do not act on this", but the
+  // marker distinguishes "nothing imported yet" from "the import is broken".
+  if (!state || !state.session || state.importedAt == null) {
+    return prefix + NO_DATA_TITLE + (failed ? STALE_MARKER : '');
+  }
 
   const base = formatNet(state.session.netPnl);
-  return prefix + (isStale(state.importedAt, now, opts.staleMinutes) ? base + STALE_MARKER : base);
+  const warn = failed || isStale(state.importedAt, now, opts.staleMinutes);
+  return prefix + (warn ? base + STALE_MARKER : base);
 }
 
 /**
@@ -109,7 +137,13 @@ function trayTooltip(state, options) {
   const opts = options || {};
   const now = opts.now == null ? Date.now() : Number(opts.now);
   if (!state || !state.session || state.importedAt == null) {
-    return (opts.isTestProfile ? 'TEST PROFILE — ' : '') + 'Trading Analyzer — no order-history import yet';
+    const head = opts.isTestProfile ? 'TEST PROFILE — ' : '';
+    // An attempt that failed must not be reported as "nothing has happened yet".
+    if (hasFailedImport(state)) {
+      return head + 'Trading Analyzer — no usable order-history import\n' +
+             `Last import failed: ${state.errorCode} — ${shortReason(state.errorMessage)}`;
+    }
+    return head + 'Trading Analyzer — no order-history import yet';
   }
   const s = state.session;
   const when = new Date(state.importedAt).toLocaleTimeString('en-US',
@@ -123,11 +157,15 @@ function trayTooltip(state, options) {
     `Imported ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
   );
   if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
-  if (state.errorCode) lines.push(`Last import failed: ${state.errorCode}`);
+  if (hasFailedImport(state)) {
+    lines.push(`Last import failed: ${state.errorCode} — ${shortReason(state.errorMessage)}`);
+    lines.push('Showing the last good import — the number above is not being refreshed');
+  }
   return lines.join('\n');
 }
 
 module.exports = {
-  NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, DEFAULT_STALE_MINUTES, ANSI,
-  formatNet, ansiFor, isStale, trayTitle, trayTitleColoured, stripAnsi, trayTooltip,
+  NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, DEFAULT_STALE_MINUTES, MAX_TOOLTIP_REASON, ANSI,
+  formatNet, ansiFor, isStale, hasFailedImport, shortReason,
+  trayTitle, trayTitleColoured, stripAnsi, trayTooltip,
 };

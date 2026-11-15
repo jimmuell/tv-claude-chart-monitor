@@ -256,3 +256,97 @@ test('the empty tooltip is labelled on a test profile too', () => {
   assert.strictEqual(tt.trayTooltip(null, { now: FRI_OPEN }),
     'Trading Analyzer — no order-history import yet');
 });
+
+// ── A failed import is visible in the menu bar at once (TVCM-24) ───────────
+// Before this, a failed import only reached the tray TOOLTIP. The menu bar kept
+// showing the last good number with nothing to say it was no longer being
+// refreshed — and the stale marker could not cover for it, because that one waits
+// 30 minutes and is suppressed outside market hours.
+
+/** The same state, but with the most recent import attempt having failed. */
+function failedState(extra = {}) {
+  const s = state(extra);
+  s.errorCode    = extra.errorCode    || 'TVCM-OH-BAD-HEADER';
+  s.errorMessage = extra.errorMessage || 'TVCM-OH-BAD-HEADER: missing column Fill quantity';
+  s.lastAttemptAt = (extra.importedAt ?? FRI_OPEN) + 60_000;
+  return s;
+}
+
+test('a failed import marks the title immediately, not after 30 minutes', () => {
+  const s = failedState({ importedAt: FRI_OPEN - 2 * MIN });
+  assert.strictEqual(tt.isStale(s.importedAt, FRI_OPEN, 30), false, 'this one is nowhere near stale');
+  assert.strictEqual(trayTitle(s, { now: FRI_OPEN }), '+$896.65 ⚠');
+});
+
+test('the failure marker is not gated on market hours the way the stale marker is', () => {
+  assert.strictEqual(trayTitle(failedState({ importedAt: SAT - 60 * MIN }), { now: SAT }), '+$896.65 ⚠');
+  assert.strictEqual(trayTitle(failedState({ importedAt: WED_BREAK - 5 * MIN }), { now: WED_BREAK }), '+$896.65 ⚠');
+  assert.strictEqual(trayTitle(failedState({ importedAt: FRI_CLOSED - 5 * MIN }), { now: FRI_CLOSED }), '+$896.65 ⚠');
+});
+
+test('a failure and a stale import together produce one marker, not two', () => {
+  const s = failedState({ importedAt: FRI_OPEN - 45 * MIN });
+  assert.strictEqual(trayTitle(s, { now: FRI_OPEN }), '+$896.65 ⚠');
+});
+
+test('turning the stale threshold off does not silence a failed import', () => {
+  const s = failedState({ importedAt: FRI_OPEN - 2 * MIN });
+  assert.strictEqual(trayTitle(s, { now: FRI_OPEN, staleMinutes: 0 }), '+$896.65 ⚠');
+});
+
+test('a later successful import clears the marker', () => {
+  const failed = failedState({ importedAt: FRI_OPEN - 2 * MIN });
+  assert.strictEqual(trayTitle(failed, { now: FRI_OPEN }), '+$896.65 ⚠');
+
+  // What importFile() writes on success: a new importedAt and no error.
+  const recovered = { ...failed, importedAt: FRI_OPEN, lastAttemptAt: FRI_OPEN,
+                      errorCode: null, errorMessage: null };
+  assert.strictEqual(trayTitle(recovered, { now: FRI_OPEN }), '+$896.65');
+  assert.strictEqual(tt.hasFailedImport(recovered), false);
+});
+
+test('hasFailedImport is true only when the most recent attempt failed', () => {
+  assert.strictEqual(tt.hasFailedImport(failedState()), true);
+  assert.strictEqual(tt.hasFailedImport(state()), false);
+  assert.strictEqual(tt.hasFailedImport(null), false);
+  assert.strictEqual(tt.hasFailedImport(undefined), false);
+  assert.strictEqual(tt.hasFailedImport({}), false);
+});
+
+test('the failure marker survives colouring and the TEST prefix', () => {
+  const s = failedState({ importedAt: FRI_OPEN - 2 * MIN });
+  assert.ok(tt.stripAnsi(tt.trayTitleColoured(s, { now: FRI_OPEN })).endsWith(' ⚠'));
+  assert.strictEqual(tt.trayTitle(s, { now: FRI_OPEN, isTestProfile: true }), 'TEST +$896.65 ⚠');
+});
+
+test('the tooltip says what failed and why, not just that something did', () => {
+  const t = trayTooltip(failedState({ importedAt: FRI_OPEN - 2 * MIN }), { now: FRI_OPEN });
+  assert.ok(t.includes('TVCM-OH-BAD-HEADER'), t);
+  assert.ok(t.includes('missing column Fill quantity'), 'the tooltip must carry the reason: ' + t);
+  assert.ok(t.includes('Net +$896.65'), 'the last good numbers must still be there');
+});
+
+test('the tooltip carries whatever code and file the watcher reported', () => {
+  const t = trayTooltip(failedState({
+    errorCode:    'TVCM-OI-UNREADABLE',
+    errorMessage: "EACCES: permission denied, open 'amp-order-history-all-2.csv'",
+  }), { now: FRI_OPEN });
+  assert.ok(t.includes('TVCM-OI-UNREADABLE'), t);
+  assert.ok(t.includes('amp-order-history-all-2.csv'), t);
+});
+
+test('a failure with no good numbers yet is marked too, and the tooltip stops claiming nothing was tried', () => {
+  const s = failedState({ session: false, importedAt: FRI_OPEN });
+  s.importedAt = null;
+  assert.strictEqual(trayTitle(s, { now: FRI_OPEN }), 'P&L — ⚠');
+  const t = trayTooltip(s, { now: FRI_OPEN });
+  assert.ok(!t.includes('no order-history import yet'), 'an import WAS tried and failed: ' + t);
+  assert.ok(t.includes('TVCM-OH-BAD-HEADER'), t);
+});
+
+test('a very long error message is truncated so the tooltip stays readable', () => {
+  const t = trayTooltip(failedState({ errorMessage: 'x'.repeat(400) }), { now: FRI_OPEN });
+  const line = t.split('\n').find(l => l.includes('TVCM-OH-BAD-HEADER'));
+  assert.ok(line.length < 200, `tooltip line is ${line.length} chars`);
+  assert.ok(line.includes('…'), 'a truncated message should say so: ' + line);
+});
