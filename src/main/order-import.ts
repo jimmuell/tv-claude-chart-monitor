@@ -9,8 +9,20 @@ import type { ImportedSession, OrderImportState, ImportedTrade, ImportedFill, Se
 // module that tsc does not compile, so it is loaded at runtime.
 const orderHistory = sharedModule('order-history.js');
 
-/** Exports are matched on name, case-insensitively, so paper and live files both land. */
-export const EXPORT_NAME_PATTERN = /order-history.*\.csv$/i;
+/**
+ * Only live AMP exports are imported. TradingView names the real one
+ * `amp-order-history-<...>.csv`; a paper or Bar Replay export lands in the same folder
+ * with a name that matched the old `*order-history*.csv` rule, so TVCM would import it
+ * and show play money in the menu bar as real money (TVCM-23 §5).
+ */
+export const LIVE_EXPORT_NAME_PATTERN = /^amp-order-history-.*\.csv$/i;
+
+/**
+ * The wider family of order-history exports. Nothing here is ever imported unless it
+ * also matches the live pattern — this exists only so a refused file can be named in
+ * the log instead of being passed over in silence.
+ */
+export const ORDER_HISTORY_NAME_PATTERN = /order-history.*\.csv$/i;
 
 const DEFAULT_POLL_MS = 5_000;
 
@@ -42,9 +54,14 @@ export function resolveWatchFolder(configured?: string): string {
   return path.join(os.homedir(), 'Downloads');
 }
 
-/** True when a filename looks like a TradingView order-history export. */
-export function isExportFileName(name: string): boolean {
-  return EXPORT_NAME_PATTERN.test(name);
+/** True when a filename is a live AMP order-history export — the only kind imported. */
+export function isLiveExportFileName(name: string): boolean {
+  return LIVE_EXPORT_NAME_PATTERN.test(name);
+}
+
+/** True when a filename is an order-history export of any account, live or not. */
+export function isOrderHistoryFileName(name: string): boolean {
+  return ORDER_HISTORY_NAME_PATTERN.test(name);
 }
 
 /** Converts the engine's session object into the shape the UI consumes. */
@@ -130,6 +147,8 @@ export class OrderImportWatcher {
   private lastSeen     = new Map<string, FileSignature>();
   /** The signature actually imported, so an unchanged file is not re-parsed. */
   private importedSig: (FileSignature & { filePath: string }) | null = null;
+  /** Paths already refused as non-live, so the refusal is logged once and not every poll. */
+  private refused     = new Set<string>();
   private state:       OrderImportState;
   /** Everything the last successful parse produced, kept so the session can be re-resolved as time passes. */
   private lastSessions: ImportedSession[] = [];
@@ -204,39 +223,61 @@ export class OrderImportWatcher {
     if (next === this.folder) return;
     this.folder = next;
     this.lastSeen.clear();
+    this.refused.clear();
     this.importedSig = null;
     this.state.watchFolder = next;
   }
 
-  /** Every export in the watch folder, newest modification first. */
-  private candidates(): { filePath: string; sig: FileSignature }[] {
+  /**
+   * Every LIVE export in the watch folder, newest modification first, plus a count of
+   * the order-history files refused for not being live. A refused file is never a
+   * candidate, so it cannot win on mtime however new it is.
+   */
+  private candidates(): { live: { filePath: string; sig: FileSignature }[]; refusedCount: number } {
     let names: string[];
     try {
       names = fs.readdirSync(this.folder);
     } catch {
-      return [];
+      return { live: [], refusedCount: 0 };
     }
-    const out: { filePath: string; sig: FileSignature }[] = [];
+    const live: { filePath: string; sig: FileSignature }[] = [];
+    let refusedCount = 0;
     for (const name of names) {
-      if (!isExportFileName(name)) continue;
+      if (!isOrderHistoryFileName(name)) continue;
       const filePath = path.join(this.folder, name);
+      if (!isLiveExportFileName(name)) {
+        refusedCount++;
+        this.noteRefused(filePath);
+        continue;
+      }
       try {
         const st = fs.statSync(filePath);
         if (!st.isFile()) continue;
-        out.push({ filePath, sig: { size: st.size, mtimeMs: st.mtimeMs } });
+        live.push({ filePath, sig: { size: st.size, mtimeMs: st.mtimeMs } });
       } catch { /* vanished between readdir and stat — ignore */ }
     }
-    return out.sort((a, b) => b.sig.mtimeMs - a.sig.mtimeMs);
+    return { live: live.sort((a, b) => b.sig.mtimeMs - a.sig.mtimeMs), refusedCount };
+  }
+
+  /** Logs a non-live export once, so a paper file in the folder is visible but not noisy. */
+  private noteRefused(filePath: string): void {
+    if (this.refused.has(filePath)) return;
+    this.refused.add(filePath);
+    this.log(`[order-import] TVCM-OI-NOT-LIVE: ignoring ${path.basename(filePath)} — ` +
+             'only live AMP exports (amp-order-history-*.csv) are imported');
   }
 
   /** One pass: find the newest export, make sure it has stopped growing, then import it. */
   async scanOnce(): Promise<ScanOutcome> {
-    const found = this.candidates();
-    if (found.length === 0) {
-      return { action: 'none', reason: `no *order-history*.csv in ${this.folder}` };
+    const { live, refusedCount } = this.candidates();
+    if (live.length === 0) {
+      const refused = refusedCount > 0
+        ? `; ${refusedCount} non-live order-history file(s) ignored`
+        : '';
+      return { action: 'none', reason: `no amp-order-history-*.csv in ${this.folder}${refused}` };
     }
 
-    const { filePath, sig } = found[0];
+    const { filePath, sig } = live[0];
     const previous = this.lastSeen.get(filePath);
     this.lastSeen.set(filePath, sig);
 

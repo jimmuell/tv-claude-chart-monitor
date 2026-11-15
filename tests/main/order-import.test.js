@@ -12,8 +12,13 @@ const fs     = require('fs');
 const os     = require('os');
 const path   = require('path');
 
-const { OrderImportWatcher, isExportFileName, resolveWatchFolder, emptyState } =
+const { OrderImportWatcher, isLiveExportFileName, isOrderHistoryFileName,
+        resolveWatchFolder, emptyState } =
   require(path.join(__dirname, '../../dist/main/main/order-import'));
+
+// The menu-bar title is asserted directly, because "an ignored file must not change
+// the number" is a statement about what Jim sees, not about the watcher's internals.
+const { trayTitle } = require(path.join(__dirname, '../../src/shared/tray-title.js'));
 
 const HEADER = 'Symbol,Side,Type,Quantity,Limit price,Stop price,Active at,Fill quantity,' +
                'Avg fill price,Commission,Placing time,Status,Status time,Order ID,Duration';
@@ -62,18 +67,37 @@ async function settle(w, times = 2) {
   return out;
 }
 
-// ── Filename matching ─────────────────────────────────────────────────────
-test('accepts the export names TradingView actually produces', () => {
+// ── Filename matching: live AMP exports only ────────────────────
+test('accepts the live AMP export names TradingView actually produces', () => {
   for (const name of [
     'amp-order-history-all-2026-11-14T16_29_00.671Z_8b14b.csv',
-    'order-history.csv',
-    'paper-order-history-2026-11-01.csv',
-    'ORDER-HISTORY-ALL.CSV',
-    'something-order-history-export.csv',
-  ]) assert.ok(isExportFileName(name), `should accept ${name}`);
+    'amp-order-history-all.csv',
+    'amp-order-history-.csv',
+    'AMP-ORDER-HISTORY-ALL.CSV',
+  ]) assert.ok(isLiveExportFileName(name), `should accept ${name}`);
 });
 
-test('ignores files that are not order-history exports', () => {
+test('refuses every order-history export that is not a live AMP one', () => {
+  for (const name of [
+    'paper-order-history-2026-11-01.csv',
+    'replaybroker-order-history-all.csv',
+    'order-history.csv',
+    'something-order-history-export.csv',
+    'ORDER-HISTORY-ALL.CSV',
+    'copy-of-amp-order-history-all.csv',   // amp, but not at the start
+    'amp-order-history-all.csv.part',      // not finished downloading
+    'amp-order-history.csv',               // no trailing dash: not the real shape
+    'amp-orders-history-all.csv',
+  ]) assert.ok(!isLiveExportFileName(name), `should refuse ${name}`);
+});
+
+test('a non-live export is still recognised as an order-history file, so it can be named in a log', () => {
+  for (const name of [
+    'paper-order-history-2026-11-01.csv',
+    'order-history.csv',
+    'ORDER-HISTORY-ALL.CSV',
+    'amp-order-history-all.csv',
+  ]) assert.ok(isOrderHistoryFileName(name), `should recognise ${name}`);
   for (const name of [
     'paper-trading-balance-history-2026-07-02.csv',
     'order-history.csv.part',
@@ -81,7 +105,7 @@ test('ignores files that are not order-history exports', () => {
     'amp-order-history-all.xlsx',
     'export5500.csv',
     'history.csv',
-  ]) assert.ok(!isExportFileName(name), `should ignore ${name}`);
+  ]) assert.ok(!isOrderHistoryFileName(name), `should not recognise ${name}`);
 });
 
 test('an unset folder means ~/Downloads, and ~ is expanded', () => {
@@ -96,7 +120,7 @@ test('an unset folder means ~/Downloads, and ~ is expanded', () => {
 test('a new export is imported and its session becomes the state', async () => {
   const folder = tmpFolder();
   const w = makeWatcher(folder);
-  assert.deepStrictEqual(await w.scanOnce(), { action: 'none', reason: `no *order-history*.csv in ${folder}` });
+  assert.deepStrictEqual(await w.scanOnce(), { action: 'none', reason: `no amp-order-history-*.csv in ${folder}` });
 
   write(folder, 'amp-order-history-all-1.csv', sessionCsv(10));
   const out = await settle(w);
@@ -444,4 +468,107 @@ test('trades and fills survive a restart through the cache', async () => {
   assert.strictEqual(d.trades.length, 1, 'trades were not cached');
   assert.strictEqual(d.fills.length, 2, 'fills were not cached');
   assert.strictEqual(second.listSessions().length, 1);
+});
+
+// ── Live-only imports (TVCM-24) ──────────────────────────────────
+// A paper or replay export in the watch folder used to be imported and shown in the
+// menu bar as real money. These assert it cannot happen, including when the paper file
+// is the newest thing in the folder.
+
+test('a newer paper export is ignored and cannot displace the live numbers', async () => {
+  const folder = tmpFolder();
+  const logs = [];
+  const w = makeWatcher(folder, { log: (l) => logs.push(l) });
+  const t0 = Date.now() - 60_000;
+
+  write(folder, 'amp-order-history-all-live.csv', sessionCsv(10), t0);
+  assert.strictEqual((await settle(w)).action, 'imported');
+  const before = w.getState();
+  const titleBefore = trayTitle(before, { now: before.importedAt });
+  assert.strictEqual(titleBefore, '+$48.80');
+
+  // A paper export lands LATER, with a wildly different outcome.
+  write(folder, 'paper-order-history-2026-11-12.csv', sessionCsv(400), t0 + 30_000);
+  const out = await settle(w, 3);
+  assert.strictEqual(out.action, 'unchanged', 'the paper file was treated as a candidate');
+  assert.strictEqual(out.filePath, path.join(folder, 'amp-order-history-all-live.csv'));
+
+  const after = w.getState();
+  assert.strictEqual(after.fileName, 'amp-order-history-all-live.csv');
+  assert.strictEqual(after.session.netPnl, 48.80, 'paper P&L replaced the live numbers');
+  assert.strictEqual(trayTitle(after, { now: after.importedAt }), titleBefore,
+    'the menu-bar number moved because of a paper export');
+  assert.strictEqual(after.errorCode, null, 'an ignored file is not an import failure');
+  assert.strictEqual(after.importedAt, before.importedAt);
+  assert.ok(logs.some(l => l.includes('TVCM-OI-NOT-LIVE') && l.includes('paper-order-history-2026-11-12.csv')),
+    'nothing told Jim the paper file had been refused: ' + JSON.stringify(logs));
+});
+
+test('a newer live export IS imported, over an older live one', async () => {
+  const folder = tmpFolder();
+  const w = makeWatcher(folder);
+  const t0 = Date.now() - 60_000;
+
+  write(folder, 'amp-order-history-all-1.csv', sessionCsv(10), t0);
+  await settle(w);
+  assert.strictEqual(w.getState().session.netPnl, 48.80);
+
+  write(folder, 'amp-order-history-all-2.csv', sessionCsv(30), t0 + 30_000);
+  assert.strictEqual((await settle(w)).action, 'imported');
+  const s = w.getState();
+  assert.strictEqual(s.fileName, 'amp-order-history-all-2.csv');
+  assert.strictEqual(s.session.grossPnl, 150);
+  assert.strictEqual(trayTitle(s, { now: s.importedAt }), '+$148.80');
+});
+
+test('a folder holding only non-live exports imports nothing at all', async () => {
+  const folder = tmpFolder();
+  const logs = [];
+  const w = makeWatcher(folder, { log: (l) => logs.push(l) });
+
+  write(folder, 'paper-order-history-2026-11-12.csv', sessionCsv(400));
+  write(folder, 'order-history.csv',                  sessionCsv(400));
+  const out = await settle(w, 3);
+  assert.strictEqual(out.action, 'none');
+  assert.ok(out.reason.includes('2'), 'the reason should count what was refused: ' + out.reason);
+
+  const s = w.getState();
+  assert.strictEqual(s.session, null);
+  assert.strictEqual(s.importedAt, null);
+  assert.strictEqual(trayTitle(s, { now: Date.now() }), 'P&L \u2014');
+});
+
+test('a refused file is logged once, not on every poll', async () => {
+  const folder = tmpFolder();
+  const logs = [];
+  const w = makeWatcher(folder, { log: (l) => logs.push(l) });
+
+  const refusals = (name) => logs.filter(l => l.includes('TVCM-OI-NOT-LIVE') && l.includes(name));
+
+  write(folder, 'paper-order-history-2026-11-12.csv', sessionCsv(400));
+  for (let i = 0; i < 6; i++) await w.scanOnce();
+  assert.strictEqual(refusals('paper-order-history-2026-11-12.csv').length, 1,
+    'the refusal was logged on every poll: ' + JSON.stringify(logs));
+
+  // A different refused file gets its own line.
+  write(folder, 'replay-order-history-2026-11-12.csv', sessionCsv(400));
+  for (let i = 0; i < 3; i++) await w.scanOnce();
+  assert.strictEqual(refusals('replay-order-history-2026-11-12.csv').length, 1);
+  assert.strictEqual(refusals('paper-order-history-2026-11-12.csv').length, 1);
+});
+
+test('changing folder forgets which refusals were already logged', async () => {
+  const a = tmpFolder();
+  const b = tmpFolder();
+  const logs = [];
+  const w = makeWatcher(a, { log: (l) => logs.push(l) });
+  const refusals = () => logs.filter(l => l.includes('TVCM-OI-NOT-LIVE'));
+  write(a, 'paper-order-history-x.csv', sessionCsv(400));
+  await w.scanOnce();
+  assert.strictEqual(refusals().length, 1);
+
+  w.setFolder(b);
+  write(b, 'paper-order-history-x.csv', sessionCsv(400));
+  await w.scanOnce();
+  assert.strictEqual(refusals().length, 2, 'the same name in a new folder is a new file');
 });
