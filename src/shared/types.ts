@@ -312,6 +312,8 @@ export interface LiveFeedState {
   switchHint:        string | null;
   /** The CURRENT session as the feed computes it; past days never come from here. */
   session:           ImportedSession | null;
+  /** The newest session the feed CAN see, shown only when the market is shut. */
+  fallbackSession:   ImportedSession | null;
   currentSession:    string | null;
   executionCount:    number;
   fillCount:         number;

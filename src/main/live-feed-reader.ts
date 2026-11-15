@@ -30,7 +30,7 @@ export interface LiveFeedOptions {
 export function emptyLiveFeedState(mode: 'live' | 'paper'): LiveFeedState {
   return {
     mode, brokerId: null, account: null, available: false, state: 'disconnected',
-    reason: null, switchHint: null, session: null, currentSession: null,
+    reason: null, switchHint: null, session: null, fallbackSession: null, currentSession: null,
     executionCount: 0, fillCount: 0, skippedCount: 0, openPositionCount: null,
     readAt: null, lastAttemptAt: null, errorCode: null, errorMessage: null, warn: false,
   };
@@ -190,6 +190,11 @@ export class LiveFeedReader {
         reason: null,
         switchHint: null,
         session: match ? toImportedSession(match) : null,
+        // The newest session that has fills, for the market-shut fallback. Never shown
+        // while the market is open — that is the merge's call, not this one's.
+        fallbackSession: this.lastSessions.length
+          ? this.lastSessions.slice().sort((a, b) => (a.sessionDate < b.sessionDate ? 1 : -1))[0]
+          : null,
         currentSession: today,
         executionCount: Array.isArray(payload.executions) ? payload.executions.length : 0,
         fillCount: (result.fills || []).length,

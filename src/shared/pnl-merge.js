@@ -63,21 +63,32 @@ function mergePnl(input) {
   const mode  = opts.mode || (feed && feed.mode) || 'live';
   const staleMinutes = opts.staleMinutes;
 
-  const currentSession = (csv && csv.currentSession) || (feed && feed.currentSession) || null;
-
   // A reading taken in the other mode is not a lesser source — it is the wrong account's
   // money, and it must not be shown under any circumstances.
   const modeMismatch = !!(feed && feed.mode && feed.mode !== mode);
 
+  // In paper mode the AMP CSV is off the table entirely: it is live money. That includes
+  // its idea of which session is current — the feed's clock is the only one that applies.
+  const csvAllowed = mode !== 'paper';
+  const csvState   = csvAllowed ? csv : null;
+
+  const currentSession = (feed && feed.currentSession)
+    || (csvState && csvState.currentSession) || null;
+
   const stale = !!(feed && feed.session && !feedUsable(feed, now, staleMinutes));
-  const feedCurrent = (!modeMismatch && feed && feed.available !== false
-      && feedUsable(feed, now, staleMinutes)
+  const feedOk = !modeMismatch && !!feed && feed.available !== false && feed.readAt != null;
+  const feedCurrent = (feedOk && feedUsable(feed, now, staleMinutes)
       && feed.session && feed.session.sessionDate === currentSession)
     ? feed.session : null;
 
-  // In paper mode the AMP CSV is off the table entirely: it is live money.
-  const csvAllowed = mode !== 'paper';
-  const csvState   = csvAllowed ? csv : null;
+  // The same rule the CSV path uses: with the market SHUT and nothing in the current
+  // session, show the newest session that has fills — on a Saturday a trader wants
+  // Friday's result, not a dash. While the market is open an empty current session stays
+  // empty, because an earlier number mid-session would be read as today's.
+  const feedFallback = (feedOk && !feedCurrent && !feed.session
+      && feed.fallbackSession && !isMarketOpen(now))
+    ? feed.fallbackSession : null;
+
   const csvCurrent = (csvState && csvState.session && !csvState.isFallback
       && csvState.session.sessionDate === currentSession) ? csvState.session : null;
 
@@ -104,6 +115,8 @@ function mergePnl(input) {
     session = feedCurrent; source = 'feed'; asOf = feed.readAt;
   } else if (csvState && csvState.session) {
     session = csvState.session; source = 'csv'; isFallback = !!csvState.isFallback; asOf = csvState.importedAt;
+  } else if (feedFallback) {
+    session = feedFallback; source = 'feed'; isFallback = true; asOf = feed.readAt;
   }
 
   // --- what to complain about, strongest first -------------------------------
@@ -153,8 +166,8 @@ function mergedToImportState(merged, csv, feed) {
     currentSession: m.currentSession || null,
     // "Imported at" is really "as of": the feed read, or the export import.
     importedAt:     m.asOf == null ? null : m.asOf,
-    fileName:       fromFeed ? `live feed (${m.mode})` : (c.fileName || null),
-    filePath:       fromFeed ? null : (c.filePath || null),
+    fileName:       fromFeed ? `live feed (${m.mode})` : (m.source === 'csv' ? (c.fileName || null) : null),
+    filePath:       fromFeed ? null : (m.source === 'csv' ? (c.filePath || null) : null),
     fillCount:      fromFeed ? (f.fillCount || 0) : (c.fillCount || 0),
     skippedRows:    fromFeed ? (f.skippedCount || 0) : (c.skippedRows || 0),
     sessionCount:   fromFeed ? 1 : (c.sessionCount || 0),

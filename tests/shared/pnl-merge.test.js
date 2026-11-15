@@ -276,3 +276,57 @@ test('nothing anywhere flattens to an empty state, not a zero', () => {
   assert.strictEqual(st.session, null);
   assert.strictEqual(st.importedAt, null);
 });
+
+// ── The feed needs the same "market shut" fallback the CSV has ────────────
+// On a Saturday a trader wants Friday's result, not a dash. The CSV path has
+// always done this; without it, paper mode — which has no CSV to fall back on —
+// shows a dash all weekend even though the account has a history.
+
+test('with the market shut the feed falls back to its newest session', () => {
+  const m = mergePnl({
+    mode: 'paper',
+    feed: feed({ mode: 'paper', brokerId: 'paper', session: null, currentSession: '2026-11-16',
+                 fallbackSession: session('2026-11-11', 275), readAt: SAT }),
+    csv: csv(), now: SAT });
+  assert.strictEqual(m.source, 'feed');
+  assert.strictEqual(m.session.netPnl, 275);
+  assert.strictEqual(m.isFallback, true, 'an earlier session must be flagged as a fallback');
+});
+
+test('while the market is OPEN an empty current session stays empty', () => {
+  const m = mergePnl({
+    mode: 'paper',
+    feed: feed({ mode: 'paper', brokerId: 'paper', session: null, currentSession: '2026-11-13',
+                 fallbackSession: session('2026-11-11', 275), readAt: CT_OPEN }),
+    csv: csv(), now: CT_OPEN });
+  assert.strictEqual(m.source, 'none',
+    'showing an earlier session mid-session would be read as today');
+  assert.strictEqual(m.session, null);
+});
+
+test('a real current session always outranks the fallback', () => {
+  const m = mergePnl({
+    mode: 'paper',
+    feed: feed({ mode: 'paper', brokerId: 'paper', session: session('2026-11-16', 10),
+                 currentSession: '2026-11-16', fallbackSession: session('2026-11-11', 275), readAt: SAT }),
+    csv: csv(), now: SAT });
+  assert.strictEqual(m.session.netPnl, 10);
+  assert.strictEqual(m.isFallback, false);
+});
+
+test('the feed fallback never overrides the CSV in live mode', () => {
+  const m = mergePnl({
+    mode: 'live',
+    feed: feed({ session: null, currentSession: '2026-11-16', fallbackSession: session('2026-11-11', 275), readAt: SAT }),
+    csv:  csv({ session: session('2026-11-13', 896.65), isFallback: true, currentSession: '2026-11-16' }),
+    now: SAT });
+  assert.strictEqual(m.source, 'csv', 'the export is the record for anything but today');
+  assert.strictEqual(m.session.netPnl, 896.65);
+});
+
+test('in paper mode the live export file name never reaches the display', () => {
+  const m = mergePnl({ mode: 'paper', feed: feed({ mode: 'paper', available: false, session: null }), csv: csv(), now: CT_OPEN });
+  const st = mergedToImportState(m, csv(), feed({ mode: 'paper' }));
+  assert.strictEqual(st.fileName, null, 'naming the AMP export in a paper view is a leak');
+  assert.strictEqual(st.session, null);
+});
