@@ -15,7 +15,7 @@ test('the top level offers the panel, P&L and Troubleshooting', () => {
   const t = trayMenuTemplate({ panelVisible: false, alwaysOnTop: true });
   assert.deepStrictEqual(labels(t), [
     'Show Panel', 'Refresh Now', 'Always on Top',
-    'Order History & P&L', 'Troubleshooting', 'Quit',
+    'Order History & P&L', 'Paper mode', 'Troubleshooting', 'Quit',
   ]);
 });
 
@@ -88,4 +88,29 @@ test('every label with an ampersand survives escaping intact', () => {
     if (i.submenu) walk(i.submenu);
   });
   walk(trayMenuTemplate({}));
+});
+
+// ── Paper mode (TVCM-26) ──────────────────────────────────────────────────
+// One setting, three places. The tray is the one Jim can reach without opening
+// the analyzer panel, which starts analyses just by being shown.
+
+test('Paper mode is a checkbox in the tray menu, reflecting the setting', () => {
+  const off = trayMenuTemplate({ paperMode: false });
+  const on  = trayMenuTemplate({ paperMode: true });
+  const find = (t) => t.find(i => i.id === 'paperMode');
+  assert.ok(find(off), 'the tray must offer Paper mode');
+  assert.strictEqual(find(off).type, 'checkbox');
+  assert.strictEqual(find(off).checked, false);
+  assert.strictEqual(find(on).checked, true);
+  assert.strictEqual(find(on).label, 'Paper mode');
+});
+
+test('Paper mode sits at the top level, not buried in Troubleshooting', () => {
+  const top = trayMenuTemplate({}).filter(i => i.id).map(i => i.id);
+  assert.ok(top.includes('paperMode'), 'it must be reachable in one click: ' + top.join(', '));
+});
+
+test('a missing paperMode state reads as off, never as on', () => {
+  assert.strictEqual(trayMenuTemplate({}).find(i => i.id === 'paperMode').checked, false);
+  assert.strictEqual(trayMenuTemplate().find(i => i.id === 'paperMode').checked, false);
 });

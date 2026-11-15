@@ -29,6 +29,9 @@ const DEFAULTS: AppSettings = {
   orderImportEnabled:      true,
   orderImportFolder:       '',   // '' resolves to ~/Downloads
   orderImportStaleMinutes: 30,
+  liveFeedEnabled:         true,
+  liveFeedPollSeconds:     5,
+  paperMode:               false,
   // Default lever: the 08:30-11:00 Chicago window only, nothing blocked.
   rules: {
     enabled:          true,

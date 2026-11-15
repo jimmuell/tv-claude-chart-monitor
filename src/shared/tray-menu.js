@@ -18,6 +18,9 @@ function trayMenuTemplate(state) {
     { id: 'alwaysOnTop', label: 'Always on Top', type: 'checkbox', checked: !!s.alwaysOnTop },
     { type: 'separator' },
     { id: 'pnlWindow',   label: 'Order History & P&L' },
+    // Paper mode lives at the top level because the only other in-app place to change
+    // it is the analyzer panel, and showing the panel starts analyses.
+    { id: 'paperMode',   label: 'Paper mode', type: 'checkbox', checked: !!s.paperMode },
     { type: 'separator' },
     {
       id: 'troubleshooting',

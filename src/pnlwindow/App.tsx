@@ -228,6 +228,23 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The paper toggle lives in three places; this one mirrors whatever the main process
+  // says, and never holds an opinion of its own.
+  const [paper, setPaper] = useState(false);
+  const [merged, setMerged] = useState<import('../shared/types').MergedPnlState | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => window.pnlApi.getPaperMode().then(r => {
+      if (!alive) return;
+      setPaper(r.paperMode);
+      setMerged(r.merged);
+    });
+    void refresh();
+    const offMode   = window.pnlApi.onPaperMode(() => { void refresh(); });
+    const offUpdate = window.pnlApi.onUpdate(() => { void refresh(); });
+    return () => { alive = false; offMode(); offUpdate(); };
+  }, []);
+
   // Kept in a ref so the push handler above always re-selects the day being viewed.
   const selectedRef = React.useRef('');
   useEffect(() => { selectedRef.current = selected; }, [selected]);
@@ -266,9 +283,18 @@ export function App() {
       <header className="head">
         <div className="title">
           Order History &amp; P&amp;L
+          {paper && <span className="paper-chip" title="Paper account — not real money">PAPER</span>}
           {selected && <span className="session-chip">{selected}</span>}
         </div>
         <div className="head-right">
+          {merged?.warn && merged.errorMessage &&
+            <span className="warn-chip" title={[merged.errorMessage, merged.switchHint].filter(Boolean).join(' — ')}>
+              ⚠ {merged.errorCode}
+            </span>}
+          <label className="paper-toggle" title="Read the paper account instead of AMP Live">
+            <input type="checkbox" checked={paper} onChange={(e) => { void window.pnlApi.setPaperMode(e.target.checked); }} />
+            Paper mode
+          </label>
           <span className="source">{state?.fileName ?? 'no file'}</span>
           <button className="btn-close" onClick={() => window.pnlApi.close()} title="Close (Esc)">Close</button>
         </div>

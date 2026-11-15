@@ -45,6 +45,13 @@ node scripts/reconcile-session.js <csv> <YYYY-MM-DD>   # one session's P&L vs a 
 node scripts/reconcile-session.js <csv> --all          # every session in the file
 ```
 
+Live feed health (read-only CDP read; TradingView must be on 9222):
+```bash
+npm run check:live-feed            # _brokerId, execution count, shape check, newest 3 fills
+npm run check:live-feed -- --watch # re-read every 5s — use this to confirm a new fill
+                                   # appears without touching TradingView's bottom panel
+```
+
 ## Prerequisites
 
 **TradingView Desktop** must be launched with the CDP debugging port enabled:
@@ -98,6 +105,13 @@ Two-process Electron app with no dock icon (macOS menubar only).
   - `resolveLlm()` in `bridge.ts` still falls back to an `anthropic` block when `llm` is absent — that path is back-compat for pre-provider configs only, and `config.json` no longer carries such a block.
   - `google` — `clientIdEnv`, `clientSecretEnv` for OAuth
   - `annotator` — `ttlMinutes`, `cleanupIntervalSeconds`
+
+Settings (`userData/settings.json`, not `config.json`) that drive the live feed:
+`liveFeedEnabled` (default true), `liveFeedPollSeconds` (5), `paperMode` (false).
+**Paper mode is one setting with three UIs** — the tray menu checkbox, the Order History
+& P&L window header and the Settings panel — all routed through `setPaperMode()` in
+`index.ts`. Paper and live readings are cached to **separate** files
+(`userData/live-feed-paper.json` / `live-feed-live.json`) and are never merged.
   - `filter.fireOn` — boolean gates: `notablePatterns`, `zoneInteractions`, `trendOrMaEvents`, `everyCandleIfActionable`
   - `detectors.lifecycle` — thresholds for invalidate/refine/recategorize logic
 - `sandbox: false` in `BrowserWindow.webPreferences` — required so the preload script can `require()` local CommonJS modules.
@@ -110,6 +124,8 @@ Two-process Electron app with no dock icon (macOS menubar only).
 | `capture.ts` | `captureTradingView()` — captures TradingView window as PNG base64; falls back to primary screen |
 | `scheduler.ts` | Timed polling; aligns next run to bar close time (`barCloseMs + 2s`); retries on error |
 | `annotator.ts` | Writes key levels and trade-plan brackets to the "TA Levels" Pine indicator via CDP `setStudyInputs` |
+| `live-feed-reader.ts` | Polls TradingView's own executions over CDP every 5 s, gated on `_brokerId` in the same page expression as the read. Drives the **current** session; drops everything the moment the gate closes |
+| `engine-shapes.ts` | The four engine-record → UI-shape mappers, shared by the CSV watcher and the live feed so the two paths cannot describe a trade differently |
 | `pnl-reader.ts` | Reads account data from the TradingView DOM via CDP `evalPage()` |
 | `pnl-tracker.ts` | Polls P&L every 10s, tracks trade count and fees, pushes `PnlSnapshot` snapshots to renderer |
 | `fee-calculator.ts` | Computes variable + daily-fixed fees from `FeeConfig` |
@@ -133,6 +149,8 @@ Two-process Electron app with no dock icon (macOS menubar only).
 | `detectors/swing-pivots.js` | 3-bar pivot cluster detector; returns `SuggestedLevel[]` with `touchCount`, `strength`, etc. |
 | `strategies/orb.js` | Opening Range Breakout strategy; `computeOrbState()` returns phase, breakouts, signal, levels, zones |
 | `order-history.js` | Parses a TradingView Order history CSV into per-session realized P&L, contract-sides and fees. Session = 17:00→17:00 America/Chicago named for the day it ends; counts any row with `Fill quantity > 0` regardless of Status; dedupes by Order ID; FIFO lot queue carried across sessions. Pure — no Electron, no CDP |
+| `live-feed.js` | The pure half of the live feed: broker gating (`amp` / `paper` / `replaybroker`), execution shape detection, and the conversion of executions into engine fills. Also owns the page expression the reader evaluates |
+| `pnl-merge.js` | Chooses the displayed number: feed for the current session, CSV for past days, **CSV wins any disagreement**. Enforces that paper and live are never mixed |
 | `raise-to-front.js` | `raiseToFront(win, activateApp)` — brings a window in front of every other app by lifting its window level to floating, then dropping it back. Pure; no Electron import |
 | `utils.ts` | `parsePrice()` — extracts first numeric value from a free-text price string |
 

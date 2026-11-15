@@ -194,6 +194,34 @@ const SettingsPanel: React.FC = () => {
           />
         </div>
         <div className="settings-row">
+          <span className="settings-label">Live feed (read TradingView)</span>
+          <SettingsToggle
+            checked={settings.liveFeedEnabled ?? true}
+            onChange={v => update({ liveFeedEnabled: v })}
+          />
+        </div>
+        {/* The third of the three places the one Paper mode setting can be changed; the
+            tray item and the Order History window follow whichever one is used. */}
+        <div className="settings-row">
+          <span className="settings-label" title="Read the paper account instead of AMP Live. Paper and live results are never mixed.">Paper mode</span>
+          <SettingsToggle
+            checked={settings.paperMode ?? false}
+            onChange={v => update({ paperMode: v })}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Feed poll (sec)</span>
+          <input
+            type="number"
+            className="settings-input settings-input-sm"
+            value={settings.liveFeedPollSeconds ?? 5}
+            step={1}
+            min={1}
+            max={120}
+            onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v) && v >= 1) update({ liveFeedPollSeconds: v }); }}
+          />
+        </div>
+        <div className="settings-row">
           <span className="settings-label">Export folder</span>
           <input
             type="text"

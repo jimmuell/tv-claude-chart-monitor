@@ -9,6 +9,7 @@ import { notifyVerdict, resetNotifier, notifyProblem } from './notifier';
 import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './order-executor';
 import { PnlTracker } from './pnl-tracker';
 import { OrderImportWatcher } from './order-import';
+import { LiveFeedReader } from './live-feed-reader';
 import { sharedModule } from './shared-require';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
@@ -126,6 +127,7 @@ let lastResult: AnalysisResult | null = null;
 
 let pnlTracker:      PnlTracker     | null = null;
 let orderImport:     OrderImportWatcher | null = null;
+let liveFeed:        LiveFeedReader | null = null;
 let pnlWindow:       BrowserWindow | null = null;
 let trayTitleTimer:  ReturnType<typeof setInterval> | null = null;
 let tradeStore:      TradeStore     | null = null;
@@ -144,7 +146,7 @@ function debounceSave(win: BrowserWindow): void {
 // ── Context menu ──────────────────────────────────────────────────────────
 
 const { trayMenuTemplate, escapeMenuLabel } = sharedModule('tray-menu.js') as {
-  trayMenuTemplate: (s: { panelVisible: boolean; alwaysOnTop: boolean }) => TrayMenuItem[];
+  trayMenuTemplate: (s: { panelVisible: boolean; alwaysOnTop: boolean; paperMode: boolean }) => TrayMenuItem[];
   escapeMenuLabel:  (label: string | undefined) => string;
 };
 
@@ -163,6 +165,7 @@ function trayMenuActions(): Record<string, (checked: boolean) => void> {
       rebuildMenu();
     },
     pnlWindow:     () => openPnlWindow(),
+    paperMode:     (checked) => setPaperMode(checked),
     openLogFolder: () => { void shell.openPath(logDir()); },
     resetRecorder: () => { void confirmResetTradeRecorder(); },
     quit:          () => { isQuitting = true; app.quit(); },
@@ -187,6 +190,7 @@ function rebuildMenu(): void {
   const template = trayMenuTemplate({
     panelVisible: mainWindow.isVisible(),
     alwaysOnTop:  mainWindow.isAlwaysOnTop(),
+    paperMode:    paperMode(),
   });
   tray.setContextMenu(Menu.buildFromTemplate(toElectronTemplate(template, trayMenuActions())));
 }
@@ -644,18 +648,124 @@ function autoDrawResult(result: AnalysisResult): void {
 
 }
 
-type TrayTitleOpts = { now?: number; staleMinutes?: number; isTestProfile?: boolean };
+type TrayTitleOpts = {
+  now?: number; staleMinutes?: number; isTestProfile?: boolean;
+  paperMode?: boolean; source?: string | null; switchHint?: string | null; feedReason?: string | null;
+};
 const { trayTitleColoured, trayTooltip } = sharedModule('tray-title.js') as {
   trayTitleColoured: (s: OrderImportState | null, o?: TrayTitleOpts) => string;
   trayTooltip:       (s: OrderImportState | null, o?: TrayTitleOpts) => string;
 };
 
+const { mergePnl, mergedToImportState } = sharedModule('pnl-merge.js') as {
+  mergePnl: (i: Record<string, unknown>) => import('../shared/types').MergedPnlState;
+  mergedToImportState: (m: unknown, c: unknown, f: unknown) => OrderImportState;
+};
+
+/** Whether TVCM is reading the paper account instead of AMP Live. */
+function paperMode(): boolean {
+  return getSettings().paperMode === true;
+}
+
+/** Where this mode's live-feed reading is cached. Live and paper never share a file. */
+function liveFeedStatePath(mode: 'live' | 'paper'): string {
+  return path.join(app.getPath('userData'), `live-feed-${mode}.json`);
+}
+
+/**
+ * The one view everything renders: the live feed for the current session, the CSV import
+ * for past days, and whichever complaint matters most. Built fresh on every read so the
+ * session rollover and the stale rules are always evaluated against the current clock.
+ */
+function currentMergedState(): import('../shared/types').MergedPnlState {
+  const settings = getSettings();
+  return mergePnl({
+    feed: liveFeed?.getState() ?? null,
+    csv:  orderImport?.getState() ?? null,
+    now:  Date.now(),
+    mode: paperMode() ? 'paper' : 'live',
+    staleMinutes: settings.orderImportStaleMinutes ?? 30,
+  });
+}
+
+/**
+ * Flips between the live and the paper account. One setting backs the tray item, the
+ * window header and the Settings panel, so all three move together; everything the feed
+ * held is dropped first, because a paper reading has no business surviving into a live
+ * view even for one poll.
+ */
+function setPaperMode(on: boolean): void {
+  const next = !!on;
+  if (getSettings().paperMode === next) return;
+  saveSettings({ ...getSettings(), paperMode: next });
+  const mode: 'live' | 'paper' = next ? 'paper' : 'live';
+  liveFeed?.setMode(mode, liveFeedStatePath(mode));
+  console.log(`[live-feed] switched to ${mode} mode`);
+  rebuildMenu();
+  publishPnl();
+  mainWindow?.webContents.send(IPC.PAPER_MODE_PUSH, next);
+  if (pnlWindow && !pnlWindow.isDestroyed()) pnlWindow.webContents.send(IPC.PAPER_MODE_PUSH, next);
+}
+
+/** The merged view flattened into the shape the panel and the P&L window already read. */
+function displayState(): OrderImportState {
+  return mergedToImportState(currentMergedState(), orderImport?.getState() ?? null, liveFeed?.getState() ?? null);
+}
+
+/**
+ * The sessions the window may list. In paper mode only the feed's own sessions, because
+ * the AMP export holds real money and has no place in a paper view. In live mode the
+ * export owns past days, with the feed's current session added when the export has not
+ * caught up to it yet.
+ */
+function sessionList(): import('../shared/types').SessionListItem[] {
+  const feedList = liveFeed?.listSessions() ?? [];
+  if (paperMode()) return feedList;
+  const csvList = orderImport?.listSessions() ?? [];
+  const today = currentMergedState().currentSession;
+  const haveToday = csvList.some(s => s.sessionDate === today);
+  const feedToday = feedList.find(s => s.sessionDate === today);
+  return (!haveToday && feedToday) ? [feedToday, ...csvList] : csvList;
+}
+
+/** One session's detail, from whichever source actually holds that session. */
+function sessionDetail(sessionDate: string): import('../shared/types').SessionDetail {
+  const merged = currentMergedState();
+  const feedOwns = !!liveFeed && liveFeed.getMode() === merged.mode && liveFeed.hasSession(sessionDate);
+  // The feed answers for the session it owns; in paper mode it answers for all of them,
+  // because the export is live money and must never be read into a paper view.
+  if (feedOwns && (paperMode() || sessionDate === merged.currentSession)) {
+    return liveFeed!.getSessionDetail(sessionDate);
+  }
+  if (paperMode()) {
+    return { sessionDate, session: null, trades: [], fills: [], boundary: null };
+  }
+  return orderImport?.getSessionDetail(sessionDate)
+      ?? { sessionDate, session: null, trades: [], fills: [], boundary: null };
+}
+
+/** Repaints the tray and pushes the merged view to both windows. */
+function publishPnl(): void {
+  refreshTrayTitle();
+  const state = displayState();
+  mainWindow?.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
+  if (pnlWindow && !pnlWindow.isDestroyed()) pnlWindow.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
+}
+
 /** Repaints the menu-bar title and tooltip from the latest import state. */
 function refreshTrayTitle(): void {
   if (!tray) return;
-  const state = orderImport?.getState() ?? null;
+  const merged = currentMergedState();
+  const state = mergedToImportState(merged, orderImport?.getState() ?? null, liveFeed?.getState() ?? null);
   const staleMinutes = getSettings().orderImportStaleMinutes ?? 30;
-  const opts = { staleMinutes, isTestProfile: isTestProfile() };
+  const opts: TrayTitleOpts = {
+    staleMinutes,
+    isTestProfile: isTestProfile(),
+    paperMode:     paperMode(),
+    source:        merged.source === 'none' ? null : merged.source,
+    switchHint:    merged.switchHint,
+    feedReason:    merged.feedReason,
+  };
   try {
     // monospacedDigit stops the title's width jittering as the number changes.
     tray.setTitle(trayTitleColoured(state, opts), { fontType: 'monospacedDigit' });
@@ -907,13 +1017,26 @@ app.on('ready', () => {
     // for testing without editing the real settings file.
     folder:    process.env.TVCM_ORDER_IMPORT_FOLDER || importSettings.orderImportFolder,
     statePath: path.join(app.getPath('userData'), 'order-import.json'),
-    onChange:  (state) => {
-      mainWindow?.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
-      if (pnlWindow && !pnlWindow.isDestroyed()) pnlWindow.webContents.send(IPC.ORDER_IMPORT_PUSH, state);
-      refreshTrayTitle();
-    },
+    // The watcher's own state is no longer what anyone renders — publishPnl() merges it
+    // with the live feed first — so a change just asks for a repaint.
+    onChange:  () => publishPnl(),
   });
   if (importSettings.orderImportEnabled !== false) orderImport.start();
+
+  // Live feed: TradingView's own executions, over the CDP connection the analyzer
+  // already keeps. It drives the CURRENT session; the CSV import still owns past days
+  // and remains the statement-proven record if the two ever disagree.
+  const feedMode: 'live' | 'paper' = importSettings.paperMode ? 'paper' : 'live';
+  liveFeed = new LiveFeedReader({
+    evalPage,
+    mode:           feedMode,
+    pollIntervalMs: Math.max(1, importSettings.liveFeedPollSeconds ?? 5) * 1000,
+    perContractSideFee: () => getSettings().feePerContractSide ?? 0.60,
+    statePath:      liveFeedStatePath(feedMode),
+    onChange:       () => publishPnl(),
+  });
+  if (importSettings.liveFeedEnabled !== false) liveFeed.start();
+
   refreshTrayTitle();
   // The title also has to change on its own: the stale marker appears with the
   // passage of time, and the session rolls over at 17:00 CT with nothing happening.
@@ -1013,6 +1136,14 @@ app.on('ready', () => {
     if ('orderImportEnabled' in partial) {
       if (partial.orderImportEnabled) orderImport?.start(); else orderImport?.stop();
     }
+    if ('liveFeedEnabled' in partial) {
+      if (partial.liveFeedEnabled) liveFeed?.start(); else liveFeed?.stop();
+    }
+    // Settings is the third place the toggle lives; route it through the one function
+    // so the tray checkbox and both windows follow.
+    if ('paperMode' in partial && partial.paperMode !== undefined) {
+      setPaperMode(partial.paperMode);
+    }
     if ('orderImportStaleMinutes' in partial || 'orderImportEnabled' in partial) {
       refreshTrayTitle();
     }
@@ -1028,11 +1159,15 @@ app.on('ready', () => {
 
   // IPC: P&L
   ipcMain.handle(IPC.PNL_GET, () => pnlTracker?.getSnapshot() ?? null);
-  ipcMain.handle(IPC.ORDER_IMPORT_GET, () => orderImport?.getState() ?? null);
+  ipcMain.handle(IPC.ORDER_IMPORT_GET, () => displayState());
+  ipcMain.handle(IPC.PAPER_MODE_GET, () => ({
+    paperMode: paperMode(),
+    merged:    currentMergedState(),
+  }));
+  ipcMain.handle(IPC.PAPER_MODE_SET, (_e, on: boolean) => { setPaperMode(!!on); return paperMode(); });
   ipcMain.handle(IPC.PNL_WINDOW_CLOSE, () => { pnlWindow?.close(); });
-  ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => orderImport?.listSessions() ?? []);
-  ipcMain.handle(IPC.ORDER_IMPORT_DETAIL, (_e, sessionDate: string) =>
-    orderImport?.getSessionDetail(sessionDate) ?? { sessionDate, session: null, trades: [], fills: [], boundary: null });
+  ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => sessionList());
+  ipcMain.handle(IPC.ORDER_IMPORT_DETAIL, (_e, sessionDate: string) => sessionDetail(sessionDate));
 
   // IPC: trade plan bracket
   ipcMain.handle(IPC.ANNOTATE_TRADE_PLAN, async (_e, entry: number, stop: number, target: number) => {
@@ -1147,6 +1282,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   pnlTracker?.stop();
   orderImport?.stop();
+  liveFeed?.stop();
   if (trayTitleTimer) { clearInterval(trayTitleTimer); trayTitleTimer = null; }
   void disconnect();
 });

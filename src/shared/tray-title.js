@@ -36,6 +36,13 @@ const MAX_TOOLTIP_REASON = 120;
  */
 const TEST_PREFIX = 'TEST ';
 
+/**
+ * Prefixed while Paper mode is on. Paper money and real money render identically
+ * otherwise, and the whole point of the menu bar is to be glanced at — so the label goes
+ * where the glance lands, not in a tooltip nobody opens mid-trade.
+ */
+const PAPER_PREFIX = 'PAPER ';
+
 const DEFAULT_STALE_MINUTES = 30;
 
 /**
@@ -76,6 +83,11 @@ function isStale(importedAt, now, staleMinutes) {
   return (Number(now) - Number(importedAt)) > minutes * 60_000;
 }
 
+/** The labels that go in front of the number: profile first, then account. */
+function titlePrefix(opts) {
+  return (opts.isTestProfile ? TEST_PREFIX : '') + (opts.paperMode ? PAPER_PREFIX : '');
+}
+
 /**
  * True when the most recent import attempt failed. The watcher clears `errorCode` on
  * every success and sets it on every failure, so a latched code *is* "the last attempt
@@ -100,7 +112,7 @@ function shortReason(message) {
 function trayTitle(state, options) {
   const opts = options || {};
   const now = opts.now == null ? Date.now() : Number(opts.now);
-  const prefix = opts.isTestProfile ? TEST_PREFIX : '';
+  const prefix = titlePrefix(opts);
   const failed = hasFailedImport(state);
 
   // Nothing good to fall back on. The dash already says "do not act on this", but the
@@ -132,12 +144,19 @@ function stripAnsi(text) {
   return String(text == null ? '' : text).replace(/\u001b\[[0-9;]*m/g, '');
 }
 
+/** Names where the displayed number came from, so "as of" is never ambiguous. */
+function sourceLabel(source) {
+  if (source === 'feed') return 'Live feed read';
+  if (source === 'csv')  return 'From the export, imported';
+  return 'Imported';
+}
+
 /** A longer line for the tray tooltip, where there is room to say which session it is. */
 function trayTooltip(state, options) {
   const opts = options || {};
   const now = opts.now == null ? Date.now() : Number(opts.now);
   if (!state || !state.session || state.importedAt == null) {
-    const head = opts.isTestProfile ? 'TEST PROFILE — ' : '';
+    const head = (opts.isTestProfile ? 'TEST PROFILE — ' : '') + (opts.paperMode ? 'PAPER — ' : '');
     // An attempt that failed must not be reported as "nothing has happened yet".
     if (hasFailedImport(state)) {
       return head + 'Trading Analyzer — no usable order-history import\n' +
@@ -150,22 +169,26 @@ function trayTooltip(state, options) {
     { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' });
   const lines = [];
   if (opts.isTestProfile) lines.push('TEST PROFILE — not your everyday TVCM');
+  if (opts.paperMode) lines.push('PAPER — paper account, not real money');
   lines.push(
     `Session ${s.sessionDate}${state.isFallback ? ' (last session with fills)' : ''}`,
     `Net ${formatNet(s.netPnl)}  ·  Gross ${formatNet(s.grossPnl)}  ·  Fees $${s.fees.toFixed(2)}`,
     `${s.contractSides} contract-sides (${s.roundTrips} RT)`,
-    `Imported ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
+    `${sourceLabel(opts.source)} ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
   );
   if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
   if (hasFailedImport(state)) {
     lines.push(`Last import failed: ${state.errorCode} — ${shortReason(state.errorMessage)}`);
     lines.push('Showing the last good import — the number above is not being refreshed');
   }
+  if (opts.switchHint) lines.push(opts.switchHint);
+  if (opts.feedReason) lines.push(`Live feed: ${shortReason(opts.feedReason)}`);
   return lines.join('\n');
 }
 
 module.exports = {
-  NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, DEFAULT_STALE_MINUTES, MAX_TOOLTIP_REASON, ANSI,
-  formatNet, ansiFor, isStale, hasFailedImport, shortReason,
+  NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, PAPER_PREFIX,
+  DEFAULT_STALE_MINUTES, MAX_TOOLTIP_REASON, ANSI,
+  formatNet, ansiFor, isStale, hasFailedImport, shortReason, titlePrefix, sourceLabel,
   trayTitle, trayTitleColoured, stripAnsi, trayTooltip,
 };

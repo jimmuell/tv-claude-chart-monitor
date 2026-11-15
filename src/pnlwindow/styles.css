@@ -125,3 +125,39 @@ body {
 .fills-title { color: var(--text-secondary); font-size: 11px; margin-bottom: 6px; }
 .grid.inner th { background: transparent; position: static; border-bottom-color: rgba(54,58,69,0.6); }
 .grid.inner td { border-bottom: none; padding: 5px 12px; }
+
+/* Paper mode: the label has to be impossible to miss, because the whole risk is
+   mistaking play money for real money at a glance. */
+.paper-chip {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #8a6d1f;
+  color: #ffe9a8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.warn-chip {
+  margin-right: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #5c2b2b;
+  color: #ffb4b4;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.paper-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.paper-toggle input { cursor: pointer; }

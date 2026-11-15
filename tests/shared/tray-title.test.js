@@ -350,3 +350,82 @@ test('a very long error message is truncated so the tooltip stays readable', () 
   assert.ok(line.length < 200, `tooltip line is ${line.length} chars`);
   assert.ok(line.includes('…'), 'a truncated message should say so: ' + line);
 });
+
+// ── Paper mode in the menu bar (TVCM-26) ──────────────────────────────────
+// Paper money must be impossible to mistake for real money at a glance, and a
+// toggle that disagrees with TradingView's actual account must say so — in both
+// directions, because either way the number on screen is the wrong account's.
+
+test('paper mode prefixes the number, so play money never reads as real', () => {
+  assert.strictEqual(trayTitle(state(), { now: FRI_OPEN, paperMode: true }), 'PAPER +$896.65');
+  assert.strictEqual(tt.PAPER_PREFIX, 'PAPER ');
+});
+
+test('the everyday live view carries no paper prefix', () => {
+  assert.strictEqual(trayTitle(state(), { now: FRI_OPEN, paperMode: false }), '+$896.65');
+  assert.strictEqual(trayTitle(state(), { now: FRI_OPEN }), '+$896.65');
+});
+
+test('a test profile and paper mode are both labelled, and in a fixed order', () => {
+  assert.strictEqual(trayTitle(state(), { now: FRI_OPEN, paperMode: true, isTestProfile: true }),
+    'TEST PAPER +$896.65');
+});
+
+test('paper mode labels the dash and a loss too', () => {
+  assert.strictEqual(trayTitle(null, { now: FRI_OPEN, paperMode: true }), 'PAPER P&L —');
+  assert.strictEqual(trayTitle(state({ net: -12.5 }), { now: FRI_OPEN, paperMode: true }), 'PAPER -$12.50');
+});
+
+test('the paper prefix survives the warning marker and the colour wrapper', () => {
+  const s = state({ importedAt: FRI_OPEN - 45 * MIN });
+  assert.strictEqual(trayTitle(s, { now: FRI_OPEN, paperMode: true }), 'PAPER +$896.65 ⚠');
+  assert.strictEqual(tt.stripAnsi(tt.trayTitleColoured(state(), { now: FRI_OPEN, paperMode: true })),
+    'PAPER +$896.65');
+});
+
+test('an account mismatch is marked in the menu bar, whichever way round it is', () => {
+  const onPaperToggleOff = state();
+  onPaperToggleOff.errorCode    = 'TVCM-LF-ACCOUNT-MISMATCH';
+  onPaperToggleOff.errorMessage = 'TradingView is on Paper Trading but Paper mode is off';
+  assert.strictEqual(trayTitle(onPaperToggleOff, { now: FRI_OPEN, paperMode: false }), '+$896.65 ⚠');
+
+  const onLiveToggleOn = state();
+  onLiveToggleOn.errorCode    = 'TVCM-LF-ACCOUNT-MISMATCH';
+  onLiveToggleOn.errorMessage = 'TradingView is on AMP Live but Paper mode is on';
+  assert.strictEqual(trayTitle(onLiveToggleOn, { now: FRI_OPEN, paperMode: true }), 'PAPER +$896.65 ⚠');
+});
+
+test('the tooltip tells Jim which way to switch', () => {
+  const s = state();
+  s.errorCode    = 'TVCM-LF-ACCOUNT-MISMATCH';
+  s.errorMessage = 'TradingView is on Paper Trading but Paper mode is off';
+  const t = trayTooltip(s, { now: FRI_OPEN, switchHint: 'Turn Paper mode on, or switch TradingView to AMP Live.' });
+  assert.ok(t.includes('TVCM-LF-ACCOUNT-MISMATCH'), t);
+  assert.ok(t.includes('Turn Paper mode on'), 'the tooltip must say what to do: ' + t);
+});
+
+test('the tooltip says plainly that a paper number is not real money', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, paperMode: true });
+  assert.ok(/PAPER/.test(t), t);
+  assert.ok(/not real money/i.test(t), 'a paper tooltip must say so in words: ' + t);
+  assert.ok(!/not real money/i.test(trayTooltip(state(), { now: FRI_OPEN })), 'the live tooltip must not');
+});
+
+test('the empty tooltip is labelled in paper mode too', () => {
+  const t = trayTooltip(null, { now: FRI_OPEN, paperMode: true });
+  assert.ok(t.startsWith('PAPER —'), t);
+});
+
+test('replay is explained in the tooltip without marking the menu bar', () => {
+  const s = state();
+  const t = trayTooltip(s, { now: FRI_OPEN, feedReason: 'not available in replay — TradingView is in Bar Replay' });
+  assert.ok(/replay/i.test(t), t);
+  assert.strictEqual(trayTitle(s, { now: FRI_OPEN }), '+$896.65', 'replay must not warn');
+});
+
+test('the "as of" line names which source produced the number', () => {
+  const live = trayTooltip(state(), { now: FRI_OPEN, source: 'feed' });
+  assert.ok(/live feed/i.test(live), live);
+  const csv = trayTooltip(state(), { now: FRI_OPEN, source: 'csv' });
+  assert.ok(/export/i.test(csv), csv);
+});
