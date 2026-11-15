@@ -16,7 +16,8 @@
     "build:pnl": "vite build --config vite.pnl.config.ts",
     "dev:pnl": "vite --config vite.pnl.config.ts",
     "test:electron": "ELECTRON_RUN_AS_NODE=1 electron --test tests/main/*.electron.test.js",
-    "test:all": "npm test && npm run test:electron"
+    "test:all": "npm test && npm run test:electron",
+    "check:live-feed": "node scripts/check-live-feed.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
