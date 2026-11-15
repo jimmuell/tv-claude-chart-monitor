@@ -665,16 +665,22 @@ function refreshTrayTitle(): void {
   }
 }
 
+const { raiseToFront } = sharedModule('raise-to-front.js') as {
+  raiseToFront: (win: BrowserWindow, activateApp: () => void) => void;
+};
+
+/** Brings a window in front of every other app, however TVCM is placed at the time. */
+function bringToFront(win: BrowserWindow): void {
+  raiseToFront(win, () => app.focus({ steal: true }));
+}
+
 /**
  * Opens the Order History & P&L window, or focuses it if it is already up. It reads the
  * imported export over IPC — there is no server and no connection to TradingView.
  */
 function openPnlWindow(): void {
   if (pnlWindow && !pnlWindow.isDestroyed()) {
-    if (pnlWindow.isMinimized()) pnlWindow.restore();
-    pnlWindow.show();
-    pnlWindow.focus();
-    app.focus({ steal: true });
+    bringToFront(pnlWindow);
     return;
   }
   const st = loadPnlState();
@@ -700,7 +706,7 @@ function openPnlWindow(): void {
   }
 
   // Opened from the menu, it must land in front — otherwise it hides behind the editor.
-  pnlWindow.once('ready-to-show', () => { pnlWindow?.show(); pnlWindow?.focus(); app.focus({ steal: true }); });
+  pnlWindow.once('ready-to-show', () => { if (pnlWindow) bringToFront(pnlWindow); });
   pnlWindow.on('moved',   () => { if (pnlWindow) savePnlState(pnlWindow); });
   pnlWindow.on('resized', () => { if (pnlWindow) savePnlState(pnlWindow); });
   pnlWindow.on('closed',  () => { pnlWindow = null; });

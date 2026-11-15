@@ -133,6 +133,7 @@ Two-process Electron app with no dock icon (macOS menubar only).
 | `detectors/swing-pivots.js` | 3-bar pivot cluster detector; returns `SuggestedLevel[]` with `touchCount`, `strength`, etc. |
 | `strategies/orb.js` | Opening Range Breakout strategy; `computeOrbState()` returns phase, breakouts, signal, levels, zones |
 | `order-history.js` | Parses a TradingView Order history CSV into per-session realized P&L, contract-sides and fees. Session = 17:00→17:00 America/Chicago named for the day it ends; counts any row with `Fill quantity > 0` regardless of Status; dedupes by Order ID; FIFO lot queue carried across sessions. Pure — no Electron, no CDP |
+| `raise-to-front.js` | `raiseToFront(win, activateApp)` — brings a window in front of every other app by lifting its window level to floating, then dropping it back. Pure; no Electron import |
 | `utils.ts` | `parsePrice()` — extracts first numeric value from a free-text price string |
 
 ## Annotator: Pine indicator slot layout
