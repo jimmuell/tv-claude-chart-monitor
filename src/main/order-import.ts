@@ -3,7 +3,8 @@ import os   from 'os';
 import path from 'path';
 import { currentSessionDate } from './session-clock-bridge';
 import { sharedModule } from './shared-require';
-import type { ImportedSession, OrderImportState, ImportedTrade, ImportedFill, SessionBoundary, SessionDetail, SessionListItem } from '../shared/types';
+import { toImportedSession, toImportedTrade, toImportedFill, toBoundary } from './engine-shapes';
+import type { OrderImportState, ImportedSession, ImportedTrade, ImportedFill, SessionBoundary, SessionDetail, SessionListItem } from '../shared/types';
 
 // The engine proved against AMP's statement in TVCM-13. It is a shared CommonJS
 // module that tsc does not compile, so it is loaded at runtime.
@@ -62,60 +63,6 @@ export function isLiveExportFileName(name: string): boolean {
 /** True when a filename is an order-history export of any account, live or not. */
 export function isOrderHistoryFileName(name: string): boolean {
   return ORDER_HISTORY_NAME_PATTERN.test(name);
-}
-
-/** Converts the engine's session object into the shape the UI consumes. */
-function toImportedSession(s: any): ImportedSession {
-  return {
-    sessionDate:         s.sessionDate,
-    fillCount:           s.fillCount,
-    buys:                s.buys,
-    sells:               s.sells,
-    avgBuy:              s.avgBuy,
-    avgSell:             s.avgSell,
-    grossPnl:            s.grossPnl,
-    contractSides:       s.contractSides,
-    roundTrips:          s.contractSides / 2,
-    fees:                s.fees,
-    netPnl:              s.netPnl,
-    openPositionAtStart: s.openPositionAtStart,
-    openPositionAtEnd:   s.openPositionAtEnd,
-  };
-}
-
-/** Copies one engine trade into the shape the window consumes. */
-function toImportedTrade(t: any): ImportedTrade {
-  return {
-    id: t.id, status: t.status, direction: t.direction,
-    sessionDate: t.sessionDate, openSessionDate: t.openSessionDate,
-    crossesBoundary: t.crossesBoundary,
-    openTime: t.openTime, closeTime: t.closeTime,
-    entryQty: t.entryQty, exitQty: t.exitQty,
-    avgEntry: t.avgEntry, avgExit: t.avgExit,
-    maxPositionSize: t.maxPositionSize, contractSides: t.contractSides,
-    gross: t.gross, fees: t.fees, net: t.net,
-    orderIds: t.orderIds,
-  };
-}
-
-/** Copies one engine fill into the shape the window consumes. */
-function toImportedFill(f: any): ImportedFill {
-  return {
-    orderId: f.orderId, symbol: f.symbol, side: f.side, qty: f.qty, price: f.price,
-    fillTime: f.fillTime, sessionDate: f.sessionDate, status: f.status, orderType: f.orderType,
-  };
-}
-
-/** Reduces a session's trade reconciliation to the few numbers the window shows. */
-function toBoundary(rec: any): SessionBoundary | null {
-  if (!rec) return null;
-  return {
-    boundaryNet:      rec.boundaryNet,
-    outboundTradeIds: rec.outbound ? rec.outbound.tradeIds : [],
-    inboundTradeIds:  rec.inbound ? rec.inbound.tradeIds : [],
-    tradeCount:       rec.tradeCount,
-    openTradeIds:     rec.openTradeIds || [],
-  };
 }
 
 /** An empty state, used before the first import and when the cache cannot be read. */

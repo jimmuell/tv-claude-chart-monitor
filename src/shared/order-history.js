@@ -454,8 +454,6 @@ function toCents(n) {
  */
 function analyseOrderHistory(texts, options) {
   const opts = options || {};
-  const pointValue = opts.pointValue == null ? MES_POINT_VALUE : opts.pointValue;
-  const rate = opts.perContractSideFee == null ? DEFAULT_PER_CONTRACT_SIDE_FEE : opts.perContractSideFee;
   const inputs = Array.isArray(texts) ? texts : [texts];
 
   let parsed = [];
@@ -468,7 +466,25 @@ function analyseOrderHistory(texts, options) {
     skipped.push(...r.skipped);
   });
 
-  const { fills: unique, replaced } = dedupeByOrderId(parsed);
+  return analyseFills(parsed, { ...opts, skipped, errors });
+}
+
+/**
+ * The same analysis, starting from fills that are already parsed. The CSV path reaches
+ * it through analyseOrderHistory(); the live feed reaches it directly, so both get the
+ * identical session, FIFO and fee rules rather than a second implementation of them.
+ *
+ * `fills` must be in the shape parseOrderHistoryCsv() produces. They are deduped and
+ * sorted here, so a caller may pass them in any order and need not dedupe first.
+ */
+function analyseFills(inputFills, options) {
+  const opts = options || {};
+  const pointValue = opts.pointValue == null ? MES_POINT_VALUE : opts.pointValue;
+  const rate = opts.perContractSideFee == null ? DEFAULT_PER_CONTRACT_SIDE_FEE : opts.perContractSideFee;
+  const skipped = opts.skipped || [];
+  const errors = opts.errors || [];
+
+  const { fills: unique, replaced } = dedupeByOrderId(inputFills || []);
   const fills = sortChronologically(unique);
 
   if (fills.length === 0) {
@@ -565,6 +581,7 @@ module.exports = {
   sortChronologically,
   runFifoLedger,
   analyseOrderHistory,
+  analyseFills,
   sessionSummary,
   sessionTrades,
   finaliseTrade,

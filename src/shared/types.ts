@@ -45,6 +45,9 @@ export const IPC = {
   ORDER_IMPORT_SESSIONS:     'orderImport:sessions',
   ORDER_IMPORT_DETAIL:       'orderImport:detail',
   PNL_WINDOW_CLOSE:          'pnlWindow:close',
+  PAPER_MODE_GET:            'paperMode:get',
+  PAPER_MODE_SET:            'paperMode:set',
+  PAPER_MODE_PUSH:           'paperMode:push',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -283,6 +286,66 @@ export interface OrderImportState {
   watchFolder:    string | null;
 }
 
+/** Why the live feed is or is not reading right now. */
+export type LiveFeedGate =
+  | 'ok'            // the broker matches the mode and was read
+  | 'replay'        // TradingView is in Bar Replay — not available, not a fault
+  | 'mismatch'      // the paper toggle disagrees with TradingView's account
+  | 'unknown'       // a broker id this build does not recognise
+  | 'absent'        // no broker connected
+  | 'unreadable'    // the API or the execution shape is not what we know
+  | 'disconnected'; // CDP could not be reached
+
+/**
+ * What the live order feed knows. Held per mode and NEVER shared between them: a paper
+ * reading and a live reading are different accounts' money.
+ */
+export interface LiveFeedState {
+  mode:              'live' | 'paper';
+  brokerId:          string | null;
+  account:           string | null;
+  available:         boolean;
+  state:             LiveFeedGate;
+  /** Plain English, for the tooltip. Null when everything is fine. */
+  reason:            string | null;
+  /** What Jim should do about a mismatch, in one sentence. */
+  switchHint:        string | null;
+  /** The CURRENT session as the feed computes it; past days never come from here. */
+  session:           ImportedSession | null;
+  currentSession:    string | null;
+  executionCount:    number;
+  fillCount:         number;
+  skippedCount:      number;
+  openPositionCount: number | null;
+  /** Epoch ms of the last SUCCESSFUL read. */
+  readAt:            number | null;
+  lastAttemptAt:     number | null;
+  errorCode:         string | null;
+  errorMessage:      string | null;
+  warn:              boolean;
+}
+
+/** The single view the tray, the panel and the Order History window all render. */
+export interface MergedPnlState {
+  mode:               'live' | 'paper';
+  session:            ImportedSession | null;
+  source:             'feed' | 'csv' | 'none';
+  isFallback:         boolean;
+  currentSession:     string | null;
+  /** Epoch ms the displayed number was produced — the feed read, or the CSV import. */
+  asOf:               number | null;
+  asOfSource:         'feed' | 'csv' | null;
+  disagreement:       { code: string; feedNet: number; csvNet: number; delta: number; sessionDate: string | null } | null;
+  feedStale:          boolean;
+  feedState:          LiveFeedGate | null;
+  feedReason:         string | null;
+  switchHint:         string | null;
+  pastSessionsSource: 'csv' | null;
+  errorCode:          string | null;
+  errorMessage:       string | null;
+  warn:               boolean;
+}
+
 // ---------------------------------------------------------------------------
 // App settings — persisted to userData/settings.json
 // ---------------------------------------------------------------------------
@@ -317,6 +380,12 @@ export interface AppSettings {
   orderImportEnabled:       boolean;  // watch for exports at all; default true
   orderImportFolder:        string;   // '' means ~/Downloads
   orderImportStaleMinutes:  number;   // menu bar warns past this age while the market is open; default 30
+  /** Read TradingView's executions directly instead of waiting for a CSV export; default true. */
+  liveFeedEnabled:          boolean;
+  /** Seconds between live-feed reads; default 5. */
+  liveFeedPollSeconds:      number;
+  /** Paper mode: read the paper account instead of AMP Live. Never mixed with live. */
+  paperMode:                boolean;
   /** The rules lever. Applied AFTER analysis; blocked calls are saved and graded anyway. */
   rules:               TradingRules;
 }
