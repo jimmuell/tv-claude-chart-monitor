@@ -303,3 +303,38 @@ test('the date is shown always, not only inside a range', () => {
   // There is no "range" argument: a row knows its own date and always says it.
   assert.strictEqual(v.tradeRow.length, 1, 'tradeRow must not need a range to format a date');
 });
+
+// ── The carried label (TVCM-35 Task 3) ───────────────────────────────────
+// TVCM-34: the window said "came from a trade that closed on another day"
+// about P&L realized INSIDE a trade that had not closed at all, in this very
+// session. Two different situations, two different sentences.
+
+test('a trade still open in this session is labelled as such, not as carried', () => {
+  const detail = { sessionDate: '2026-11-16', boundary: { boundaryNet: -1141.50, openTradeIds: [159],
+                   outboundTradeIds: [], inboundTradeIds: [], tradeCount: 29 } };
+  const t = v.carriedExplanation(detail);
+  assert.ok(t, 'there must still be an explanation');
+  assert.ok(!/another day/i.test(t), 'nothing closed on another day: ' + t);
+  assert.ok(/still open|has not closed|open trade/i.test(t), t);
+});
+
+test('a trade genuinely crossing 17:00 CT keeps the old wording', () => {
+  const detail = { sessionDate: '2026-11-13', boundary: { boundaryNet: -434.75, openTradeIds: [],
+                   outboundTradeIds: [], inboundTradeIds: [88], tradeCount: 71 } };
+  const t = v.carriedExplanation(detail);
+  assert.ok(/another day/i.test(t), t);
+});
+
+test('both at once mentions both, rather than picking one', () => {
+  const detail = { sessionDate: '2026-11-16', boundary: { boundaryNet: -50, openTradeIds: [159],
+                   outboundTradeIds: [], inboundTradeIds: [88], tradeCount: 10 } };
+  const t = v.carriedExplanation(detail);
+  assert.ok(/another day/i.test(t), t);
+  assert.ok(/still open|has not closed|open trade/i.test(t), t);
+});
+
+test('a session that balances says nothing at all', () => {
+  assert.strictEqual(v.carriedExplanation({ boundary: { boundaryNet: 0, openTradeIds: [] } }), null);
+  assert.strictEqual(v.carriedExplanation({ boundary: null }), null);
+  assert.strictEqual(v.carriedExplanation(null), null);
+});

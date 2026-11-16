@@ -132,7 +132,16 @@ export function summaryRows(detail, state) {
 export function carriedExplanation(detail) {
   const b = detail && detail.boundary;
   if (!b || b.boundaryNet === 0) return null;
-  return "Part of this day's P&L came from a trade that closed on another day.";
+  // Two different situations used to share one sentence. TVCM-34 showed the window
+  // telling Jim money "came from a trade that closed on another day" when the trade in
+  // question had not closed at all and was still running in this very session.
+  const crossesDay = (b.outboundTradeIds || []).length > 0 || (b.inboundTradeIds || []).length > 0;
+  const stillOpen  = (b.openTradeIds || []).length > 0;
+  const parts = [];
+  if (crossesDay) parts.push("a trade that closed on another day");
+  if (stillOpen)  parts.push("a trade that is still open");
+  if (parts.length === 0) parts.push("a trade that does not sit inside this day");
+  return `Part of this day's P&L came from ${parts.join(' and from ')}.`;
 }
 
 /** A trade's time span, with the date shown once, or twice when it spans midnight. */
