@@ -293,3 +293,48 @@ body {
   border-bottom: 1px solid var(--border);
   font-size: 12.5px;
 }
+
+/* Sortable column headings. The arrow only ever appears on the column actually being
+   sorted by, so the table can never look sorted two ways at once. */
+.grid th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.grid th.sortable:hover { color: var(--text-primary); }
+.grid th.sorted { color: var(--text-primary); }
+
+.sort-arrow {
+  display: inline-block;
+  width: 10px;
+  margin-left: 3px;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* Which kind of day is on screen, and the hours it covers. Jim asked for this after
+   "Today" showed Sunday's trades — which is right, and now says so. */
+.daymode {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.window-note {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 16px 6px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.calendar-warn, .calendar-note {
+  color: #e0b84a;
+}
+
+.calendar-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
