@@ -321,6 +321,10 @@ export interface LiveFeedState {
   fillCount:         number;
   skippedCount:      number;
   openPositionCount: number | null;
+  /** The broker's own realized figure for the session, summed across symbols. */
+  brokerProfit:      number | null;
+  /** Whether the feed's arithmetic agrees with the broker's, and why not. */
+  crossCheck:        { state: 'ok' | 'disagree' | 'blind' | 'unavailable'; code: string | null; delta: number | null; message: string | null } | null;
   /** Epoch ms of the last SUCCESSFUL read. */
   readAt:            number | null;
   lastAttemptAt:     number | null;

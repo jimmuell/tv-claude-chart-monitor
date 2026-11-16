@@ -31,17 +31,10 @@ export function emptyLiveFeedState(mode: 'live' | 'paper'): LiveFeedState {
   return {
     mode, brokerId: null, account: null, available: false, state: 'disconnected',
     reason: null, switchHint: null, session: null, fallbackSession: null, currentSession: null,
-    source: null,
+    source: null, brokerProfit: null, crossCheck: null,
     executionCount: 0, fillCount: 0, skippedCount: 0, openPositionCount: null,
     readAt: null, lastAttemptAt: null, errorCode: null, errorMessage: null, warn: false,
   };
-}
-
-/** Contracts actually held open, summed across symbols — not the number of symbol rows. */
-function openQuantity(payload: any): number | null {
-  const rows = Array.isArray(payload?.positions) ? payload.positions.filter(Boolean) : null;
-  if (!rows) return null;
-  return rows.reduce((n: number, p: any) => n + Math.abs(Number(p.qty) || 0), 0);
 }
 
 /**
@@ -186,6 +179,21 @@ export class LiveFeedReader {
       const today = currentSessionDate(new Date(at));
       const match = (result.sessions || []).find((s: any) => s.sessionDate === today);
 
+      // The broker's own arithmetic, as a check on ours. A feed that can be silently
+      // wrong about the one number Jim acts on is worse than one that breaks (TVCM-28).
+      const brokerProfit = liveFeed.sumBrokerProfit(payload.positions);
+      const openQty      = liveFeed.sumOpenQty(payload.positions);
+      const check = liveFeed.crossCheck({
+        fillCount:          match ? match.fillCount : 0,
+        engineGross:        match ? match.grossPnl : 0,
+        brokerProfit,
+        openQty,
+        positionsAvailable: payload.positionsAvailable !== false && Array.isArray(payload.positions),
+      });
+      // An empty shape no longer passes on its own: if nothing was read AND the broker
+      // says something happened, that is the blind case, named.
+      const blindDetail = shape.empty ? ' (nothing was returned, so the shape proved nothing)' : '';
+
       this.lastSessions = (result.sessions || []).map(toImportedSession);
       this.lastTrades   = (result.trades  || []).map(toImportedTrade);
       this.lastFills    = (result.fills   || []).map(toImportedFill);
@@ -214,14 +222,21 @@ export class LiveFeedReader {
         executionCount: (feed.fills || []).length,
         fillCount: (result.fills || []).length,
         skippedCount: (result.skipped || []).length,
-        openPositionCount: openQuantity(payload),
+        openPositionCount: liveFeed.sumOpenQty(payload.positions),
         readAt: at,
         lastAttemptAt: at,
-        errorCode: null,
-        errorMessage: null,
-        warn: false,
+        brokerProfit,
+        crossCheck: { state: check.state, code: check.code, delta: check.delta, message: check.message },
+        errorCode: check.code,
+        errorMessage: check.code ? check.message + blindDetail : null,
+        warn: !!check.warn,
       };
-      if (this.loggedCode) { this.log(`[live-feed] recovered — reading ${this.mode} account ${payload.account ?? '?'} via ${source}()`); this.loggedCode = null; }
+      if (check.code) {
+        this.logOnce(check.code, `[live-feed] ${check.code}: ${check.message}${blindDetail}`);
+      } else if (this.loggedCode) {
+        this.log(`[live-feed] recovered — reading ${this.mode} account ${payload.account ?? '?'} via ${source}()`);
+        this.loggedCode = null;
+      }
       if ((result.skipped || []).length > 0) {
         this.logOnce('TVCM-LF-SKIPPED', `[live-feed] TVCM-LF-SKIPPED: ${result.skipped.length} execution(s) could not be read — the current session is incomplete`);
       }

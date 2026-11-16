@@ -295,7 +295,8 @@ test('the read expression returns a string, because deep objects break CDP trans
 // the source per broker, and every payload below is synthetic.
 
 const { feedSourceFor, ordersToFills, detectOrderShape, fillsFromPayload,
-        analyseFeed, crossCheck, REQUIRED_ORDER_FIELDS, HISTORY_LIMIT } = lf;
+        analyseFeed, crossCheck, sumBrokerProfit, sumOpenQty,
+        REQUIRED_ORDER_FIELDS, HISTORY_LIMIT } = lf;
 
 /** One synthetic AMP order, in the shape orders() returns. */
 function order(over = {}) {
@@ -496,4 +497,96 @@ test('the expression bounds how much history it ships back', () => {
   assert.ok(HISTORY_LIMIT > 0 && HISTORY_LIMIT <= 2000, `HISTORY_LIMIT=${HISTORY_LIMIT}`);
   assert.ok(liveFeedExpression().includes(String(HISTORY_LIMIT)),
     'the cap must be applied in the page, not after 1356 rows have crossed the wire');
+});
+
+// ── Never silently blind (TVCM-29 Task 2) ─────────────────────────────────
+// The feed read AMP successfully every 5 seconds for fourteen hours, found zero
+// fills, and reported state "ok" with no code and no warning. The broker was
+// holding the answer the whole time in positions()[*].profit. Cross-check it.
+
+/** A cross-check input with everything agreeing; override one thing per test. */
+function cc(over = {}) {
+  return { fillCount: 46, engineGross: 302.50, brokerProfit: 302.50,
+           openQty: 0, positionsAvailable: true, ...over };
+}
+
+test('agreeing numbers raise nothing', () => {
+  const r = crossCheck(cc());
+  assert.strictEqual(r.state, 'ok');
+  assert.strictEqual(r.code, null);
+  assert.strictEqual(r.warn, false);
+  assert.strictEqual(r.delta, 0);
+});
+
+test('a cent of difference is tolerated; more than a cent is not', () => {
+  assert.strictEqual(crossCheck(cc({ engineGross: 302.51 })).state, 'ok');
+  assert.strictEqual(crossCheck(cc({ engineGross: 302.49 })).state, 'ok');
+  const bad = crossCheck(cc({ engineGross: 302.52 }));
+  assert.strictEqual(bad.state, 'disagree');
+  assert.strictEqual(bad.code, 'TVCM-LF-BROKER-DISAGREE');
+  assert.strictEqual(bad.warn, true);
+});
+
+test('a disagreement names both numbers, because one of them is wrong', () => {
+  const r = crossCheck(cc({ engineGross: 250 }));
+  assert.ok(r.message.includes('250'), r.message);
+  assert.ok(r.message.includes('302.5'), r.message);
+  assert.strictEqual(r.delta, -52.5);
+});
+
+test('the broker saying it made money while the feed found nothing is BLIND', () => {
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0 }));
+  assert.strictEqual(r.state, 'blind');
+  assert.strictEqual(r.code, 'TVCM-LF-BLIND');
+  assert.strictEqual(r.warn, true);
+  assert.match(r.message, /no fills/i);
+});
+
+test('an open position with no fills found is BLIND too', () => {
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: 0, openQty: 5 }));
+  assert.strictEqual(r.state, 'blind');
+  assert.strictEqual(r.code, 'TVCM-LF-BLIND');
+});
+
+test('blind outranks disagree — it is the more specific diagnosis', () => {
+  // Zero fills against a non-zero broker profit satisfies both tests.
+  assert.strictEqual(crossCheck(cc({ fillCount: 0, engineGross: 0 })).code, 'TVCM-LF-BLIND');
+});
+
+test('a genuinely flat day is not blind', () => {
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: 0, openQty: 0 }));
+  assert.strictEqual(r.state, 'ok');
+  assert.strictEqual(r.warn, false);
+});
+
+test('a broker that reports no position rows cannot be cross-checked, and says so', () => {
+  for (const over of [{ positionsAvailable: false }, { brokerProfit: null }]) {
+    const r = crossCheck(cc(over));
+    assert.strictEqual(r.state, 'unavailable');
+    assert.strictEqual(r.code, null, 'an absent cross-check is not a fault');
+    assert.strictEqual(r.warn, false);
+  }
+});
+
+test('an unavailable cross-check never hides a blind feed behind a shrug', () => {
+  // Paper returns no position rows at all; a zero read there is genuinely unjudgeable.
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, positionsAvailable: false }));
+  assert.strictEqual(r.state, 'unavailable');
+  assert.strictEqual(r.warn, false);
+});
+
+test('the broker profit is summed across symbols, not taken from the first row', () => {
+  assert.strictEqual(sumBrokerProfit([{ profit: 100 }, { profit: 202.5 }]), 302.5);
+  assert.strictEqual(sumBrokerProfit([]), null, 'no rows means no cross-check, not zero');
+  assert.strictEqual(sumBrokerProfit(null), null);
+  assert.strictEqual(sumBrokerProfit([{ profit: null }, { profit: 5 }]), 5);
+  assert.strictEqual(sumBrokerProfit([{ profit: null }]), null, 'all-null is still no answer');
+});
+
+test('open quantity counts contracts, not symbol rows', () => {
+  // check:live-feed printed "open positions 1" for a FLAT account (TVCM-28 §5.4).
+  assert.strictEqual(sumOpenQty([{ qty: 0 }]), 0, 'one flat symbol row is not one open position');
+  assert.strictEqual(sumOpenQty([{ qty: 5 }, { qty: -3 }]), 8, 'a short is still an open position');
+  assert.strictEqual(sumOpenQty([]), 0);
+  assert.strictEqual(sumOpenQty(null), null);
 });

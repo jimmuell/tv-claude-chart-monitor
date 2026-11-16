@@ -384,6 +384,66 @@ function analyseExecutions(executions, options) {
   });
 }
 
+/** How far the engine and the broker may differ before it counts as a disagreement. */
+const CROSS_CHECK_TOLERANCE = 0.01;
+
+/** The broker's own realized figure, summed across symbols. Null when it has no answer. */
+function sumBrokerProfit(positions) {
+  if (!Array.isArray(positions)) return null;
+  const rows = positions.filter(Boolean).filter(p => p.profit !== null && p.profit !== undefined);
+  if (rows.length === 0) return null;
+  return rows.reduce((n, p) => n + (Number(p.profit) || 0), 0);
+}
+
+/** Contracts actually held open, summed across symbols — not the number of symbol rows. */
+function sumOpenQty(positions) {
+  if (!Array.isArray(positions)) return null;
+  return positions.filter(Boolean).reduce((n, p) => n + Math.abs(Number(p.qty) || 0), 0);
+}
+
+/**
+ * Checks the feed's own arithmetic against the broker's.
+ *
+ * This exists because of how TVCM-28 failed: the feed read AMP successfully every five
+ * seconds for fourteen hours, found zero fills, and reported itself healthy — while
+ * `positions()[*].profit` sat there saying the account had made $302.50. A feed that can
+ * be silently wrong about the one number Jim acts on is worse than one that breaks.
+ *
+ * "Blind" is checked before "disagree" because zero fills against a non-zero broker
+ * figure satisfies both, and only one of them names the actual problem.
+ */
+function crossCheck(input) {
+  const i = input || {};
+  const brokerProfit = i.brokerProfit;
+  const noAnswer = i.positionsAvailable === false || brokerProfit === null || brokerProfit === undefined;
+  if (noAnswer) {
+    return { state: 'unavailable', code: null, warn: false, delta: null,
+             message: 'the broker reports no position rows, so the numbers cannot be cross-checked' };
+  }
+
+  const fillCount = Number(i.fillCount) || 0;
+  const openQty   = Math.abs(Number(i.openQty) || 0);
+  const gross     = Number(i.engineGross) || 0;
+
+  if (fillCount === 0 && (Math.abs(brokerProfit) > CROSS_CHECK_TOLERANCE || openQty > 0)) {
+    return {
+      state: 'blind', code: 'TVCM-LF-BLIND', warn: true, delta: -brokerProfit,
+      message: `the feed found no fills but the broker reports ${brokerProfit.toFixed(2)} realized`
+             + (openQty > 0 ? ` and ${openQty} contract(s) open` : '')
+             + ' — TVCM is reading the wrong collection for this broker',
+    };
+  }
+
+  const delta = Math.round((gross - brokerProfit) * 100) / 100;
+  if (Math.abs(delta) > CROSS_CHECK_TOLERANCE) {
+    return {
+      state: 'disagree', code: 'TVCM-LF-BROKER-DISAGREE', warn: true, delta,
+      message: `the feed makes this session ${gross} gross and the broker says ${brokerProfit}`,
+    };
+  }
+  return { state: 'ok', code: null, warn: false, delta, message: null };
+}
+
 /**
  * The page expression the reader evaluates. The broker id is read in the SAME expression
  * as the executions, so the gate cannot go stale between two round trips — the account
@@ -488,7 +548,9 @@ module.exports = {
   BROKER_LIVE, BROKER_PAPER, BROKER_REPLAY, HISTORY_LIMIT,
   REQUIRED_EXECUTION_FIELDS, NUMERIC_EXECUTION_FIELDS,
   REQUIRED_ORDER_FIELDS, NUMERIC_ORDER_FIELDS,
+  CROSS_CHECK_TOLERANCE,
   brokerAvailability, feedSourceFor, detectExecutionShape, detectOrderShape,
+  crossCheck, sumBrokerProfit, sumOpenQty,
   chicagoStamp, chicagoStampFromIso, sessionDateForEpoch, decodeSide,
   executionsToFills, ordersToFills, fillsFromPayload,
   analyseExecutions, analyseFeed, liveFeedExpression,
