@@ -596,3 +596,22 @@ test('a genuinely stale number still says so', () => {
   assert.ok(/Last import failed/i.test(t), t);
   assert.ok(/not being refreshed/i.test(t), t);
 });
+
+// ── An active correction is declared (TVCM-36) ───────────────────────────
+
+test('the tooltip says when a number includes a fill TVCM added', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+                                   appliedCorrections: ['c-1'] });
+  assert.match(t, /includes 1 added fill/i);
+});
+
+test('several added fills are counted', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', appliedCorrections: ['a', 'b'] });
+  assert.match(t, /includes 2 added fills/i);
+});
+
+test('with no corrections the tooltip says nothing about them', () => {
+  for (const v of [[], null, undefined]) {
+    assert.ok(!/added fill/i.test(trayTooltip(state(), { now: FRI_OPEN, source: 'feed', appliedCorrections: v })));
+  }
+});

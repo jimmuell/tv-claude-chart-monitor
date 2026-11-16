@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { OrderImportState, SessionDetail, SessionListItem, MergedPnlState } from '../shared/types';
+import type { OrderImportState, SessionDetail, SessionListItem, MergedPnlState,
+              Correction, MissingFillSuggestion } from '../shared/types';
 
 // The Order History & P&L window's only link to the app. It reads; it never writes,
 // never touches TradingView, and never places an order.
@@ -28,6 +29,14 @@ contextBridge.exposeInMainWorld('pnlApi', {
     ipcRenderer.on(IPC.PAPER_MODE_PUSH, handler);
     return () => ipcRenderer.removeListener(IPC.PAPER_MODE_PUSH, handler);
   },
+  /** Jim's recorded missing fills for the current mode. */
+  listCorrections: (): Promise<Correction[]> => ipcRenderer.invoke(IPC.CORRECTION_LIST),
+  /** What TVCM believes is missing, if anything. Offered only — never applied. */
+  getSuggestion: (): Promise<MissingFillSuggestion | null> => ipcRenderer.invoke(IPC.CORRECTION_SUGGESTION),
+  /** Records a missing fill. Only ever called from Jim's own click. */
+  addCorrection: (c: unknown): Promise<Correction | null> => ipcRenderer.invoke(IPC.CORRECTION_ADD, c),
+  /** Removes one, which restores the numbers exactly as they were. */
+  removeCorrection: (id: string): Promise<void> => ipcRenderer.invoke(IPC.CORRECTION_REMOVE, id),
   /** Fires whenever a new export is imported, so the window refreshes itself. */
   onUpdate: (callback: (state: OrderImportState) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, state: OrderImportState) => callback(state);

@@ -252,3 +252,44 @@ body {
 }
 
 .perday-row.empty-day { color: var(--text-secondary); }
+
+/* Missing-fill banner. It has to be impossible to miss and impossible to trigger
+   by accident — TVCM only ever suggests; Add is the one path that records anything. */
+.missing-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border: 1px solid #8a6d1f;
+  border-radius: 6px;
+  background: #3a3220;
+  color: #ffe9a8;
+  font-size: 12.5px;
+}
+
+.missing-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+.btn-add {
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  color: #06231f;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 12px;
+}
+
+.corrections { margin: 16px 0 0; }
+
+.correction-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}

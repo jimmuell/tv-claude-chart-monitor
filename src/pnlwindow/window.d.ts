@@ -1,4 +1,5 @@
-import type { OrderImportState, SessionDetail, SessionListItem, MergedPnlState } from '../shared/types';
+import type { OrderImportState, SessionDetail, SessionListItem, MergedPnlState,
+              Correction, MissingFillSuggestion } from '../shared/types';
 
 declare global {
   interface Window {
@@ -10,6 +11,10 @@ declare global {
       getPaperMode(): Promise<{ paperMode: boolean; merged: MergedPnlState }>;
       setPaperMode(on: boolean): Promise<boolean>;
       onPaperMode(cb: (on: boolean) => void): () => void;
+      listCorrections(): Promise<Correction[]>;
+      getSuggestion(): Promise<MissingFillSuggestion | null>;
+      addCorrection(c: unknown): Promise<Correction | null>;
+      removeCorrection(id: string): Promise<void>;
       close(): Promise<void>;
     };
   }

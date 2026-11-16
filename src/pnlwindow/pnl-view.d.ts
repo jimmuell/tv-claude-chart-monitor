@@ -14,6 +14,8 @@ declare module '*/pnl-view.mjs' {
   export function moneyClass(value: number): string;
   export function fmtClock(fillTime: string | null | undefined): string;
   export function fmtStamp(fillTime: string | null | undefined): string;
+  export function fmtDayStamp(fillTime: string | null | undefined): string;
+  export function dayOf(fillTime: string | null | undefined): string | null;
   export function fmtImportedAt(ms: number | null | undefined): string;
   export function fmtContracts(contractSides: number): string;
   export function emptyMessage(state: unknown): string;

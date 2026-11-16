@@ -249,6 +249,36 @@ const RangeSummary: React.FC<{ combined: any; label: string }> = ({ combined, la
   );
 };
 
+/** The missing-fill banner. It proposes; only Jim's click records anything. */
+const MissingFillBanner: React.FC<{
+  suggestion: any; onAdd: () => void; onDismiss: () => void;
+}> = ({ suggestion, onAdd, onDismiss }) => (
+  <div className="missing-banner">
+    <span className="missing-text">{suggestion.text}</span>
+    <span className="missing-actions">
+      {!suggestion.needsPrice && <button className="btn-add" onClick={onAdd}>Add</button>}
+      <button className="btn-link" onClick={onDismiss}>Dismiss</button>
+    </span>
+  </div>
+);
+
+/** The corrections Jim has recorded, each removable, with what they are written on them. */
+const CorrectionList: React.FC<{ corrections: any[]; onRemove: (id: string) => void }> = ({ corrections, onRemove }) => {
+  if (corrections.length === 0) return null;
+  return (
+    <div className="corrections">
+      <div className="perday-title">Added fills — missing from TradingView&rsquo;s records</div>
+      {corrections.map(c => (
+        <div key={c.id} className="correction-row">
+          <span>{view.fmtDayStamp(c.fillTime)} · {c.side} {c.qty} @ {Number(c.price).toFixed(2)}</span>
+          <span className="dim">{c.source}</span>
+          <button className="btn-link" onClick={() => onRemove(c.id)}>Remove</button>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 export function App() {
   const [state, setState]       = useState<OrderImportState | null>(null);
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
@@ -353,6 +383,36 @@ export function App() {
     () => range.rowsInRange(rangeDetails.flatMap(d => d.fills || []), activeRange.dates, 'fills'),
     [rangeDetails, activeRange.dates.join(',')]);
 
+  // --- missing fills -----------------------------------------------------
+  // TVCM can only ever suggest. Nothing is recorded without Jim pressing Add.
+  const [suggestion, setSuggestion] = useState<any>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [corrections, setCorrections] = useState<any[]>([]);
+
+  const refreshCorrections = useCallback(async () => {
+    const [s, list] = await Promise.all([window.pnlApi.getSuggestion(), window.pnlApi.listCorrections()]);
+    setSuggestion(s); setCorrections(list);
+  }, []);
+
+  useEffect(() => {
+    void refreshCorrections();
+    const off = window.pnlApi.onUpdate(() => { void refreshCorrections(); });
+    return () => off();
+  }, [refreshCorrections]);
+
+  /** Records the suggested fill. The only path by which a correction is ever created. */
+  const addSuggested = useCallback(async () => {
+    if (!suggestion || suggestion.needsPrice) return;
+    await window.pnlApi.addCorrection({
+      side: suggestion.side, qty: suggestion.qty, price: suggestion.price,
+      fillTime: suggestion.windowFrom, source: 'inferred from balance',
+      windowFrom: suggestion.windowFrom, windowTo: suggestion.windowTo,
+      reason: 'closed by the broker but absent from TradingView\u2019s records',
+    });
+    setDismissed(false);
+    await refreshCorrections();
+  }, [suggestion, refreshCorrections]);
+
   // Kept in a ref so the push handler above always re-selects the day being viewed.
   const selectedRef = React.useRef('');
   useEffect(() => { selectedRef.current = selected; }, [selected]);
@@ -409,6 +469,11 @@ export function App() {
         </div>
       </header>
 
+      {suggestion && !dismissed && (
+        <MissingFillBanner suggestion={suggestion} onAdd={() => { void addSuggested(); }}
+                           onDismiss={() => setDismissed(true)} />
+      )}
+
       <nav className="periods">
         {range.PERIODS.map(p => (
           <button key={p.key}
@@ -450,7 +515,9 @@ export function App() {
              : <Fills detail={{ sessionDate: '', session: null, trades: rangeTrades, fills: rangeFills, boundary: null }} />)
             : !hasData
               ? <Empty state={state} />
-              : tab === 'summary' ? <Summary detail={detail!} state={state} />
+              : tab === 'summary' ? <><Summary detail={detail!} state={state} />
+                  <CorrectionList corrections={corrections}
+                                  onRemove={(id) => { void window.pnlApi.removeCorrection(id).then(refreshCorrections); }} /></>
               : tab === 'trades'  ? <Trades detail={detail!} />
               : <Fills detail={detail!} />}
       </main>

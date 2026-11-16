@@ -220,6 +220,9 @@ function trayTooltip(state, options) {
       lines.push('Showing the last good import — the number above is not being refreshed');
     }
   }
+  // A number that includes a fill TVCM added is not purely TradingView's, and says so.
+  const added = (opts.appliedCorrections || []).length;
+  if (added > 0) lines.push(`Includes ${added} added fill${added === 1 ? '' : 's'} missing from TradingView\u2019s records`);
   if (opts.switchHint) lines.push(opts.switchHint);
   if (opts.feedReason) lines.push(`Live feed: ${shortReason(opts.feedReason)}`);
   return lines.join('\n');
