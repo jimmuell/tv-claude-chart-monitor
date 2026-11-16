@@ -86,10 +86,15 @@ const Trades: React.FC<{ detail: SessionDetail }> = ({ detail }) => {
   const [cursor, setCursor] = useState(0);
   const { sort, onSort } = useSort('trades');
 
-  // The trade number is fixed in the order the engine delivered them — #1 is the first
-  // trade of the session whatever column the table is being read by.
-  const numbered = React.useMemo(
-    () => (detail.trades || []).map((t, i) => ({ ...t, number: i + 1 })), [detail.trades]);
+  // The trade number is fixed CHRONOLOGICALLY, before any sorting — #1 is the first
+  // trade of the period whatever column the table is being read by, and whatever order
+  // the rows happened to arrive in (a range hands them over newest first).
+  const numbered = React.useMemo(() => {
+    const rows = detail.trades || [];
+    const order = new Map(sorting.sortRows(rows, 'trades', { key: 'open', dir: 'asc' })
+      .map((t: ImportedTrade, i: number) => [t.id, i + 1]));
+    return rows.map(t => ({ ...t, number: order.get(t.id) ?? 0 }));
+  }, [detail.trades]);
   const ordered = React.useMemo(
     () => sorting.sortRows(numbered, 'trades', sort), [numbered, sort]);
 
@@ -270,6 +275,12 @@ const PastDays: React.FC<{
   );
 };
 
+/** "1 calendar day" / "3 calendar days" — the count said the way English says it. */
+function dayCountText(n: number, dayWord?: string): string {
+  const plural = dayWord || 'trading days';
+  return `${n} ${n === 1 ? plural.replace(/s$/, '') : plural}`;
+}
+
 /** The Summary for several days: combined totals, then one line per day. */
 const RangeSummary: React.FC<{ combined: any; label: string; dayWord?: string; note?: string | null }> =
   ({ combined, label, dayWord, note }) => {
@@ -280,7 +291,7 @@ const RangeSummary: React.FC<{ combined: any; label: string; dayWord?: string; n
     { key: 'fees',  label: 'Fees',      value: view.fmtMoney(t.fees, { signed: false }), tone: '' },
     { key: 'con',   label: 'Contracts', value: view.fmtContracts(t.contractSides), tone: '' },
     { key: 'trd',   label: 'Trades',    value: String(t.tradeCount), tone: '' },
-    { key: 'day',   label: 'Days',      value: `${combined.dayCount} ${dayWord || 'trading days'}`, tone: '' },
+    { key: 'day',   label: 'Days',      value: dayCountText(combined.dayCount, dayWord), tone: '' },
   ];
   return (
     <div className="summary">

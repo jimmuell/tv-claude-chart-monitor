@@ -277,6 +277,18 @@ function maybeShowPanel(): void {
 }
 
 /**
+ * Open the Order History & P&L window at launch, so an unattended run can be
+ * screenshotted or driven. Same opt-in shape as TVCM_SHOW_PANEL; the only other
+ * way in is a right-click on the tray.
+ */
+function maybeOpenPnlWindow(): void {
+  if (process.env.TVCM_OPEN_PNL === '1') {
+    console.log('[index] TVCM_OPEN_PNL=1 — opening the P&L window without a tray click');
+    openPnlWindow();
+  }
+}
+
+/**
  * Start the scheduler without the panel. The training runner needs the app
  * analysing unattended, and the only other way in is a tray click.
  */
@@ -1113,6 +1125,7 @@ app.on('ready', () => {
   maybeAutostartScheduler();
 
   maybeShowPanel();
+  maybeOpenPnlWindow();
 
   // IPC: on-demand analysis (awaitable; status updates via callback)
   ipcMain.handle(IPC.ANALYZE_RUN, async () => {
