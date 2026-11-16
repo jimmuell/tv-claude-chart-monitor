@@ -499,15 +499,19 @@ test('the expression bounds how much history it ships back', () => {
     'the cap must be applied in the page, not after 1356 rows have crossed the wire');
 });
 
-// ── Never silently blind (TVCM-29 Task 2) ─────────────────────────────────
-// The feed read AMP successfully every 5 seconds for fourteen hours, found zero
-// fills, and reported state "ok" with no code and no warning. The broker was
-// holding the answer the whole time in positions()[*].profit. Cross-check it.
+// ── Never silently blind, and never falsely loud (TVCM-29 / TVCM-33) ─────
+// TVCM-29 cross-checked the engine against positions()[*].profit. TVCM-31 found
+// that field absent, then frozen across a closed round trip, then drifting — so
+// the ⚠ it raised was false, and a ⚠ that is always on is a ⚠ that gets ignored.
+//
+// The cross-check is now INFORMATIONAL: it still reports, it never warns.
+// BLIND still warns, on evidence that does not touch `profit` at all.
 
 /** A cross-check input with everything agreeing; override one thing per test. */
 function cc(over = {}) {
   return { fillCount: 46, engineGross: 302.50, brokerProfit: 302.50,
-           openQty: 0, positionsAvailable: true, ...over };
+           openQty: 0, positionsAvailable: true,
+           rawRowsThisSession: 46, otherCollectionRows: 0, ...over };
 }
 
 test('agreeing numbers raise nothing', () => {
@@ -518,73 +522,103 @@ test('agreeing numbers raise nothing', () => {
   assert.strictEqual(r.delta, 0);
 });
 
-test('a cent of difference is tolerated; more than a cent is not', () => {
+test('a difference is reported but NEVER warns — the broker figure is not trustworthy', () => {
+  const r = crossCheck(cc({ engineGross: 250 }));
+  assert.strictEqual(r.state, 'differs');
+  assert.strictEqual(r.warn, false, 'TVCM-31: this ⚠ was false and sat on the menu bar for hours');
+  assert.strictEqual(r.code, null, 'an informational note must not carry an error code');
+  assert.strictEqual(r.delta, -52.5);
+  assert.ok(r.message.includes('250') && r.message.includes('302.5'), r.message);
+});
+
+test('a cent of difference is not even worth reporting', () => {
   assert.strictEqual(crossCheck(cc({ engineGross: 302.51 })).state, 'ok');
   assert.strictEqual(crossCheck(cc({ engineGross: 302.49 })).state, 'ok');
-  const bad = crossCheck(cc({ engineGross: 302.52 }));
-  assert.strictEqual(bad.state, 'disagree');
-  assert.strictEqual(bad.code, 'TVCM-LF-BROKER-DISAGREE');
-  assert.strictEqual(bad.warn, true);
+  assert.strictEqual(crossCheck(cc({ engineGross: 302.52 })).state, 'differs');
 });
 
-test('a disagreement names both numbers, because one of them is wrong', () => {
+test('the message says the broker figure is the unreliable one, not ours', () => {
   const r = crossCheck(cc({ engineGross: 250 }));
-  assert.ok(r.message.includes('250'), r.message);
-  assert.ok(r.message.includes('302.5'), r.message);
-  assert.strictEqual(r.delta, -52.5);
+  assert.match(r.message, /broker/i);
+  assert.ok(!/wrong|error|fail/i.test(r.message), 'informational wording only: ' + r.message);
 });
 
-test('the broker saying it made money while the feed found nothing is BLIND', () => {
-  const r = crossCheck(cc({ fillCount: 0, engineGross: 0 }));
+// ── BLIND: still warns, and never depends on positions().profit ──────────
+
+test('an open position with no fills found is BLIND, with no reference to profit', () => {
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: null,
+                            positionsAvailable: true, openQty: 5, rawRowsThisSession: 0 }));
   assert.strictEqual(r.state, 'blind');
   assert.strictEqual(r.code, 'TVCM-LF-BLIND');
   assert.strictEqual(r.warn, true);
-  assert.match(r.message, /no fills/i);
 });
 
-test('an open position with no fills found is BLIND too', () => {
-  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: 0, openQty: 5 }));
+test('rows the broker returned that we converted into nothing is BLIND', () => {
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: null,
+                            openQty: 0, rawRowsThisSession: 12 }));
+  assert.strictEqual(r.state, 'blind');
+  assert.match(r.message, /12/, 'the message should say how many rows were ignored: ' + r.message);
+});
+
+test('the collection we did NOT read having rows is BLIND — this is exactly TVCM-28', () => {
+  // allExecutions() empty on AMP while orders() held 46 fills, for fourteen hours.
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: null,
+                            openQty: 0, rawRowsThisSession: 0, otherCollectionRows: 46 }));
   assert.strictEqual(r.state, 'blind');
   assert.strictEqual(r.code, 'TVCM-LF-BLIND');
+  assert.strictEqual(r.warn, true);
+  assert.match(r.message, /other|wrong collection/i, r.message);
 });
 
-test('blind outranks disagree — it is the more specific diagnosis', () => {
-  // Zero fills against a non-zero broker profit satisfies both tests.
-  assert.strictEqual(crossCheck(cc({ fillCount: 0, engineGross: 0 })).code, 'TVCM-LF-BLIND');
+test('BLIND does not need the broker profit at all', () => {
+  for (const bp of [null, undefined, 0, 302.5]) {
+    const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: bp, openQty: 5 }));
+    assert.strictEqual(r.state, 'blind', `brokerProfit=${bp} must not change the verdict`);
+  }
 });
 
-test('a genuinely flat day is not blind', () => {
-  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: 0, openQty: 0 }));
+test('a genuinely flat day with nothing anywhere is not blind', () => {
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: 0,
+                            openQty: 0, rawRowsThisSession: 0, otherCollectionRows: 0 }));
   assert.strictEqual(r.state, 'ok');
   assert.strictEqual(r.warn, false);
 });
 
-test('a broker that reports no position rows cannot be cross-checked, and says so', () => {
+test('blind outranks differs — it is the only one that warns', () => {
+  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, brokerProfit: 999, openQty: 5 }));
+  assert.strictEqual(r.code, 'TVCM-LF-BLIND');
+  assert.strictEqual(r.warn, true);
+});
+
+test('no broker figure means no comparison, and still no warning', () => {
   for (const over of [{ positionsAvailable: false }, { brokerProfit: null }]) {
     const r = crossCheck(cc(over));
     assert.strictEqual(r.state, 'unavailable');
-    assert.strictEqual(r.code, null, 'an absent cross-check is not a fault');
+    assert.strictEqual(r.code, null);
     assert.strictEqual(r.warn, false);
   }
 });
 
-test('an unavailable cross-check never hides a blind feed behind a shrug', () => {
-  // Paper returns no position rows at all; a zero read there is genuinely unjudgeable.
-  const r = crossCheck(cc({ fillCount: 0, engineGross: 0, positionsAvailable: false }));
-  assert.strictEqual(r.state, 'unavailable');
-  assert.strictEqual(r.warn, false);
+test('the only code crossCheck can ever produce is TVCM-LF-BLIND', () => {
+  const codes = new Set();
+  for (const over of [{}, { engineGross: 1 }, { brokerProfit: null }, { positionsAvailable: false },
+                      { fillCount: 0, engineGross: 0, openQty: 5 },
+                      { fillCount: 0, engineGross: 0, rawRowsThisSession: 3 }]) {
+    const c = crossCheck(cc(over)).code;
+    if (c) codes.add(c);
+  }
+  assert.deepStrictEqual(Array.from(codes), ['TVCM-LF-BLIND']);
 });
 
 test('the broker profit is summed across symbols, not taken from the first row', () => {
   assert.strictEqual(sumBrokerProfit([{ profit: 100 }, { profit: 202.5 }]), 302.5);
-  assert.strictEqual(sumBrokerProfit([]), null, 'no rows means no cross-check, not zero');
+  assert.strictEqual(sumBrokerProfit([]), null, 'no rows means no comparison, not zero');
   assert.strictEqual(sumBrokerProfit(null), null);
   assert.strictEqual(sumBrokerProfit([{ profit: null }, { profit: 5 }]), 5);
   assert.strictEqual(sumBrokerProfit([{ profit: null }]), null, 'all-null is still no answer');
 });
 
 test('open quantity counts contracts, not symbol rows', () => {
-  // check:live-feed printed "open positions 1" for a FLAT account (TVCM-28 §5.4).
   assert.strictEqual(sumOpenQty([{ qty: 0 }]), 0, 'one flat symbol row is not one open position');
   assert.strictEqual(sumOpenQty([{ qty: 5 }, { qty: -3 }]), 8, 'a short is still an open position');
   assert.strictEqual(sumOpenQty([]), 0);

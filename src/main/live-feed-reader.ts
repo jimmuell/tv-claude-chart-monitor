@@ -37,6 +37,18 @@ export function emptyLiveFeedState(mode: 'live' | 'paper'): LiveFeedState {
   };
 }
 
+/** How many rows in a collection actually filled inside the given session. */
+function countSessionRows(rows: any, sessionDate: string): number {
+  if (!Array.isArray(rows)) return 0;
+  return rows.filter(Boolean).filter((r: any) => {
+    const qty = r.filledQty === undefined ? r.qty : r.filledQty;
+    if (!(Number(qty) > 0)) return false;
+    const ms = r.statusTime ? Date.parse(String(r.statusTime)) : Number(r.time);
+    if (!Number.isFinite(ms)) return false;
+    return currentSessionDate(new Date(ms)) === sessionDate;
+  }).length;
+}
+
 /**
  * Polls TradingView's own execution list over the existing CDP connection and keeps the
  * CURRENT session's numbers in memory.
@@ -183,11 +195,20 @@ export class LiveFeedReader {
       // wrong about the one number Jim acts on is worse than one that breaks (TVCM-28).
       const brokerProfit = liveFeed.sumBrokerProfit(payload.positions);
       const openQty      = liveFeed.sumOpenQty(payload.positions);
+      // Blindness evidence that does not touch positions().profit: rows the broker
+      // returned for this session, and rows sitting in the collection we are NOT
+      // reading — which is precisely how TVCM-28 failed for fourteen hours.
+      const rawRowsThisSession  = countSessionRows(source === 'orders'
+        ? [...(payload.orders || []), ...(payload.ordersHistory || [])] : payload.executions, today);
+      const otherCollectionRows = countSessionRows(source === 'orders'
+        ? payload.executions : [...(payload.orders || []), ...(payload.ordersHistory || [])], today);
       const check = liveFeed.crossCheck({
         fillCount:          match ? match.fillCount : 0,
         engineGross:        match ? match.grossPnl : 0,
         brokerProfit,
         openQty,
+        rawRowsThisSession,
+        otherCollectionRows,
         positionsAvailable: payload.positionsAvailable !== false && Array.isArray(payload.positions),
       });
       // An empty shape no longer passes on its own: if nothing was read AND the broker
@@ -227,6 +248,8 @@ export class LiveFeedReader {
         lastAttemptAt: at,
         brokerProfit,
         crossCheck: { state: check.state, code: check.code, delta: check.delta, message: check.message },
+        // Only BLIND is a fault. A difference against the broker is informational and
+        // must never reach errorCode, or it becomes a permanent ⚠ (TVCM-31).
         errorCode: check.code,
         errorMessage: check.code ? check.message + blindDetail : null,
         warn: !!check.warn,

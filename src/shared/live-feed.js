@@ -402,43 +402,60 @@ function sumOpenQty(positions) {
 }
 
 /**
- * Checks the feed's own arithmetic against the broker's.
+ * Checks the feed's own arithmetic against the broker's — and decides, separately,
+ * whether the feed is BLIND.
  *
- * This exists because of how TVCM-28 failed: the feed read AMP successfully every five
- * seconds for fourteen hours, found zero fills, and reported itself healthy — while
- * `positions()[*].profit` sat there saying the account had made $302.50. A feed that can
- * be silently wrong about the one number Jim acts on is worse than one that breaks.
+ * These were one thing in TVCM-29 and are now two, because TVCM-31 showed the broker's
+ * figure cannot carry a warning. `positions()[*].profit` was observed absent, then frozen
+ * across a closed round trip, then drifting by an amount that changed with every trade:
+ * the broker matches lots at its own prices (7597.50 where the order's avgPrice is
+ * 7597.55), so it is not like-for-like with order-level FIFO even when it is fresh. The
+ * ⚠ it raised sat on the menu bar for hours being wrong, and a ⚠ that is always on is a
+ * ⚠ that gets ignored — including the one that matters.
  *
- * "Blind" is checked before "disagree" because zero fills against a non-zero broker
- * figure satisfies both, and only one of them names the actual problem.
+ * So the comparison is now INFORMATIONAL: reported in the tooltip, never a warning.
+ *
+ * BLIND still warns, and deliberately does not look at `profit` at all. It fires on three
+ * pieces of evidence that are each independently damning when no fills were found:
+ *   1. the account is holding contracts;
+ *   2. the broker returned rows for this session that we converted into nothing;
+ *   3. the collection we did NOT read has rows for this session — which is exactly how
+ *      TVCM-28 failed, reading allExecutions() on AMP while orders() held 46 fills.
  */
 function crossCheck(input) {
   const i = input || {};
-  const brokerProfit = i.brokerProfit;
-  const noAnswer = i.positionsAvailable === false || brokerProfit === null || brokerProfit === undefined;
-  if (noAnswer) {
-    return { state: 'unavailable', code: null, warn: false, delta: null,
-             message: 'the broker reports no position rows, so the numbers cannot be cross-checked' };
-  }
-
   const fillCount = Number(i.fillCount) || 0;
   const openQty   = Math.abs(Number(i.openQty) || 0);
-  const gross     = Number(i.engineGross) || 0;
+  const rawRows   = Number(i.rawRowsThisSession) || 0;
+  const otherRows = Number(i.otherCollectionRows) || 0;
 
-  if (fillCount === 0 && (Math.abs(brokerProfit) > CROSS_CHECK_TOLERANCE || openQty > 0)) {
-    return {
-      state: 'blind', code: 'TVCM-LF-BLIND', warn: true, delta: -brokerProfit,
-      message: `the feed found no fills but the broker reports ${brokerProfit.toFixed(2)} realized`
-             + (openQty > 0 ? ` and ${openQty} contract(s) open` : '')
-             + ' — TVCM is reading the wrong collection for this broker',
-    };
+  // --- blind, first and loudest. Nothing here reads brokerProfit. -----------
+  if (fillCount === 0) {
+    const why = [];
+    if (openQty > 0)   why.push(`${openQty} contract(s) are open`);
+    if (rawRows > 0)   why.push(`the broker returned ${rawRows} filled row(s) for this session that produced no fills`);
+    if (otherRows > 0) why.push(`the collection we are not reading has ${otherRows} row(s) for this session — the wrong collection is being read`);
+    if (why.length > 0) {
+      return {
+        state: 'blind', code: 'TVCM-LF-BLIND', warn: true, delta: null,
+        message: `the feed found no fills but ${why.join('; and ')}`,
+      };
+    }
   }
 
+  // --- the informational comparison ----------------------------------------
+  const brokerProfit = i.brokerProfit;
+  if (i.positionsAvailable === false || brokerProfit === null || brokerProfit === undefined) {
+    return { state: 'unavailable', code: null, warn: false, delta: null,
+             message: 'the broker reports no figure to compare against' };
+  }
+  const gross = Number(i.engineGross) || 0;
   const delta = Math.round((gross - brokerProfit) * 100) / 100;
   if (Math.abs(delta) > CROSS_CHECK_TOLERANCE) {
     return {
-      state: 'disagree', code: 'TVCM-LF-BROKER-DISAGREE', warn: true, delta,
-      message: `the feed makes this session ${gross} gross and the broker says ${brokerProfit}`,
+      state: 'differs', code: null, warn: false, delta,
+      message: `this session reads ${gross} gross here and ${brokerProfit} at the broker`
+             + " — the broker's figure is known to lag and to match lots at its own prices",
     };
   }
   return { state: 'ok', code: null, warn: false, delta, message: null };
