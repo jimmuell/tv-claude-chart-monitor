@@ -144,11 +144,23 @@ function stripAnsi(text) {
   return String(text == null ? '' : text).replace(/\u001b\[[0-9;]*m/g, '');
 }
 
-/** Names where the displayed number came from, so "as of" is never ambiguous. */
-function sourceLabel(source) {
-  if (source === 'feed') return 'Live feed read';
+/**
+ * Names where the displayed number came from, so "as of" is never ambiguous. The feed's
+ * collection is named too: the two brokers keep their fills in different places and
+ * reading the wrong one is the failure this whole line exists to make visible.
+ */
+function sourceLabel(source, feedSource) {
+  if (source === 'feed') return `Live feed${feedSource ? ` (${feedSource})` : ''} read`;
   if (source === 'csv')  return 'From the export, imported';
   return 'Imported';
+}
+
+/** One line saying whether the broker's own numbers agree with ours. */
+function crossCheckLine(check) {
+  if (!check) return null;
+  if (check.state === 'ok')          return 'Broker cross-check: OK';
+  if (check.state === 'unavailable') return `Broker cross-check: not available — ${shortReason(check.message)}`;
+  return `Broker cross-check: ${check.code || check.state} — ${shortReason(check.message)}`;
 }
 
 /** A longer line for the tray tooltip, where there is room to say which session it is. */
@@ -174,8 +186,13 @@ function trayTooltip(state, options) {
     `Session ${s.sessionDate}${state.isFallback ? ' (last session with fills)' : ''}`,
     `Net ${formatNet(s.netPnl)}  ·  Gross ${formatNet(s.grossPnl)}  ·  Fees $${s.fees.toFixed(2)}`,
     `${s.contractSides} contract-sides (${s.roundTrips} RT)`,
-    `${sourceLabel(opts.source)} ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
+    `${sourceLabel(opts.source, opts.feedSource)} ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
   );
+  // Only the feed is cross-checked; the export is the record, not a thing to check.
+  if (opts.source === 'feed') {
+    const line = crossCheckLine(opts.crossCheck);
+    if (line) lines.push(line);
+  }
   if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
   if (hasFailedImport(state)) {
     lines.push(`Last import failed: ${state.errorCode} — ${shortReason(state.errorMessage)}`);
@@ -189,6 +206,6 @@ function trayTooltip(state, options) {
 module.exports = {
   NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, PAPER_PREFIX,
   DEFAULT_STALE_MINUTES, MAX_TOOLTIP_REASON, ANSI,
-  formatNet, ansiFor, isStale, hasFailedImport, shortReason, titlePrefix, sourceLabel,
+  formatNet, ansiFor, isStale, hasFailedImport, shortReason, titlePrefix, sourceLabel, crossCheckLine,
   trayTitle, trayTitleColoured, stripAnsi, trayTooltip,
 };

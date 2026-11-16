@@ -429,3 +429,50 @@ test('the "as of" line names which source produced the number', () => {
   const csv = trayTooltip(state(), { now: FRI_OPEN, source: 'csv' });
   assert.ok(/export/i.test(csv), csv);
 });
+
+// ── The tooltip names the collection and the cross-check (TVCM-29) ────────
+// "Live feed" alone is not enough once the two brokers read different
+// collections: AMP's fills are in orders(), paper's in allExecutions(), and
+// reading the wrong one is what TVCM-28 failed on.
+
+test('the tooltip names which collection the feed read', () => {
+  const amp = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders' });
+  assert.ok(/live feed \(orders\)/i.test(amp), amp);
+  const paper = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'executions' });
+  assert.ok(/live feed \(executions\)/i.test(paper), paper);
+});
+
+test('an unnamed collection still reads sensibly', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed' });
+  assert.ok(/live feed/i.test(t), t);
+  assert.ok(!/\(\)/.test(t), 'no empty brackets: ' + t);
+});
+
+test('a passing broker cross-check is stated, not left to be assumed', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+                                   crossCheck: { state: 'ok', code: null, delta: 0, message: null } });
+  assert.ok(/cross-check/i.test(t), t);
+  assert.ok(/OK/.test(t), t);
+});
+
+test('a failing cross-check says what went wrong instead of "OK"', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+    crossCheck: { state: 'blind', code: 'TVCM-LF-BLIND', delta: -302.5,
+                  message: 'the feed found no fills but the broker reports 302.50 realized' } });
+  assert.ok(/no fills/.test(t), t);
+  assert.ok(!/cross-check: OK/i.test(t), 'a broken check must never read as OK: ' + t);
+});
+
+test('a cross-check that could not run says so rather than claiming a pass', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed',
+    crossCheck: { state: 'unavailable', code: null, delta: null, message: 'the broker reports no position rows' } });
+  assert.ok(/no position rows|not available|cannot be cross-checked/i.test(t), t);
+  assert.ok(!/cross-check: OK/i.test(t), t);
+});
+
+test('a CSV-sourced tooltip carries no cross-check line at all', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'csv',
+                                   crossCheck: { state: 'ok', code: null, delta: 0, message: null } });
+  assert.ok(/export/i.test(t), t);
+  assert.ok(!/cross-check/i.test(t), 'the export is not cross-checked against the broker: ' + t);
+});
