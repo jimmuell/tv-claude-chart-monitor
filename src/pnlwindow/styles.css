@@ -161,3 +161,94 @@ body {
 }
 
 .paper-toggle input { cursor: pointer; }
+
+/* Period selector: combining trading days is a first-class view, so it sits above
+   the tabs rather than hiding in a menu. */
+.periods {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 16px 0;
+  flex-wrap: wrap;
+}
+
+.period {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.period:hover   { color: var(--text-primary); background: var(--surface); }
+.period.active  { color: var(--text-primary); background: var(--surface); border-color: var(--border); }
+
+.custom-dates {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.custom-dates input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 2px 5px;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+/* Past-days tick boxes */
+.grid th.tick, .grid td.tick { width: 28px; text-align: center; }
+.grid td.tick input { cursor: pointer; }
+
+.tickbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  background: var(--surface);
+}
+
+/* Range summary */
+.range-head {
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding-bottom: 6px;
+}
+
+.perday { margin-top: 14px; }
+
+.perday-title {
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding-bottom: 4px;
+}
+
+.perday-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.perday-row.empty-day { color: var(--text-secondary); }

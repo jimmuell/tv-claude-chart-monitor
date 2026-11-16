@@ -5,6 +5,7 @@ import type {
 
 // Display rules live outside the component tree so they can be tested without a DOM.
 import * as view from '../shared/pnl-view.mjs';
+import * as range from '../shared/pnl-range.mjs';
 
 type TabKey = 'summary' | 'trades' | 'fills' | 'days';
 
@@ -163,17 +164,28 @@ const Fills: React.FC<{ detail: SessionDetail }> = ({ detail }) => {
   );
 };
 
-/** The Past days tab: every session in the file, newest first; a click selects it. */
+/**
+ * The Past days tab: every session, newest first. A click selects one day; the tick
+ * boxes combine two or more. Ticking is what turns the window into a range view.
+ */
 const PastDays: React.FC<{
   sessions: SessionListItem[]; selected: string; onSelect: (d: string) => void;
-}> = ({ sessions, selected, onSelect }) => {
+  ticked: Set<string>; onTick: (d: string, on: boolean) => void; onClearTicks: () => void;
+}> = ({ sessions, selected, onSelect, ticked, onTick, onClearTicks }) => {
   if (sessions.length === 0) {
     return <div className="empty"><p>No sessions in the imported file.</p></div>;
   }
   return (
+    <>
+    {ticked.size > 0 && (
+      <div className="tickbar">
+        <span>{ticked.size} day{ticked.size === 1 ? '' : 's'} ticked{ticked.size === 1 ? ' — tick another to combine' : ''}</span>
+        <button className="btn-link" onClick={onClearTicks}>Clear</button>
+      </div>
+    )}
     <table className="grid">
       <thead>
-        <tr><th>Session</th><th className="num">Trades</th><th className="num">Contracts</th><th className="num">Fees</th><th className="num">Net</th></tr>
+        <tr><th className="tick"></th><th>Session</th><th className="num">Trades</th><th className="num">Contracts</th><th className="num">Fees</th><th className="num">Net</th></tr>
       </thead>
       <tbody>
         {sessions.map(s => (
@@ -182,6 +194,11 @@ const PastDays: React.FC<{
             className={`row${s.sessionDate === selected ? ' selected' : ''}`}
             onClick={() => onSelect(s.sessionDate)}
           >
+            <td className="tick" onClick={(e) => e.stopPropagation()}>
+              <input type="checkbox" checked={ticked.has(s.sessionDate)}
+                     onChange={(e) => onTick(s.sessionDate, e.target.checked)}
+                     title="Combine this day with the others ticked" />
+            </td>
             <td>{s.sessionDate}{s.openPositionAtEnd !== 0 && <span className="tag cross">carried {s.openPositionAtEnd > 0 ? '+' : ''}{s.openPositionAtEnd}</span>}</td>
             <td className="num">{s.tradeCount}</td>
             <td className="num dim">{s.contractSides}</td>
@@ -191,6 +208,44 @@ const PastDays: React.FC<{
         ))}
       </tbody>
     </table>
+    </>
+  );
+};
+
+/** The Summary for a range: combined totals, then one line per day. */
+const RangeSummary: React.FC<{ combined: any; label: string }> = ({ combined, label }) => {
+  const t = combined.totals;
+  const rows = [
+    { key: 'net',   label: 'Net',       value: view.fmtMoney(t.netPnl),   tone: view.moneyClass(t.netPnl), headline: true },
+    { key: 'gross', label: 'Gross',     value: view.fmtMoney(t.grossPnl), tone: view.moneyClass(t.grossPnl) },
+    { key: 'fees',  label: 'Fees',      value: view.fmtMoney(t.fees, { signed: false }), tone: '' },
+    { key: 'con',   label: 'Contracts', value: view.fmtContracts(t.contractSides), tone: '' },
+    { key: 'trd',   label: 'Trades',    value: String(t.tradeCount), tone: '' },
+    { key: 'day',   label: 'Days',      value: `${combined.dayCount} trading days`, tone: '' },
+  ];
+  return (
+    <div className="summary">
+      <div className="range-head">{label}</div>
+      {rows.map(r => (
+        <div key={r.key} className={`srow${r.headline ? ' headline' : ''}`}>
+          <span className="slabel">{r.label}</span>
+          <span className={`svalue ${r.tone}`}>{r.value}</span>
+        </div>
+      ))}
+      <div className="perday">
+        <div className="perday-title">Per day</div>
+        {combined.perDay.map((d: any) => (
+          <div key={d.sessionDate} className={`perday-row${d.hasData ? '' : ' empty-day'}`}>
+            <span>{d.sessionDate}</span>
+            <span className={view.moneyClass(d.netPnl)}>{d.hasData ? view.fmtMoney(d.netPnl) : 'no trading'}</span>
+          </div>
+        ))}
+      </div>
+      <p className="carried-note">
+        Each day is its own statement total; the combined figure is their sum, so a trade
+        carried between days is counted once.
+      </p>
+    </div>
   );
 };
 
@@ -245,6 +300,59 @@ export function App() {
     return () => { alive = false; offMode(); offUpdate(); };
   }, []);
 
+  // --- the range view -----------------------------------------------------
+  // The period is remembered between openings; the tick boxes are not, because a
+  // combination of specific days is a deliberate, momentary thing.
+  const [period, setPeriod] = useState<string>(() => {
+    try { return window.localStorage.getItem('tvcm.period') || 'today'; } catch { return 'today'; }
+  });
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo,   setCustomTo]   = useState('');
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [rangeDetails, setRangeDetails] = useState<SessionDetail[]>([]);
+
+  /** Remembers the chosen period, so the window opens the way it was left. */
+  const choosePeriod = useCallback((p: string) => {
+    setPeriod(p);
+    setTicked(new Set());
+    try { window.localStorage.setItem('tvcm.period', p); } catch { /* private window */ }
+  }, []);
+
+  /** Ticking days in Past days overrides the period selector while any are ticked. */
+  const toggleTick = useCallback((d: string, on: boolean) => {
+    setTicked(prev => { const next = new Set(prev); if (on) next.add(d); else next.delete(d); return next; });
+  }, []);
+
+  const today = state?.currentSession || sessions[0]?.sessionDate || '';
+  const available = React.useMemo(() => range.availableDates(sessions), [sessions]);
+  const activeRange = React.useMemo(() => {
+    if (ticked.size >= 2) {
+      const dates = Array.from(ticked).sort();
+      return { period: 'ticked', dates, from: dates[0], to: dates[dates.length - 1] };
+    }
+    return range.rangeFor(period, { today, available, from: customFrom, to: customTo });
+  }, [ticked, period, today, available, customFrom, customTo]);
+
+  const isRange = activeRange.dates.length > 1;
+
+  // One getDetail per day in the range. Days are few and the call is a local IPC read.
+  useEffect(() => {
+    if (!isRange) { setRangeDetails([]); return; }
+    let alive = true;
+    void Promise.all(activeRange.dates.map(d => window.pnlApi.getDetail(d)))
+      .then(ds => { if (alive) setRangeDetails(ds); });
+    return () => { alive = false; };
+  }, [isRange, activeRange.dates.join(','), state?.importedAt]);
+
+  const combined = React.useMemo(
+    () => range.combineSessions(sessions, activeRange.dates), [sessions, activeRange.dates.join(',')]);
+  const rangeTrades = React.useMemo(
+    () => range.rowsInRange(rangeDetails.flatMap(d => d.trades || []), activeRange.dates, 'trades'),
+    [rangeDetails, activeRange.dates.join(',')]);
+  const rangeFills = React.useMemo(
+    () => range.rowsInRange(rangeDetails.flatMap(d => d.fills || []), activeRange.dates, 'fills'),
+    [rangeDetails, activeRange.dates.join(',')]);
+
   // Kept in a ref so the push handler above always re-selects the day being viewed.
   const selectedRef = React.useRef('');
   useEffect(() => { selectedRef.current = selected; }, [selected]);
@@ -277,6 +385,7 @@ export function App() {
   }, [sessions, selected]);
 
   const hasData = !!(detail && detail.session);
+  const isRangeTicked = ticked.size >= 2;
 
   return (
     <div className="app">
@@ -284,7 +393,7 @@ export function App() {
         <div className="title">
           Order History &amp; P&amp;L
           {paper && <span className="paper-chip" title="Paper account — not real money">PAPER</span>}
-          {selected && <span className="session-chip">{selected}</span>}
+          <span className="session-chip">{isRange ? range.rangeLabel(activeRange) : (selected || today)}</span>
         </div>
         <div className="head-right">
           {merged?.warn && merged.errorMessage &&
@@ -300,6 +409,26 @@ export function App() {
         </div>
       </header>
 
+      <nav className="periods">
+        {range.PERIODS.map(p => (
+          <button key={p.key}
+                  className={`period${!isRangeTicked && period === p.key ? ' active' : ''}`}
+                  onClick={() => choosePeriod(p.key)}>{p.label}</button>
+        ))}
+        {period === 'custom' && !isRangeTicked && (
+          <span className="custom-dates">
+            <label>From <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} /></label>
+            <label>To <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} /></label>
+          </span>
+        )}
+        {isRangeTicked && (
+          <span className="custom-dates">
+            {ticked.size} days ticked in Past days
+            <button className="btn-link" onClick={() => setTicked(new Set())}>Clear</button>
+          </span>
+        )}
+      </nav>
+
       <nav className="tabs">
         {TABS.map(t => (
           <button
@@ -312,12 +441,18 @@ export function App() {
 
       <main className="body">
         {tab === 'days'
-          ? <PastDays sessions={sessions} selected={selected} onSelect={(d) => { setSelected(d); setTab('summary'); }} />
-          : !hasData
-            ? <Empty state={state} />
-            : tab === 'summary' ? <Summary detail={detail!} state={state} />
-            : tab === 'trades'  ? <Trades detail={detail!} />
-            : <Fills detail={detail!} />}
+          ? <PastDays sessions={sessions} selected={selected}
+                      onSelect={(d) => { setSelected(d); setTab('summary'); }}
+                      ticked={ticked} onTick={toggleTick} onClearTicks={() => setTicked(new Set())} />
+          : isRange
+            ? (tab === 'summary' ? <RangeSummary combined={combined} label={range.rangeLabel(activeRange)} />
+             : tab === 'trades'  ? <Trades detail={{ sessionDate: '', session: null, trades: rangeTrades, fills: rangeFills, boundary: null }} />
+             : <Fills detail={{ sessionDate: '', session: null, trades: rangeTrades, fills: rangeFills, boundary: null }} />)
+            : !hasData
+              ? <Empty state={state} />
+              : tab === 'summary' ? <Summary detail={detail!} state={state} />
+              : tab === 'trades'  ? <Trades detail={detail!} />
+              : <Fills detail={detail!} />}
       </main>
     </div>
   );
