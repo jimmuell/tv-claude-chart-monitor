@@ -725,6 +725,7 @@ function setPaperMode(on: boolean): void {
   saveSettings({ ...getSettings(), paperMode: next });
   const mode: 'live' | 'paper' = next ? 'paper' : 'live';
   liveFeed?.setMode(mode, liveFeedStatePath(mode));
+  orderImport?.reapplyCorrections();
   console.log(`[live-feed] switched to ${mode} mode`);
   rebuildMenu();
   publishPnl();
@@ -1048,6 +1049,8 @@ app.on('ready', () => {
     // for testing without editing the real settings file.
     folder:    process.env.TVCM_ORDER_IMPORT_FOLDER || importSettings.orderImportFolder,
     statePath: path.join(app.getPath('userData'), 'order-import.json'),
+    corrections: () => correctionsStore?.list(paperMode() ? 'paper' : 'live') ?? [],
+    mode:        () => (paperMode() ? 'paper' : 'live'),
     // The watcher's own state is no longer what anyone renders — publishPnl() merges it
     // with the live feed first — so a change just asks for a repaint.
     onChange:  () => publishPnl(),
@@ -1205,12 +1208,16 @@ app.on('ready', () => {
   ipcMain.handle(IPC.CORRECTION_SUGGESTION, () => liveFeed?.getState().suggestion ?? null);
   ipcMain.handle(IPC.CORRECTION_ADD, (_e, input: unknown) => {
     const made = correctionsStore?.add(paperMode() ? 'paper' : 'live', input) ?? null;
+    orderImport?.reapplyCorrections();
     void liveFeed?.readOnce().then(() => publishPnl());
+    publishPnl();
     return made;
   });
   ipcMain.handle(IPC.CORRECTION_REMOVE, (_e, id: string) => {
     correctionsStore?.remove(paperMode() ? 'paper' : 'live', id);
+    orderImport?.reapplyCorrections();
     void liveFeed?.readOnce().then(() => publishPnl());
+    publishPnl();
   });
   ipcMain.handle(IPC.PNL_WINDOW_CLOSE, () => { pnlWindow?.close(); });
   ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => sessionList());

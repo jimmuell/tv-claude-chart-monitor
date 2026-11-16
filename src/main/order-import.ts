@@ -9,6 +9,7 @@ import type { OrderImportState, ImportedSession, ImportedTrade, ImportedFill, Se
 // The engine proved against AMP's statement in TVCM-13. It is a shared CommonJS
 // module that tsc does not compile, so it is loaded at runtime.
 const orderHistory = sharedModule('order-history.js');
+const corrections = sharedModule('corrections.js');
 
 /**
  * Only live AMP exports are imported. TradingView names the real one
@@ -35,6 +36,10 @@ export interface OrderImportOptions {
   /** Where the last good result is cached between runs. */
   statePath?:     string;
   onChange?:      (state: OrderImportState) => void;
+  /** Jim's recorded missing fills, so the export's totals include them too. */
+  corrections?:   () => unknown[];
+  /** Which mode's corrections apply. */
+  mode?:          () => 'live' | 'paper';
   log?:           (line: string) => void;
 }
 
@@ -87,6 +92,8 @@ export class OrderImportWatcher {
   private now:         () => number;
   private statePath:   string | null;
   private onChange?:   (state: OrderImportState) => void;
+  private corrections: () => unknown[];
+  private mode:        () => 'live' | 'paper';
   private log:         (line: string) => void;
 
   private timer:       ReturnType<typeof setInterval> | null = null;
@@ -103,6 +110,9 @@ export class OrderImportWatcher {
   private lastTrades: ImportedTrade[] = [];
   /** Every fill in the file, for the window's Fills tab. */
   private lastFills: ImportedFill[] = [];
+  /** The fills exactly as parsed from the export, so corrections can be re-applied
+   *  without re-reading the file. */
+  private lastRawFills: any[] = [];
   /** How each session's trade list relates to its statement total. */
   private lastBoundaries = new Map<string, SessionBoundary>();
 
@@ -112,6 +122,8 @@ export class OrderImportWatcher {
     this.now       = opts.now ?? (() => Date.now());
     this.statePath = opts.statePath ?? null;
     this.onChange  = opts.onChange;
+    this.corrections = opts.corrections ?? (() => []);
+    this.mode        = opts.mode ?? (() => 'live');
     this.log       = opts.log ?? ((l) => console.log(l));
     this.state     = emptyState(this.folder);
     this.restore();
@@ -268,6 +280,9 @@ export class OrderImportWatcher {
       return this.fail(filePath, at, 'TVCM-OH-NO-ROWS', 'the export parsed but contains no fills');
     }
 
+    this.lastRawFills = result.fills || [];
+    result = this.withCorrections(result);
+
     this.lastSessions = result.sessions.map(toImportedSession);
     this.lastTrades   = (result.trades || []).map(toImportedTrade);
     this.lastFills    = (result.fills  || []).map(toImportedFill);
@@ -299,6 +314,44 @@ export class OrderImportWatcher {
     this.persist();
     this.onChange?.(this.getState());
     return { action: 'imported', filePath };
+  }
+
+  /**
+   * Folds Jim's recorded missing fills into an analysis. They belong in the export's
+   * totals too, not only the live feed's — otherwise the same day reads differently
+   * depending on which source showed it. A correction a real export row has overtaken is
+   * dropped rather than doubled.
+   */
+  private withCorrections(result: any): any {
+    const corrected = corrections.analyseWithCorrections(this.lastRawFills, this.corrections(), {
+      mode: this.mode(), skipped: result.skipped,
+    });
+    // Always the analysed result, even with no corrections to apply: with none it is
+    // simply the plain analysis of the same fills. Returning the caller's object instead
+    // handed reapplyCorrections() a stub with no sessions and emptied the window.
+    return { ...corrected.result, errors: result.errors, skipped: result.skipped };
+  }
+
+  /**
+   * Re-prices the last import after Jim adds or removes a correction. The file has not
+   * changed, so re-reading it would be a no-op — the held fills are re-analysed instead.
+   */
+  reapplyCorrections(): void {
+    if (this.lastRawFills.length === 0) return;
+    const result = this.withCorrections({ skipped: [], errors: [] });
+    this.lastSessions = (result.sessions || []).map(toImportedSession);
+    this.lastTrades   = (result.trades  || []).map(toImportedTrade);
+    this.lastFills    = (result.fills   || []).map(toImportedFill);
+    this.lastBoundaries.clear();
+    for (const sess of (result.sessions || [])) {
+      const b = toBoundary(sess.tradeReconciliation);
+      if (b) this.lastBoundaries.set(sess.sessionDate, b);
+    }
+    this.state = { ...this.state, sessionCount: (result.sessions || []).length,
+                   fillCount: (result.fills || []).length };
+    this.resolveSession();
+    this.persist();
+    this.onChange?.(this.getState());
   }
 
   /** Records a failed attempt without discarding the last good numbers. */

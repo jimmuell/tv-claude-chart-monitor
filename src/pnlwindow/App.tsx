@@ -281,6 +281,12 @@ const CorrectionList: React.FC<{ corrections: any[]; onRemove: (id: string) => v
 
 export function App() {
   const [state, setState]       = useState<OrderImportState | null>(null);
+  /**
+   * Bumped whenever the numbers can have changed without the import time moving — which
+   * is what adding or removing a correction does. Without it the window kept showing the
+   * uncorrected figures until the next export landed.
+   */
+  const [dataVersion, setDataVersion] = useState(0);
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [selected, setSelected] = useState<string>('');
   const [detail, setDetail]     = useState<SessionDetail | null>(null);
@@ -372,7 +378,7 @@ export function App() {
     void Promise.all(activeRange.dates.map(d => window.pnlApi.getDetail(d)))
       .then(ds => { if (alive) setRangeDetails(ds); });
     return () => { alive = false; };
-  }, [isRange, activeRange.dates.join(','), state?.importedAt]);
+  }, [isRange, activeRange.dates.join(','), state?.importedAt, dataVersion]);
 
   const combined = React.useMemo(
     () => range.combineSessions(sessions, activeRange.dates), [sessions, activeRange.dates.join(',')]);
@@ -392,6 +398,7 @@ export function App() {
   const refreshCorrections = useCallback(async () => {
     const [s, list] = await Promise.all([window.pnlApi.getSuggestion(), window.pnlApi.listCorrections()]);
     setSuggestion(s); setCorrections(list);
+    setDataVersion(v => v + 1);
   }, []);
 
   useEffect(() => {
@@ -422,7 +429,7 @@ export function App() {
     let alive = true;
     void window.pnlApi.getDetail(selected).then(d => { if (alive) setDetail(d); });
     return () => { alive = false; };
-  }, [selected, state?.importedAt]);
+  }, [selected, state?.importedAt, dataVersion]);
 
   /** Keyboard: Cmd-1..4 pick a tab, Cmd-[ / Cmd-] step through sessions. */
   useEffect(() => {
