@@ -344,6 +344,8 @@ export interface MergedPnlState {
   asOf:               number | null;
   asOfSource:         'feed' | 'csv' | null;
   disagreement:       { code: string; feedNet: number; csvNet: number; delta: number; sessionDate: string | null } | null;
+  /** True when the number is the feed's last reading for today rather than a live one. */
+  lastKnown:          boolean;
   feedStale:          boolean;
   feedState:          LiveFeedGate | null;
   feedReason:         string | null;

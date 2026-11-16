@@ -81,6 +81,20 @@ function mergePnl(input) {
       && feed.session && feed.session.sessionDate === currentSession)
     ? feed.session : null;
 
+  /**
+   * The feed's last reading for TODAY, however old it is.
+   *
+   * On 2026-11-16 the Mac lost its AMP connection (the iPhone holds Jim's single
+   * allowed one) and the menu bar fell back to the CSV's last session — FRIDAY —
+   * instead of today's last known live number. A stale figure for today is honest and
+   * can be marked; a different day's figure in the menu bar is simply wrong. So once
+   * the feed has a result for the current session it keeps it until the feed recovers
+   * or the session itself ends.
+   */
+  const feedLastKnown = (feedOk && !feedCurrent
+      && feed.session && feed.session.sessionDate === currentSession)
+    ? feed.session : null;
+
   // The same rule the CSV path uses: with the market SHUT and nothing in the current
   // session, show the newest session that has fills — on a Saturday a trader wants
   // Friday's result, not a dash. While the market is open an empty current session stays
@@ -108,11 +122,15 @@ function mergePnl(input) {
   }
 
   // --- choose the session ----------------------------------------------------
-  let session = null, source = 'none', isFallback = false, asOf = null;
+  let session = null, source = 'none', isFallback = false, asOf = null, lastKnown = false;
   if (disagreement) {
     session = csvCurrent; source = 'csv'; asOf = csvState.importedAt;
   } else if (feedCurrent) {
     session = feedCurrent; source = 'feed'; asOf = feed.readAt;
+  } else if (csvCurrent) {
+    session = csvCurrent; source = 'csv'; asOf = csvState.importedAt;
+  } else if (feedLastKnown) {
+    session = feedLastKnown; source = 'feed'; asOf = feed.readAt; lastKnown = true;
   } else if (csvState && csvState.session) {
     session = csvState.session; source = 'csv'; isFallback = !!csvState.isFallback; asOf = csvState.importedAt;
   } else if (feedFallback) {
@@ -121,6 +139,8 @@ function mergePnl(input) {
 
   // --- what to complain about, strongest first -------------------------------
   const problem = firstError([
+    lastKnown && { code: feed.errorCode || 'TVCM-LF-LAST-KNOWN',
+      message: `TradingView disconnected — showing the last known figure for ${currentSession}` },
     disagreement && { code: disagreement.code,
       message: `the live feed says ${disagreement.feedNet} and the export says ${disagreement.csvNet} for ${currentSession} — showing the export` },
     modeMismatch && { code: 'TVCM-LF-MODE-MISMATCH',
@@ -138,6 +158,8 @@ function mergePnl(input) {
     asOf,
     asOfSource:   source === 'none' ? null : source,
     disagreement,
+    /** True when the number is the feed's last reading for today, not a live one. */
+    lastKnown,
     feedStale:    stale,
     feedState:    feed ? feed.state : null,
     feedReason:   feed ? feed.reason : null,
@@ -146,7 +168,7 @@ function mergePnl(input) {
     pastSessionsSource: csvAllowed ? 'csv' : null,
     errorCode:    problem ? problem.code : null,
     errorMessage: problem ? problem.message || null : null,
-    warn:         !!(disagreement || modeMismatch || (feed && feed.warn)),
+    warn:         !!(disagreement || modeMismatch || lastKnown || (feed && feed.warn)),
   };
 }
 

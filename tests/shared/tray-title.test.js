@@ -555,3 +555,18 @@ test('each cross-check state reads correctly on its own line', () => {
   assert.match(mk({ state: 'differs', message: 'reads 1 here and 2 at the broker' }),
                /Broker cross-check: for information/i);
 });
+
+// ── "Last known" is not "live" (TVCM-32 Task 2b) ─────────────────────────
+
+test('a last-known number says so, and still says when it was read', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders', lastKnown: true });
+  assert.ok(/last known/i.test(t), t);
+  assert.ok(!/Live feed \(orders\) read/.test(t), 'it must not claim to be live: ' + t);
+  assert.ok(/\d+:\d\d (AM|PM) CT/.test(t), 'the as-of time must still be there: ' + t);
+});
+
+test('a live number is not labelled last known', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders', lastKnown: false });
+  assert.ok(/Live feed \(orders\) read/.test(t), t);
+  assert.ok(!/last known/i.test(t), t);
+});

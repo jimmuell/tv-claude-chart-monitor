@@ -651,7 +651,7 @@ function autoDrawResult(result: AnalysisResult): void {
 type TrayTitleOpts = {
   now?: number; staleMinutes?: number; isTestProfile?: boolean;
   paperMode?: boolean; source?: string | null; switchHint?: string | null; feedReason?: string | null;
-  feedSource?: string | null; crossCheck?: unknown;
+  feedSource?: string | null; crossCheck?: unknown; lastKnown?: boolean;
 };
 const { trayTitleColoured, trayTooltip } = sharedModule('tray-title.js') as {
   trayTitleColoured: (s: OrderImportState | null, o?: TrayTitleOpts) => string;
@@ -769,6 +769,7 @@ function refreshTrayTitle(): void {
     // Which collection the feed read, and whether the broker agrees with it.
     feedSource:    liveFeed?.getState().source ?? null,
     crossCheck:    liveFeed?.getState().crossCheck ?? null,
+    lastKnown:     merged.lastKnown,
   };
   try {
     // monospacedDigit stops the title's width jittering as the number changes.

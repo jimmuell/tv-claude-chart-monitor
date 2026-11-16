@@ -330,3 +330,93 @@ test('in paper mode the live export file name never reaches the display', () => 
   assert.strictEqual(st.fileName, null, 'naming the AMP export in a paper view is a leak');
   assert.strictEqual(st.session, null);
 });
+
+// ── Never show a different day in the menu bar (TVCM-32 Task 2b) ─────────
+// Observed 2026-11-16 09:33 CT: the Mac was disconnected (the iPhone held Jim's
+// single AMP connection) and the menu bar fell back to the CSV's last session —
+// FRIDAY, +$896.65 — instead of today's last known live result, +$169.30 at
+// 08:03. A stale number for today is honest; a different day is not.
+
+const TODAY = '2026-11-13';   // the CT_OPEN fixtures all sit in this session
+
+test('a disconnected feed keeps TODAY rather than falling back to another day', () => {
+  const m = mergePnl({
+    feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED',
+                 errorMessage: 'WebSocket is not open', lastAttemptAt: CT_OPEN }),
+    csv:  csv({ session: session('2026-11-12', 896.65), isFallback: true }),
+    now: CT_OPEN, staleMinutes: 30 });
+  assert.strictEqual(m.source, 'feed');
+  assert.strictEqual(m.session.sessionDate, TODAY, 'the menu bar showed a different day');
+  assert.strictEqual(m.session.netPnl, 100);
+  assert.strictEqual(m.lastKnown, true, 'it must be flagged as last known, not live');
+  assert.strictEqual(m.warn, true, 'a number that is not being refreshed must be marked');
+});
+
+test('the last-known reason names the disconnection', () => {
+  const m = mergePnl({
+    feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED', lastAttemptAt: CT_OPEN }),
+    csv:  csv({ session: session('2026-11-12', 1), isFallback: true }), now: CT_OPEN });
+  assert.match(m.errorMessage || m.feedReason || '', /disconnect|last known/i);
+  assert.strictEqual(m.asOf, CT_OPEN - 90 * MIN, '"as of" must be when it was actually read');
+});
+
+test('connected → disconnected → reconnected keeps the same day throughout', () => {
+  const connected = mergePnl({ feed: feed(), csv: csv(), now: CT_OPEN });
+  assert.strictEqual(connected.source, 'feed');
+  assert.strictEqual(connected.lastKnown, false);
+  assert.strictEqual(connected.warn, false);
+
+  const dropped = mergePnl({
+    feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED', lastAttemptAt: CT_OPEN }),
+    csv: csv({ session: session('2026-11-12', 9999), isFallback: true }), now: CT_OPEN });
+  assert.strictEqual(dropped.session.sessionDate, connected.session.sessionDate);
+  assert.strictEqual(dropped.lastKnown, true);
+
+  // The export has no current session here, so the recovered feed owns the number
+  // outright — otherwise the (correct) disagreement rule would hand it to the export.
+  const back = mergePnl({ feed: feed({ session: session(TODAY, 150) }),
+                          csv: csv({ session: session('2026-11-12', 9999), isFallback: true }), now: CT_OPEN });
+  assert.strictEqual(back.lastKnown, false, 'recovery must clear the marker');
+  assert.strictEqual(back.session.netPnl, 150);
+  assert.strictEqual(back.warn, false);
+});
+
+test('a disconnect that spans the 17:00 session change lets the old day go', () => {
+  // Now is inside session 2026-11-16; the feed's last reading is for 2026-11-13.
+  const laterSession = Date.parse('2026-11-16T20:00:00Z');   // Mon 14:00 CT
+  const m = mergePnl({
+    feed: feed({ session: session('2026-11-13', 100), currentSession: '2026-11-16',
+                 readAt: laterSession - 20 * 60 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED' }),
+    csv:  csv({ session: session('2026-11-13', 896.65), isFallback: true, currentSession: '2026-11-16' }),
+    now: laterSession });
+  assert.strictEqual(m.lastKnown, false, 'yesterday is not today\u2019s last known');
+  assert.strictEqual(m.source, 'csv', 'once the session ends the export is the record again');
+  assert.strictEqual(m.session.netPnl, 896.65);
+});
+
+test('the CSV still wins when it has TODAY — it is the statement-proven path', () => {
+  const m = mergePnl({
+    feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED' }),
+    csv:  csv(),   // has the current session, not a fallback
+    now: CT_OPEN });
+  assert.strictEqual(m.source, 'csv');
+  assert.strictEqual(m.lastKnown, false);
+});
+
+test('a feed that never read today has nothing to keep', () => {
+  const m = mergePnl({
+    feed: feed({ session: null, readAt: null, errorCode: 'TVCM-LF-NOT-CONNECTED' }),
+    csv:  csv({ session: session('2026-11-12', 896.65), isFallback: true }), now: CT_OPEN });
+  assert.strictEqual(m.source, 'csv');
+  assert.strictEqual(m.lastKnown, false);
+  assert.strictEqual(m.session.netPnl, 896.65);
+});
+
+test('last known never crosses modes', () => {
+  const m = mergePnl({
+    mode: 'live',
+    feed: feed({ mode: 'paper', readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED' }),
+    csv:  csv({ session: session('2026-11-12', 5), isFallback: true }), now: CT_OPEN });
+  assert.strictEqual(m.lastKnown, false, 'a paper reading must never be kept in a live view');
+  assert.strictEqual(m.source, 'csv');
+});

@@ -149,7 +149,8 @@ function stripAnsi(text) {
  * collection is named too: the two brokers keep their fills in different places and
  * reading the wrong one is the failure this whole line exists to make visible.
  */
-function sourceLabel(source, feedSource) {
+function sourceLabel(source, feedSource, lastKnown) {
+  if (source === 'feed' && lastKnown) return `Last known${feedSource ? ` (${feedSource})` : ''}, as of`;
   if (source === 'feed') return `Live feed${feedSource ? ` (${feedSource})` : ''} read`;
   if (source === 'csv')  return 'From the export, imported';
   return 'Imported';
@@ -194,7 +195,7 @@ function trayTooltip(state, options) {
     `Session ${s.sessionDate}${state.isFallback ? ' (last session with fills)' : ''}`,
     `Net ${formatNet(s.netPnl)}  ·  Gross ${formatNet(s.grossPnl)}  ·  Fees $${s.fees.toFixed(2)}`,
     `${s.contractSides} contract-sides (${s.roundTrips} RT)`,
-    `${sourceLabel(opts.source, opts.feedSource)} ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
+    `${sourceLabel(opts.source, opts.feedSource, opts.lastKnown)} ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
   );
   // Only the feed is cross-checked; the export is the record, not a thing to check.
   if (opts.source === 'feed') {
