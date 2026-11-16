@@ -155,12 +155,20 @@ function sourceLabel(source, feedSource) {
   return 'Imported';
 }
 
-/** One line saying whether the broker's own numbers agree with ours. */
+/**
+ * One line saying how the broker's own numbers compare with ours.
+ *
+ * A DIFFERENCE is informational and worded as such: TVCM-31 established that the broker's
+ * figure goes absent, freezes and drifts, so it cannot be used to call ours wrong. BLIND
+ * is a real fault and is reported through the failure line instead, so it is never said
+ * twice.
+ */
 function crossCheckLine(check) {
   if (!check) return null;
+  if (check.state === 'blind')       return null;   // said once, as a failure
   if (check.state === 'ok')          return 'Broker cross-check: OK';
   if (check.state === 'unavailable') return `Broker cross-check: not available — ${shortReason(check.message)}`;
-  return `Broker cross-check: ${check.code || check.state} — ${shortReason(check.message)}`;
+  return `Broker cross-check: for information — ${shortReason(check.message)}`;
 }
 
 /** A longer line for the tray tooltip, where there is room to say which session it is. */
@@ -196,6 +204,8 @@ function trayTooltip(state, options) {
   if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
   if (hasFailedImport(state)) {
     lines.push(`Last import failed: ${state.errorCode} — ${shortReason(state.errorMessage)}`);
+    // Only true when the displayed number really is older than the last attempt. A
+    // successful read that merely disagrees with the broker is still a fresh number.
     lines.push('Showing the last good import — the number above is not being refreshed');
   }
   if (opts.switchHint) lines.push(opts.switchHint);

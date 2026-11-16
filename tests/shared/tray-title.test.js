@@ -456,11 +456,17 @@ test('a passing broker cross-check is stated, not left to be assumed', () => {
 });
 
 test('a failing cross-check says what went wrong instead of "OK"', () => {
-  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
-    crossCheck: { state: 'blind', code: 'TVCM-LF-BLIND', delta: -302.5,
-                  message: 'the feed found no fills but the broker reports 302.50 realized' } });
+  // TVCM-33: BLIND is a real fault, so it is reported through the failure line —
+  // which is what the reader sets — rather than twice, as a cross-check note too.
+  const s = state();
+  s.errorCode = 'TVCM-LF-BLIND';
+  s.errorMessage = 'the feed found no fills but 5 contract(s) are open';
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+    crossCheck: { state: 'blind', code: 'TVCM-LF-BLIND', delta: null,
+                  message: 'the feed found no fills but 5 contract(s) are open' } });
   assert.ok(/no fills/.test(t), t);
   assert.ok(!/cross-check: OK/i.test(t), 'a broken check must never read as OK: ' + t);
+  assert.strictEqual(t.split('\n').filter(l => /no fills/.test(l)).length, 1, 'said twice:\n' + t);
 });
 
 test('a cross-check that could not run says so rather than claiming a pass', () => {
@@ -475,4 +481,77 @@ test('a CSV-sourced tooltip carries no cross-check line at all', () => {
                                    crossCheck: { state: 'ok', code: null, delta: 0, message: null } });
   assert.ok(/export/i.test(t), t);
   assert.ok(!/cross-check/i.test(t), 'the export is not cross-checked against the broker: ' + t);
+});
+
+// ── Feed status and import failure are different things (TVCM-33) ─────────
+// TVCM-29 routed the cross-check through errorCode, and hasFailedImport() reads
+// ANY errorCode as a failed import. TVCM-31 caught the result: the same sentence
+// printed twice, followed by "the number above is not being refreshed" — about a
+// number that had been read that same second.
+
+/** The state as it looks when the last read SUCCEEDED but the broker figure differs. */
+function differsState() {
+  const s = state({ importedAt: FRI_OPEN });
+  s.errorCode = null;          // a difference is informational: never an error code
+  s.errorMessage = null;
+  return s;
+}
+
+test('an informational cross-check prints once, and claims no failure', () => {
+  const t = trayTooltip(differsState(), {
+    now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+    crossCheck: { state: 'differs', code: null, delta: -87.5,
+                  message: 'this session reads 473.75 gross here and 561.25 at the broker' },
+  });
+  const hits = t.split('\n').filter(l => /561\.25/.test(l));
+  assert.strictEqual(hits.length, 1, 'the message was printed twice:\n' + t);
+  assert.ok(!/Last import failed/i.test(t), 'a difference is not an import failure: ' + t);
+  assert.ok(!/not being refreshed/i.test(t), 'the number WAS refreshed: ' + t);
+});
+
+test('a successful read never claims the number is not being refreshed', () => {
+  for (const cc of [{ state: 'ok' }, { state: 'differs', message: 'x' }, { state: 'unavailable', message: 'y' }]) {
+    const t = trayTooltip(differsState(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders', crossCheck: cc });
+    assert.ok(!/not being refreshed/i.test(t), `${cc.state}: ` + t);
+  }
+});
+
+test('a real read failure DOES say the number is not being refreshed, once', () => {
+  const s = state({ importedAt: FRI_OPEN - 10 * MIN });
+  s.errorCode = 'TVCM-LF-NOT-CONNECTED';
+  s.errorMessage = 'WebSocket is not open';
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+                             crossCheck: { state: 'unavailable', message: 'no figure' } });
+  assert.ok(/Last import failed: TVCM-LF-NOT-CONNECTED/.test(t), t);
+  assert.ok(/not being refreshed/i.test(t), t);
+  assert.strictEqual(t.split('\n').filter(l => /not being refreshed/i.test(l)).length, 1);
+});
+
+test('BLIND is a real failure and still says so', () => {
+  const s = state({ importedAt: FRI_OPEN - 10 * MIN });
+  s.errorCode = 'TVCM-LF-BLIND';
+  s.errorMessage = 'the feed found no fills but 5 contract(s) are open';
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'csv',
+                             crossCheck: { state: 'blind', code: 'TVCM-LF-BLIND',
+                                           message: 'the feed found no fills but 5 contract(s) are open' } });
+  assert.ok(/TVCM-LF-BLIND/.test(t), t);
+  assert.strictEqual(t.split('\n').filter(l => /no fills but 5 contract/.test(l)).length, 1,
+    'blind printed twice:\n' + t);
+});
+
+test('the cross-check line never duplicates the failure line', () => {
+  const s = state({ importedAt: FRI_OPEN - 10 * MIN });
+  s.errorCode = 'TVCM-LF-BLIND';
+  s.errorMessage = 'same sentence';
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+                             crossCheck: { state: 'blind', code: 'TVCM-LF-BLIND', message: 'same sentence' } });
+  assert.strictEqual(t.split('\n').filter(l => /same sentence/.test(l)).length, 1, t);
+});
+
+test('each cross-check state reads correctly on its own line', () => {
+  const mk = (cc) => trayTooltip(differsState(), { now: FRI_OPEN, source: 'feed', feedSource: 'orders', crossCheck: cc });
+  assert.match(mk({ state: 'ok' }), /Broker cross-check: OK/);
+  assert.match(mk({ state: 'unavailable', message: 'no figure' }), /not available/i);
+  assert.match(mk({ state: 'differs', message: 'reads 1 here and 2 at the broker' }),
+               /Broker cross-check: for information/i);
 });
