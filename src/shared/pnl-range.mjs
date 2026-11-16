@@ -63,10 +63,21 @@ export function monthStartSession(sessionDate) {
   return String(sessionDate).slice(0, 8) + '01';
 }
 
-/** Every session date the supplied sessions cover, oldest first and deduped. */
-export function availableDates(sessions) {
+/**
+ * Every date the supplied sessions cover, oldest first and deduped.
+ *
+ * In calendar mode a trading day touches TWO calendar dates — the evening it opened and
+ * the day it ended — so both are offered, or Sunday evening's trading would have no day
+ * to be picked by.
+ */
+export function availableDates(sessions, mode) {
   if (!Array.isArray(sessions)) return [];
-  return Array.from(new Set(sessions.filter(Boolean).map(s => s.sessionDate))).sort();
+  const dates = new Set();
+  for (const s of sessions.filter(Boolean)) {
+    dates.add(s.sessionDate);
+    if (mode === 'calendar') dates.add(shiftDays(s.sessionDate, -1));
+  }
+  return Array.from(dates).sort();
 }
 
 /**
@@ -146,9 +157,12 @@ export function combineSessions(sessions, dates) {
  * The trades or fills that fall in a range, newest first. A trade belongs to the day its
  * own session reports it — the day it CLOSED, or for a still-open trade the day it opened.
  */
-export function rowsInRange(rows, dates, kind) {
+export function rowsInRange(rows, dates, kind, mode) {
   const want = new Set(dates || []);
   const picked = (rows || []).filter(Boolean).filter(row => {
+    // Calendar mode asks a different question of the same row: not which 17:00-17:00
+    // session it belongs to, but which midnight-to-midnight day it fell on.
+    if (mode === 'calendar') return want.has(calendarDateOf(row, kind));
     if (kind === 'fills') return want.has(row.sessionDate);
     if (row.status === 'OPEN') return want.has(row.openSessionDate);
     return want.has(row.sessionDate);
@@ -163,4 +177,125 @@ export function rangeLabel(range) {
   if (n === 0) return 'no trading days';
   if (n === 1) return String(range.dates[0]);
   return `${range.from} → ${range.to} · ${n} trading days`;
+}
+
+// ── Trading day vs calendar day ──────────────────────────────────────────
+//
+// Jim (2026-11-16): "when I click Today it includes Sunday's trades". It does, and it is
+// right: AMP's trading day runs 17:00–17:00 CT, so Monday's session opened on Sunday
+// evening. Right is not the same as obvious, so the window now says which window it is
+// showing and offers the other one.
+//
+// Calendar mode is a DISPLAY re-bucketing only. The menu bar never leaves the AMP
+// trading day, and a calendar total is not a statement total — a trade that opened
+// Sunday evening and closed Monday morning lands wholly on Monday, so Sunday's calendar
+// total is missing P&L that AMP booked to the Monday session anyway.
+
+/** The two ways a day can be drawn, in the order the switch shows them. */
+export const DAY_MODES = [
+  { key: 'trading',  label: 'Trading day (matches AMP)' },
+  { key: 'calendar', label: 'Calendar day (midnight–midnight)' },
+];
+
+/** The warning shown whenever calendar days are on. */
+export const CALENDAR_NOTE = "Calendar-day totals won't match AMP's daily statement.";
+
+/** Weekday names, indexed the way the calendar does it. */
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** "Mon" for a "YYYY-MM-DD" label, read straight off the calendar. */
+function weekday(dateText) {
+  return WEEKDAYS[dow(dateText)] || '?';
+}
+
+/** "11/16" for a "YYYY-MM-DD" label. */
+function monthDay(dateText) {
+  return `${String(dateText).slice(5, 7)}/${String(dateText).slice(8, 10)}`;
+}
+
+/** Today's Chicago calendar date, which on a Sunday evening is NOT the session date. */
+export function chicagoToday(now) {
+  const d = now ? new Date(now) : new Date();
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+}
+
+/**
+ * The calendar date a row fell on. A trade belongs to the date it CLOSED, because that
+ * is when its P&L became real; a trade still open belongs to the date it opened.
+ */
+export function calendarDateOf(row, kind) {
+  if (!row) return null;
+  const stamp = kind === 'fills' ? row.fillTime : (row.closeTime || row.openTime);
+  return stamp ? String(stamp).slice(0, 10) : null;
+}
+
+/**
+ * Which 17:00–17:00 sessions have to be fetched to draw these calendar days. A calendar
+ * day is split across two of them: midnight to 17:00 belongs to the session of the same
+ * name, and 17:00 to midnight to the NEXT one.
+ */
+export function sessionsCoveringCalendar(dates) {
+  const want = new Set();
+  for (const d of (dates || []).filter(Boolean)) {
+    want.add(d);
+    want.add(shiftDays(d, 1));
+  }
+  return Array.from(want).sort();
+}
+
+/**
+ * Totals added up from the trade rows themselves, for calendar days only.
+ *
+ * This is NOT how a trading day is totalled — that stays the statement-proven session
+ * figure (TVCM-13). It is the only way to total a calendar day, because no such session
+ * exists at the broker, and it is why calendar mode carries a warning.
+ */
+export function totalsFromRows(trades) {
+  const totals = { netPnl: 0, grossPnl: 0, fees: 0, contractSides: 0, roundTrips: 0, tradeCount: 0 };
+  for (const t of (trades || []).filter(Boolean)) {
+    totals.netPnl    = toCents(totals.netPnl + Number(t.net || 0));
+    totals.grossPnl  = toCents(totals.grossPnl + Number(t.gross || 0));
+    totals.fees      = toCents(totals.fees + Number(t.fees || 0));
+    totals.contractSides += Number(t.contractSides) || 0;
+    totals.tradeCount    += 1;
+  }
+  totals.roundTrips = totals.contractSides / 2;
+  return totals;
+}
+
+/** The same shape combineSessions returns, but bucketed by calendar date instead. */
+export function combineCalendarDays(trades, dates) {
+  const wanted = Array.from(new Set(dates || []));
+  const rows = (trades || []).filter(Boolean);
+  const perDay = wanted.map(date => {
+    const mine = rows.filter(t => calendarDateOf(t, 'trades') === date);
+    const totals = totalsFromRows(mine);
+    return { sessionDate: date, hasData: mine.length > 0, openPositionAtEnd: 0, ...totals };
+  });
+  perDay.sort((a, b) => (a.sessionDate < b.sessionDate ? 1 : -1));
+  const totals = totalsFromRows(rows.filter(t => wanted.includes(calendarDateOf(t, 'trades'))));
+  return { totals, perDay, dayCount: wanted.length };
+}
+
+/**
+ * The window a range actually covers, spelled out, e.g.
+ * "Sun 5:00 PM – Mon 4:00 PM CT". Shown beside the period buttons so "Today" can never
+ * again look like it has quietly swallowed somebody else's trading.
+ */
+export function rangeWindowLabel(range, mode) {
+  const dates = (range && range.dates) || [];
+  if (dates.length === 0) return '';
+  const from = dates[0];
+  const to   = dates[dates.length - 1];
+  const many = dates.length > 1;
+  if (mode === 'calendar') {
+    const start = many ? `${weekday(from)} ${monthDay(from)}` : weekday(from);
+    const end   = many ? `${weekday(to)} ${monthDay(to)} ` : '';
+    return `${start} 12:00 AM – ${end}11:59 PM CT`;
+  }
+  // A trading day opens at 17:00 on the day BEFORE the one it is named for.
+  const open = shiftDays(from, -1);
+  const start = many ? `${weekday(open)} ${monthDay(open)}` : weekday(open);
+  const end   = many ? `${weekday(to)} ${monthDay(to)}` : weekday(to);
+  return `${start} 5:00 PM – ${end} 4:00 PM CT`;
 }

@@ -235,3 +235,116 @@ test('every period has a label for the selector', () => {
   for (const p of r.PERIODS) assert.ok(p.label && p.label.length > 0, p.key);
   assert.strictEqual(r.PERIODS[0].label, 'Today');
 });
+
+// ── Trading day vs calendar day (TVCM-37) ────────────────────────────────
+//
+// Jim: "when I click Today it includes Sunday's trades". AMP's day opens at 17:00 CT the
+// evening before, so it should — these tests pin both readings of the same rows.
+
+/** A closed trade shaped like the engine's. */
+function tr(id, openTime, closeTime, over = {}) {
+  return {
+    id, status: 'CLOSED', direction: 'long',
+    sessionDate: '2026-11-16', openSessionDate: '2026-11-16', crossesBoundary: false,
+    openTime, closeTime, entryQty: 5, exitQty: 5, avgEntry: 7000, avgExit: 7005,
+    maxPositionSize: 5, contractSides: 10, gross: 125, fees: 6, net: 119,
+    orderIds: [`o${id}`], ...over,
+  };
+}
+
+// One AMP trading day: an evening trade on Sunday and a morning one on Monday.
+const SUNDAY_EVENING = tr(1, '2026-11-15 17:10:00', '2026-11-15 17:40:00');
+const MONDAY_MORNING = tr(2, '2026-11-16 08:30:00', '2026-11-16 09:15:00', { net: -40, gross: -34 });
+const TRADING_DAY = [SUNDAY_EVENING, MONDAY_MORNING];
+
+test('a Sunday-evening trade sits under Monday as a trading day', () => {
+  const rows = r.rowsInRange(TRADING_DAY, ['2026-11-16'], 'trades', 'trading');
+  assert.deepStrictEqual(rows.map(t => t.id).sort(), [1, 2], 'both belong to the Monday session');
+});
+
+test('the same trade sits under Sunday as a calendar day', () => {
+  assert.deepStrictEqual(
+    r.rowsInRange(TRADING_DAY, ['2026-11-15'], 'trades', 'calendar').map(t => t.id), [1]);
+  assert.deepStrictEqual(
+    r.rowsInRange(TRADING_DAY, ['2026-11-16'], 'trades', 'calendar').map(t => t.id), [2]);
+});
+
+test('a calendar day never shows a trade the trading day has not finished with', () => {
+  // Monday evening belongs to Tuesday's session but to Monday's calendar date.
+  const mondayEvening = tr(3, '2026-11-16 18:00:00', '2026-11-16 18:20:00',
+    { sessionDate: '2026-11-17', openSessionDate: '2026-11-17' });
+  const all = TRADING_DAY.concat([mondayEvening]);
+  assert.deepStrictEqual(
+    r.rowsInRange(all, ['2026-11-16'], 'trades', 'calendar').map(t => t.id), [3, 2],
+    'calendar Monday is the morning trade and the evening one, newest first');
+  assert.deepStrictEqual(
+    r.rowsInRange(all, ['2026-11-16'], 'trades', 'trading').map(t => t.id).sort(), [1, 2]);
+});
+
+test('a trade that spans midnight belongs to the date it closed', () => {
+  const overnight = tr(4, '2026-11-15 23:50:00', '2026-11-16 00:10:00');
+  assert.strictEqual(r.calendarDateOf(overnight, 'trades'), '2026-11-16');
+  assert.deepStrictEqual(
+    r.rowsInRange([overnight], ['2026-11-15'], 'trades', 'calendar'), []);
+});
+
+test('a trade still open belongs to the date it opened', () => {
+  const open = tr(5, '2026-11-15 22:00:00', null, { status: 'OPEN', net: null, gross: null });
+  assert.strictEqual(r.calendarDateOf(open, 'trades'), '2026-11-15');
+});
+
+test('fills are bucketed on their own fill time', () => {
+  const fills = [
+    { orderId: 'a', fillTime: '2026-11-15 17:10:00', sessionDate: '2026-11-16' },
+    { orderId: 'b', fillTime: '2026-11-16 08:30:00', sessionDate: '2026-11-16' },
+  ];
+  assert.deepStrictEqual(r.rowsInRange(fills, ['2026-11-15'], 'fills', 'calendar').map(f => f.orderId), ['a']);
+  assert.deepStrictEqual(r.rowsInRange(fills, ['2026-11-16'], 'fills', 'trading').map(f => f.orderId), ['b', 'a']);
+});
+
+test('totals across a full trading day are identical in both modes', () => {
+  const trading  = r.totalsFromRows(r.rowsInRange(TRADING_DAY, ['2026-11-16'], 'trades', 'trading'));
+  const calendar = r.combineCalendarDays(TRADING_DAY, ['2026-11-15', '2026-11-16']).totals;
+  assert.deepStrictEqual(calendar, trading, 'the same rows must add up the same way');
+  assert.strictEqual(trading.netPnl, 79);    // 119 - 40
+  assert.strictEqual(trading.tradeCount, 2);
+});
+
+test('the per-day calendar split adds back up to the trading day', () => {
+  const split = r.combineCalendarDays(TRADING_DAY, ['2026-11-15', '2026-11-16']);
+  assert.deepStrictEqual(split.perDay.map(d => d.sessionDate), ['2026-11-16', '2026-11-15']);
+  const sum = split.perDay.reduce((n, d) => n + d.netPnl, 0);
+  assert.strictEqual(Math.round(sum * 100) / 100, split.totals.netPnl);
+  assert.deepStrictEqual(split.perDay.map(d => d.netPnl), [-40, 119]);
+});
+
+test('an empty calendar day says so rather than inventing a zero day of trading', () => {
+  const split = r.combineCalendarDays(TRADING_DAY, ['2026-11-14']);
+  assert.strictEqual(split.perDay[0].hasData, false);
+  assert.strictEqual(split.perDay[0].tradeCount, 0);
+});
+
+test('a calendar day needs both sessions it straddles fetched', () => {
+  assert.deepStrictEqual(r.sessionsCoveringCalendar(['2026-11-16']), ['2026-11-16', '2026-11-17']);
+  assert.deepStrictEqual(r.sessionsCoveringCalendar(['2026-11-15', '2026-11-16']),
+    ['2026-11-15', '2026-11-16', '2026-11-17']);
+});
+
+test('the window label spells out exactly which hours are on screen', () => {
+  assert.strictEqual(r.rangeWindowLabel({ dates: ['2026-11-16'] }, 'trading'),
+    'Sun 5:00 PM – Mon 4:00 PM CT');
+  assert.strictEqual(r.rangeWindowLabel({ dates: ['2026-11-16'] }, 'calendar'),
+    'Mon 12:00 AM – 11:59 PM CT');
+  assert.strictEqual(r.rangeWindowLabel({ dates: [] }, 'trading'), '');
+});
+
+test('calendar mode offers the evening dates too, or Sunday could not be picked', () => {
+  const sessions = [day('2026-11-16', 100)];
+  assert.deepStrictEqual(r.availableDates(sessions), ['2026-11-16']);
+  assert.deepStrictEqual(r.availableDates(sessions, 'calendar'), ['2026-11-15', '2026-11-16']);
+});
+
+test('calendar mode carries a warning that it is not the statement', () => {
+  assert.match(r.CALENDAR_NOTE, /won't match AMP/);
+  assert.deepStrictEqual(r.DAY_MODES.map(m => m.key), ['trading', 'calendar']);
+});
