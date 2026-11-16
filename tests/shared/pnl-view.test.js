@@ -183,7 +183,7 @@ const trade = (over = {}) => ({
 test('a closed trade row is fully formatted', () => {
   const r = v.tradeRow(trade());
   assert.strictEqual(r.id, 321);
-  assert.strictEqual(r.time, '14:02:11 – 14:08:40');
+  assert.strictEqual(r.time, 'Fri 11/13 14:02:11 – 14:08:40');  // TVCM-32 2a: the date is always shown
   assert.strictEqual(r.direction, 'short');
   assert.strictEqual(r.size, '5');
   assert.strictEqual(r.avgEntry, '7570.25');
@@ -196,7 +196,7 @@ test('a closed trade row is fully formatted', () => {
 
 test('an open trade shows dashes, not guesses', () => {
   const r = v.tradeRow(trade({ status: 'OPEN', closeTime: null, avgExit: null, gross: null, net: null }));
-  assert.strictEqual(r.time, '14:02:11 – open');
+  assert.strictEqual(r.time, 'Fri 11/13 14:02:11 – open');      // TVCM-32 2a
   assert.strictEqual(r.avgExit, '—');
   assert.strictEqual(r.net, '—');
   assert.strictEqual(r.tone, 'flat');
@@ -248,4 +248,58 @@ test('numbering restarts for each session, rather than continuing globally', () 
 test('an empty or missing trade list numbers nothing and does not throw', () => {
   assert.deepStrictEqual(v.tradeRows([]), []);
   assert.deepStrictEqual(v.tradeRows(null), []);
+});
+
+// ── Dates on every row (TVCM-32 Task 2a) ─────────────────────────────────
+// Jim, 2026-11-16: the Trades tab showed only times, so it was not clear that
+// trade #1 happened on SUNDAY EVENING while the header said 2026-11-16. A
+// trading day runs 17:00–17:00 CT, so that is normal — but it has to be visible.
+
+test('a fill stamp carries the weekday and the calendar date', () => {
+  assert.strictEqual(v.fmtDayStamp('2026-11-15 17:10:00'), 'Sun 11/15 17:10:00');
+  assert.strictEqual(v.fmtDayStamp('2026-11-16 09:00:05'), 'Mon 11/16 09:00:05');
+  assert.strictEqual(v.fmtDayStamp(null), '—');
+  assert.strictEqual(v.fmtDayStamp(''), '—');
+});
+
+test('a trade inside one calendar day shows the date once', () => {
+  const row = v.tradeRow({ id: 1, openTime: '2026-11-16 09:00:05', closeTime: '2026-11-16 09:30:00',
+                           maxPositionSize: 5, status: 'CLOSED', net: 10, fees: 6 });
+  assert.strictEqual(row.time, 'Mon 11/16 09:00:05 – 09:30:00');
+});
+
+test('the Sunday-evening trade that started this reads unambiguously', () => {
+  const row = v.tradeRow({ id: 1, openTime: '2026-11-15 17:10:00', closeTime: '2026-11-15 17:23:30',
+                           maxPositionSize: 5, status: 'CLOSED', net: 10, fees: 6 });
+  assert.strictEqual(row.time, 'Sun 11/15 17:10:00 – 17:23:30',
+    'the header says 2026-11-16; the row must say which evening it was');
+});
+
+test('a trade spanning midnight shows BOTH dates', () => {
+  const row = v.tradeRow({ id: 2, openTime: '2026-11-15 23:28:14', closeTime: '2026-11-16 00:19:39',
+                           maxPositionSize: 1, status: 'CLOSED', net: -5, fees: 1.2 });
+  assert.strictEqual(row.time, 'Sun 11/15 23:28:14 – Mon 11/16 00:19:39');
+});
+
+test('an open trade shows its open date and says it is open', () => {
+  const row = v.tradeRow({ id: 3, openTime: '2026-11-16 10:37:33', closeTime: null,
+                           maxPositionSize: 5, status: 'OPEN', net: null, fees: 3 });
+  assert.strictEqual(row.time, 'Mon 11/16 10:37:33 – open');
+  assert.strictEqual(row.isOpen, true);
+});
+
+test('a trade with no times at all does not render undefined', () => {
+  const row = v.tradeRow({ id: 4, openTime: null, closeTime: null, maxPositionSize: 1, status: 'OPEN', net: null, fees: 0 });
+  assert.strictEqual(row.time, '— – open');
+});
+
+test('every weekday renders, so the shortcut is not just Sun/Mon', () => {
+  const days = ['2026-11-15', '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20', '2026-11-21']
+    .map(d => v.fmtDayStamp(`${d} 12:00:00`).slice(0, 3));
+  assert.deepStrictEqual(days, ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+});
+
+test('the date is shown always, not only inside a range', () => {
+  // There is no "range" argument: a row knows its own date and always says it.
+  assert.strictEqual(v.tradeRow.length, 1, 'tradeRow must not need a range to format a date');
 });

@@ -45,6 +45,32 @@ export function fmtStamp(fillTime) {
   return `${s.slice(5, 10)} ${s.slice(11, 19)}`;
 }
 
+/** Weekday names, indexed the way the calendar does it. */
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * A fill time as "Sun 11/15 17:10:00".
+ *
+ * A trading day runs 17:00–17:00 CT, so a row under the header "2026-11-16" can
+ * legitimately have happened on Sunday evening. Showing only the clock made that look
+ * like a bug; showing the weekday and date makes it obvious. The stamp is already
+ * Chicago wall-clock text, so the calendar is read straight off it with no conversion.
+ */
+export function fmtDayStamp(fillTime) {
+  if (!fillTime) return '\u2014';
+  const s = String(fillTime);
+  const date = s.slice(0, 10);
+  const [y, m, d] = date.split('-').map(Number);
+  if (!y || !m || !d) return '\u2014';
+  const wd = WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  return `${wd} ${s.slice(5, 7)}/${s.slice(8, 10)} ${s.slice(11, 19)}`;
+}
+
+/** The calendar date part of a fill time, for deciding whether two rows share a day. */
+export function dayOf(fillTime) {
+  return fillTime ? String(fillTime).slice(0, 10) : null;
+}
+
 /** An import time as a short Chicago clock reading, e.g. "9:41 AM CT". */
 export function fmtImportedAt(ms) {
   if (ms == null) return '—';
@@ -109,11 +135,21 @@ export function carriedExplanation(detail) {
   return "Part of this day's P&L came from a trade that closed on another day.";
 }
 
+/** A trade's time span, with the date shown once, or twice when it spans midnight. */
+function tradeTime(t) {
+  const open = fmtDayStamp(t.openTime);
+  if (!t.closeTime) return `${open} \u2013 open`;
+  const sameDay = dayOf(t.openTime) && dayOf(t.openTime) === dayOf(t.closeTime);
+  return `${open} \u2013 ${sameDay ? fmtClock(t.closeTime) : fmtDayStamp(t.closeTime)}`;
+}
+
 /** One Trades-tab row, already formatted, so the component only places strings. */
 export function tradeRow(t) {
   return {
     id:        t.id,
-    time:      `${fmtClock(t.openTime)} – ${t.closeTime ? fmtClock(t.closeTime) : 'open'}`,
+    // The open always carries its weekday and date; the close repeats them only when
+    // it fell on a different calendar day, so the common case stays short.
+    time:      tradeTime(t),
     direction: t.direction,
     size:      String(t.maxPositionSize),
     avgEntry:  t.avgEntry == null ? '—' : t.avgEntry.toFixed(2),
