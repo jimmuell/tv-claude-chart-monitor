@@ -48,6 +48,10 @@ export const IPC = {
   PAPER_MODE_GET:            'paperMode:get',
   PAPER_MODE_SET:            'paperMode:set',
   PAPER_MODE_PUSH:           'paperMode:push',
+  CORRECTION_LIST:           'correction:list',
+  CORRECTION_ADD:            'correction:add',
+  CORRECTION_REMOVE:         'correction:remove',
+  CORRECTION_SUGGESTION:     'correction:suggestion',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -286,6 +290,37 @@ export interface OrderImportState {
   watchFolder:    string | null;
 }
 
+/** A fill that really happened but is missing from TradingView's records. */
+export interface Correction {
+  id:          string;
+  mode:        'live' | 'paper';
+  side:        'Buy' | 'Sell';
+  qty:         number;
+  price:       number;
+  fillTime:    string;        // "YYYY-MM-DD HH:MM:SS", Chicago wall clock
+  sessionDate: string;
+  symbol:      string;
+  reason:      string;
+  source:      'inferred from balance' | 'entered by Jim' | 'AMP statement';
+  status:      'suggested' | 'added' | 'confirmed';
+  windowFrom:  string | null;
+  windowTo:    string | null;
+  createdAt:   number | null;
+}
+
+/** What TVCM thinks is missing, offered to Jim and never applied on its own. */
+export interface MissingFillSuggestion {
+  side:        'Buy' | 'Sell';
+  qty:         number;
+  price:       number | null;
+  needsPrice:  boolean;
+  windowFrom:  string | null;
+  windowTo:    string | null;
+  unmatchedOrderId?: string | null;
+  brokerGross?: number;
+  text:        string;
+}
+
 /** Why the live feed is or is not reading right now. */
 export type LiveFeedGate =
   | 'ok'            // the broker matches the mode and was read
@@ -327,6 +362,10 @@ export interface LiveFeedState {
   brokerQty:         number | null;
   /** Set when TVCM's open quantity and the broker's have disagreed for too long. */
   positionMismatch:  { since: number; engineQty: number; brokerQty: number } | null;
+  /** The fill TVCM believes is missing. Shown to Jim; never applied without his click. */
+  suggestion:        MissingFillSuggestion | null;
+  /** Ids of the corrections included in this reading's numbers. */
+  appliedCorrections: string[];
   /** Whether the feed's arithmetic agrees with the broker's, and why not. */
   crossCheck:        { state: 'ok' | 'disagree' | 'blind' | 'unavailable'; code: string | null; delta: number | null; message: string | null } | null;
   /** Epoch ms of the last SUCCESSFUL read. */
@@ -400,6 +439,8 @@ export interface AppSettings {
   liveFeedPollSeconds:      number;
   /** Paper mode: read the paper account instead of AMP Live. Never mixed with live. */
   paperMode:                boolean;
+  /** The previous trading day's closing balance, for solving a missing fill's price. */
+  prevDayBalance:           number | null;
   /** The rules lever. Applied AFTER analysis; blocked calls are saved and graded anyway. */
   rules:               TradingRules;
 }

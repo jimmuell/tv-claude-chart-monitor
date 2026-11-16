@@ -32,6 +32,7 @@ const DEFAULTS: AppSettings = {
   liveFeedEnabled:         true,
   liveFeedPollSeconds:     5,
   paperMode:               false,
+  prevDayBalance:          null,
   // Default lever: the 08:30-11:00 Chicago window only, nothing blocked.
   rules: {
     enabled:          true,
