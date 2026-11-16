@@ -624,3 +624,76 @@ test('open quantity counts contracts, not symbol rows', () => {
   assert.strictEqual(sumOpenQty([]), 0);
   assert.strictEqual(sumOpenQty(null), null);
 });
+
+// ── Position mismatch (TVCM-35 Task 2) ───────────────────────────────────
+// TVCM-34: TVCM's rows implied short 5 while the broker's live position said
+// flat, because a fill never reached orders(). Nothing noticed. positions().qty
+// is the one broker field that is both LIVE and a direct answer — margin is a
+// dollar amount, and OTE reads 0.00 both when flat and when price equals entry.
+
+const { positionMismatch, sumPositionQty, POSITION_GRACE_MS } = lf;
+
+const T0 = Date.parse('2026-11-16T19:00:00Z');
+
+test('agreement is silent', () => {
+  const r = positionMismatch({ engineQty: -5, brokerQty: -5, mismatchSince: null, now: T0 });
+  assert.strictEqual(r.mismatch, false);
+  assert.strictEqual(r.warn, false);
+  assert.strictEqual(r.code, null);
+  assert.strictEqual(r.since, null);
+});
+
+test('a fresh disagreement starts the clock but does not warn yet', () => {
+  const r = positionMismatch({ engineQty: -5, brokerQty: 0, mismatchSince: null, now: T0 });
+  assert.strictEqual(r.mismatch, true);
+  assert.strictEqual(r.warn, false, 'a momentary gap between a fill and its position update is normal');
+  assert.strictEqual(r.since, T0);
+});
+
+test('a disagreement that outlives the grace period warns', () => {
+  const r = positionMismatch({ engineQty: -5, brokerQty: 0, mismatchSince: T0, now: T0 + 31_000 });
+  assert.strictEqual(r.warn, true);
+  assert.strictEqual(r.code, 'TVCM-LF-POSITION-MISMATCH');
+  assert.match(r.message, /-5/);
+  assert.match(r.message, /fill may be missing/i);
+});
+
+test('the grace period is 30 seconds, and the boundary is exclusive', () => {
+  assert.strictEqual(POSITION_GRACE_MS, 30_000);
+  assert.strictEqual(positionMismatch({ engineQty: 5, brokerQty: 0, mismatchSince: T0, now: T0 + 30_000 }).warn, false);
+  assert.strictEqual(positionMismatch({ engineQty: 5, brokerQty: 0, mismatchSince: T0, now: T0 + 30_001 }).warn, true);
+});
+
+test('agreeing again clears the clock, so a later gap starts fresh', () => {
+  const r = positionMismatch({ engineQty: 0, brokerQty: 0, mismatchSince: T0, now: T0 + 90_000 });
+  assert.strictEqual(r.mismatch, false);
+  assert.strictEqual(r.since, null);
+  assert.strictEqual(r.warn, false);
+});
+
+test('a broker that reports no position is not a mismatch', () => {
+  for (const q of [null, undefined]) {
+    const r = positionMismatch({ engineQty: -5, brokerQty: q, mismatchSince: null, now: T0 });
+    assert.strictEqual(r.mismatch, false, 'no answer is not a disagreement');
+    assert.strictEqual(r.warn, false);
+  }
+});
+
+test('the sign matters — long 5 against short 5 is a mismatch', () => {
+  assert.strictEqual(positionMismatch({ engineQty: 5, brokerQty: -5, mismatchSince: T0, now: T0 + 31_000 }).warn, true);
+});
+
+test('the broker quantity is signed and summed across symbols', () => {
+  assert.strictEqual(sumPositionQty([{ qty: -5 }, { qty: 2 }]), -3);
+  assert.strictEqual(sumPositionQty([{ qty: 0 }]), 0);
+  assert.strictEqual(sumPositionQty([]), 0);
+  assert.strictEqual(sumPositionQty(null), null, 'no rows means no answer, not flat');
+  assert.strictEqual(sumPositionQty([null, { qty: -5 }]), -5, 'holes must not throw');
+});
+
+test('the TVCM-34 situation would now be caught', () => {
+  // Engine short 5 from its rows; broker live position flat; held for minutes.
+  const r = positionMismatch({ engineQty: -5, brokerQty: 0, mismatchSince: T0, now: T0 + 10 * 60_000 });
+  assert.strictEqual(r.code, 'TVCM-LF-POSITION-MISMATCH');
+  assert.strictEqual(r.warn, true);
+});

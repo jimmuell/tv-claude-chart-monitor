@@ -323,6 +323,10 @@ export interface LiveFeedState {
   openPositionCount: number | null;
   /** The broker's own realized figure for the session, summed across symbols. */
   brokerProfit:      number | null;
+  /** The broker's own live signed open quantity, for the position cross-check. */
+  brokerQty:         number | null;
+  /** Set when TVCM's open quantity and the broker's have disagreed for too long. */
+  positionMismatch:  { since: number; engineQty: number; brokerQty: number } | null;
   /** Whether the feed's arithmetic agrees with the broker's, and why not. */
   crossCheck:        { state: 'ok' | 'disagree' | 'blind' | 'unavailable'; code: string | null; delta: number | null; message: string | null } | null;
   /** Epoch ms of the last SUCCESSFUL read. */

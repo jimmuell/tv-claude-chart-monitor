@@ -31,7 +31,7 @@ export function emptyLiveFeedState(mode: 'live' | 'paper'): LiveFeedState {
   return {
     mode, brokerId: null, account: null, available: false, state: 'disconnected',
     reason: null, switchHint: null, session: null, fallbackSession: null, currentSession: null,
-    source: null, brokerProfit: null, crossCheck: null,
+    source: null, brokerProfit: null, brokerQty: null, positionMismatch: null, crossCheck: null,
     executionCount: 0, fillCount: 0, skippedCount: 0, openPositionCount: null,
     readAt: null, lastAttemptAt: null, errorCode: null, errorMessage: null, warn: false,
   };
@@ -82,6 +82,8 @@ export class LiveFeedReader {
   private state:   LiveFeedState;
   /** Latched so a repeating fault logs once per episode rather than every 5 seconds. */
   private loggedCode: string | null = null;
+  /** When TVCM's open quantity and the broker's first disagreed, for the 30 s grace. */
+  private mismatchSince: number | null = null;
   /** Everything the last good read produced, so the window can show trades and fills too. */
   private lastSessions:   ImportedSession[] = [];
   private lastTrades:     ImportedTrade[]   = [];
@@ -202,6 +204,17 @@ export class LiveFeedReader {
         ? [...(payload.orders || []), ...(payload.ordersHistory || [])] : payload.executions, today);
       const otherCollectionRows = countSessionRows(source === 'orders'
         ? payload.executions : [...(payload.orders || []), ...(payload.ordersHistory || [])], today);
+      // Position truth: TVCM's own ledger against the broker's LIVE position quantity.
+      // TVCM-34 ran for hours short 5 on its rows while the broker said flat; this is
+      // what notices. positions().qty is used because it is the only broker field that
+      // is both live and a direct answer.
+      const brokerQty = liveFeed.sumPositionQty(payload.positions);
+      const posCheck = liveFeed.positionMismatch({
+        engineQty: match ? match.openPositionAtEnd : 0,
+        brokerQty, mismatchSince: this.mismatchSince, now: at,
+      });
+      this.mismatchSince = posCheck.since;
+
       const check = liveFeed.crossCheck({
         fillCount:          match ? match.fillCount : 0,
         engineGross:        match ? match.grossPnl : 0,
@@ -247,14 +260,21 @@ export class LiveFeedReader {
         readAt: at,
         lastAttemptAt: at,
         brokerProfit,
+        brokerQty,
+        positionMismatch: posCheck.warn
+          ? { since: posCheck.since as number, engineQty: match ? match.openPositionAtEnd : 0, brokerQty: brokerQty as number }
+          : null,
         crossCheck: { state: check.state, code: check.code, delta: check.delta, message: check.message },
-        // Only BLIND is a fault. A difference against the broker is informational and
-        // must never reach errorCode, or it becomes a permanent ⚠ (TVCM-31).
-        errorCode: check.code,
-        errorMessage: check.code ? check.message + blindDetail : null,
-        warn: !!check.warn,
+        // A position mismatch outranks the informational cross-check: it means a fill is
+        // missing, which makes every number on screen suspect. A difference against the
+        // broker's P&L is still only information (TVCM-33).
+        errorCode: posCheck.code || check.code,
+        errorMessage: posCheck.code ? posCheck.message : (check.code ? check.message + blindDetail : null),
+        warn: !!(posCheck.warn || check.warn),
       };
-      if (check.code) {
+      if (posCheck.code) {
+        this.logOnce(posCheck.code, `[live-feed] ${posCheck.code}: ${posCheck.message}`);
+      } else if (check.code) {
         this.logOnce(check.code, `[live-feed] ${check.code}: ${check.message}${blindDetail}`);
       } else if (this.loggedCode) {
         this.log(`[live-feed] recovered — reading ${this.mode} account ${payload.account ?? '?'} via ${source}()`);

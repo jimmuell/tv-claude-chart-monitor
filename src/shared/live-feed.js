@@ -462,6 +462,55 @@ function crossCheck(input) {
 }
 
 /**
+ * How long TVCM's open quantity and the broker's may differ before it is a fault. A fill
+ * and the position update that follows it do not land in the same instant, so a momentary
+ * gap is normal; half a minute of it is not.
+ */
+const POSITION_GRACE_MS = 30_000;
+
+/** The broker's SIGNED open quantity, summed across symbols. Null when it has no answer. */
+function sumPositionQty(positions) {
+  if (!Array.isArray(positions)) return null;
+  return positions.filter(Boolean).reduce((n, p) => n + (Number(p.qty) || 0), 0);
+}
+
+/**
+ * Compares TVCM's open quantity with the broker's live one.
+ *
+ * TVCM-34: the rows implied short 5 while the broker's live position said flat, because a
+ * fill never reached orders(). Nothing noticed for hours. This is the check that notices.
+ *
+ * `positions().qty` is the field used because it is the only one that is both live and a
+ * direct answer: margin is a dollar amount that depends on contract count and broker
+ * rules, and OTE reads 0.00 both when flat and when price happens to equal entry. The
+ * Account summary tab is not used at all — it freezes (TVCM-34).
+ */
+function positionMismatch(input) {
+  const i = input || {};
+  const brokerQty = i.brokerQty;
+  const now = Number(i.now) || Date.now();
+  const grace = i.graceMs == null ? POSITION_GRACE_MS : i.graceMs;
+
+  if (brokerQty === null || brokerQty === undefined) {
+    return { mismatch: false, warn: false, code: null, since: null, message: null };
+  }
+  const engineQty = Number(i.engineQty) || 0;
+  if (engineQty === Number(brokerQty)) {
+    return { mismatch: false, warn: false, code: null, since: null, message: null };
+  }
+  const since = i.mismatchSince == null ? now : Number(i.mismatchSince);
+  const held = now - since;
+  if (held <= grace) {
+    return { mismatch: true, warn: false, code: null, since, message: null };
+  }
+  return {
+    mismatch: true, warn: true, code: 'TVCM-LF-POSITION-MISMATCH', since,
+    message: `TradingView's records and its live position disagree — its orders add up to `
+           + `${engineQty} contract(s) open but it reports ${brokerQty}; a fill may be missing`,
+  };
+}
+
+/**
  * The page expression the reader evaluates. The broker id is read in the SAME expression
  * as the executions, so the gate cannot go stale between two round trips — the account
  * could change in the gap. It returns a JSON string because returning live broker objects
@@ -567,7 +616,7 @@ module.exports = {
   REQUIRED_ORDER_FIELDS, NUMERIC_ORDER_FIELDS,
   CROSS_CHECK_TOLERANCE,
   brokerAvailability, feedSourceFor, detectExecutionShape, detectOrderShape,
-  crossCheck, sumBrokerProfit, sumOpenQty,
+  crossCheck, sumBrokerProfit, sumOpenQty, sumPositionQty, positionMismatch, POSITION_GRACE_MS,
   chicagoStamp, chicagoStampFromIso, sessionDateForEpoch, decodeSide,
   executionsToFills, ordersToFills, fillsFromPayload,
   analyseExecutions, analyseFeed, liveFeedExpression,
