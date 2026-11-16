@@ -24,6 +24,11 @@ export interface LiveFeedOptions {
   corrections?: () => unknown[];
   /** The broker's realized gross for the session, used to solve a suggested price. */
   brokerGross?: (payload: unknown) => number | null;
+  /**
+   * Offered every successful read so the session's opening balance can be recorded.
+   * The reader does not decide anything about it — it only hands over what it saw.
+   */
+  onReading?: (info: Record<string, unknown>) => void;
   now?:            () => number;
   /** Where this MODE's last reading is cached. Live and paper never share a file. */
   statePath?:      string | null;
@@ -80,6 +85,7 @@ export class LiveFeedReader {
   private feeRate:  () => number;
   private corrections: () => unknown[];
   private brokerGross: (payload: unknown) => number | null;
+  private onReading?: (info: Record<string, unknown>) => void;
   private now:      () => number;
   private statePath: string | null;
   private onChange?: (state: LiveFeedState) => void;
@@ -105,6 +111,7 @@ export class LiveFeedReader {
     this.feeRate   = opts.perContractSideFee ?? (() => 0.60);
     this.corrections = opts.corrections ?? (() => []);
     this.brokerGross = opts.brokerGross ?? (() => null);
+    this.onReading = opts.onReading;
     this.now       = opts.now ?? (() => Date.now());
     this.statePath = opts.statePath ?? null;
     this.onChange  = opts.onChange;
@@ -223,6 +230,18 @@ export class LiveFeedReader {
       // what notices. positions().qty is used because it is the only broker field that
       // is both live and a direct answer.
       const brokerQty = liveFeed.sumPositionQty(payload.positions);
+      // Offer this reading for the session's opening balance BEFORE the price solve, so
+      // a session that opens flat has its balance on record by the time it is needed.
+      this.onReading?.({
+        sessionDate: today,
+        mode: this.mode,
+        brokerId: payload.brokerId ?? null,
+        purchasingPower: payload.summary ? payload.summary['Purchasing power'] : null,
+        totalMargin:     payload.summary ? payload.summary['Total margin'] : null,
+        brokerQty,
+        fillsInSession: match ? match.fillCount : 0,
+        at,
+      });
       // When TVCM's rows say a position is open and the broker says flat, work out the
       // fill that must be missing. It is only ever offered — never applied here.
       const suggestionRaw = corrections.suggestMissingFill({

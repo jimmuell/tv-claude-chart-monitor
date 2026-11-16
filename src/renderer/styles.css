@@ -1359,3 +1359,12 @@ body {
 }
 .ui-error-btn:hover { border-color: var(--accent); color: var(--accent); }
 .ui-error-hint { color: var(--text-secondary); font-size: 11px; }
+
+/* A settings row that is a sentence rather than a label — used where a control needs
+   explaining before it is touched (the opening-balance override). */
+.settings-label-wrap {
+  white-space: normal;
+  line-height: 1.4;
+  font-size: 11px;
+  color: var(--text-secondary);
+}

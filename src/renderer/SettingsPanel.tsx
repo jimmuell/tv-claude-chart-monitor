@@ -297,6 +297,41 @@ const SettingsPanel: React.FC = () => {
             onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v) && v > 0) update({ feeTradingDays: v }); }}
           />
         </div>
+        <div className="settings-section-title">Opening balance</div>
+        <div className="settings-row">
+          <span className="settings-label settings-label-wrap">
+            TVCM records each session’s opening balance itself, while the account is
+            flat and before the first fill. Fill these in only to override one session —
+            from the AMP statement, say — and clear the date when you are done.
+          </span>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Override session</span>
+          <input
+            type="date"
+            className="settings-input settings-input-sm"
+            value={settings.openingBalanceOverride?.sessionDate ?? ''}
+            onChange={e => update({ openingBalanceOverride: e.target.value
+              ? { sessionDate: e.target.value, balance: settings.openingBalanceOverride?.balance ?? 0 }
+              : null })}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Override balance ($)</span>
+          <input
+            type="number"
+            className="settings-input settings-input-sm"
+            value={settings.openingBalanceOverride?.balance ?? ''}
+            step={0.01}
+            disabled={!settings.openingBalanceOverride?.sessionDate}
+            onChange={e => {
+              const v = parseFloat(e.target.value);
+              const day = settings.openingBalanceOverride?.sessionDate;
+              if (day && !isNaN(v)) update({ openingBalanceOverride: { sessionDate: day, balance: v } });
+            }}
+          />
+        </div>
+
         <div className="settings-row">
           <span className="settings-label">Daily fixed (not charged)</span>
           <span className="settings-value">

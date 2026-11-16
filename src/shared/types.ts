@@ -308,6 +308,26 @@ export interface Correction {
   createdAt:   number | null;
 }
 
+/** What one trading session opened with, or why TVCM will not say. */
+export interface OpeningBalanceRecord {
+  sessionDate: string;
+  /** The account balance at the session open; null when it is not known. */
+  balance:     number | null;
+  known:       boolean;
+  source:      'feed' | null;
+  /** Why it is unknown, in Jim's words. Null when it is known. */
+  reason:      string | null;
+  capturedAt:  number | null;
+}
+
+/** The opening balance actually in use, and which of the three sources won. */
+export interface ResolvedOpeningBalance {
+  balance: number | null;
+  source:  'override' | 'feed' | 'manual' | null;
+  known:   boolean;
+  reason:  string | null;
+}
+
 /** What TVCM thinks is missing, offered to Jim and never applied on its own. */
 export interface MissingFillSuggestion {
   side:        'Buy' | 'Sell';
@@ -439,8 +459,17 @@ export interface AppSettings {
   liveFeedPollSeconds:      number;
   /** Paper mode: read the paper account instead of AMP Live. Never mixed with live. */
   paperMode:                boolean;
-  /** The previous trading day's closing balance, for solving a missing fill's price. */
+  /**
+   * The previous trading day's closing balance, for solving a missing fill's price.
+   * Legacy and hand-typed: TVCM now records each session's opening balance itself, and
+   * this is only read for sessions it never saw the start of.
+   */
   prevDayBalance:           number | null;
+  /**
+   * Jim's correction to one session's opening balance, stamped with the session it
+   * belongs to so it can never silently apply to a different day.
+   */
+  openingBalanceOverride:   { sessionDate: string; balance: number } | null;
   /** The rules lever. Applied AFTER analysis; blocked calls are saved and graded anyway. */
   rules:               TradingRules;
 }

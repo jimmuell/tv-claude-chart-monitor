@@ -11,6 +11,7 @@ import { PnlTracker } from './pnl-tracker';
 import { OrderImportWatcher } from './order-import';
 import { LiveFeedReader } from './live-feed-reader';
 import { CorrectionsStore } from './corrections-store';
+import { OpeningBalanceStore } from './opening-balance-store';
 import { currentSessionDate } from './session-clock-bridge';
 import { sharedModule } from './shared-require';
 import type { FeeConfig } from './fee-calculator';
@@ -131,9 +132,7 @@ let pnlTracker:      PnlTracker     | null = null;
 let orderImport:     OrderImportWatcher | null = null;
 let liveFeed:        LiveFeedReader | null = null;
 let correctionsStore: CorrectionsStore | null = null;
-/** The previous trading day's closing balance, read once per session for the solve. */
-let prevDayBalance:  number | null = null;
-let prevDayFor:      string | null = null;
+let openingStore:     OpeningBalanceStore | null = null;
 let pnlWindow:       BrowserWindow | null = null;
 let trayTitleTimer:  ReturnType<typeof setInterval> | null = null;
 let tradeStore:      TradeStore     | null = null;
@@ -670,16 +669,18 @@ const liveFeedLib = sharedModule('live-feed.js') as {
 };
 
 /**
- * The previous trading day's closing balance, which the missing-fill solve subtracts from
- * today's. Read once per session from the export's last ENDED session rather than from
- * the Account summary tab, which freezes (TVCM-34).
+ * The balance this trading session OPENED with, which the missing-fill solve subtracts
+ * from today's. TVCM records it itself at the session open while the account is flat
+ * (TVCM-37); the hand-typed setting is only read for sessions it never saw the start of,
+ * and a session that first came into view after trading had begun stays UNKNOWN rather
+ * than be guessed at. Null here is what makes the banner ask Jim for the price.
  */
-function previousDayBalance(currentSession: string | null): number | null {
-  if (!currentSession) return null;
-  if (prevDayFor === currentSession) return prevDayBalance;
-  prevDayFor = currentSession;
-  prevDayBalance = getSettings().prevDayBalance ?? null;
-  return prevDayBalance;
+function openingBalance(currentSession: string | null): number | null {
+  if (!currentSession || !openingStore) return null;
+  const mode = paperMode() ? 'paper' : 'live';
+  const settings = getSettings();
+  return openingStore.resolve(mode, currentSession,
+    settings.openingBalanceOverride ?? null, settings.prevDayBalance ?? null).balance;
 }
 
 const { mergePnl, mergedToImportState } = sharedModule('pnl-merge.js') as {
@@ -1044,6 +1045,7 @@ app.on('ready', () => {
   // Order-history import: the source of truth for session P&L and fees.
   const importSettings = getSettings();
   correctionsStore = new CorrectionsStore(app.getPath('userData'));
+  openingStore     = new OpeningBalanceStore(app.getPath('userData'));
   orderImport = new OrderImportWatcher({
     // The env override exists so the watcher can be pointed at a scratch folder
     // for testing without editing the real settings file.
@@ -1068,7 +1070,9 @@ app.on('ready', () => {
     perContractSideFee: () => getSettings().feePerContractSide ?? 0.60,
     corrections: () => correctionsStore?.list(paperMode() ? 'paper' : 'live') ?? [],
     brokerGross: (payload) => liveFeedLib.brokerSessionGross(
-      payload, previousDayBalance(currentSessionDate(new Date()))),
+      payload, openingBalance(currentSessionDate(new Date()))),
+    // Every poll is offered for the session's opening balance; at most one is recorded.
+    onReading: (info) => { openingStore?.observe(info); },
     statePath:      liveFeedStatePath(feedMode),
     onChange:       () => publishPnl(),
   });
