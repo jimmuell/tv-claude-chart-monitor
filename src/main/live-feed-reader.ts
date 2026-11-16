@@ -31,9 +31,17 @@ export function emptyLiveFeedState(mode: 'live' | 'paper'): LiveFeedState {
   return {
     mode, brokerId: null, account: null, available: false, state: 'disconnected',
     reason: null, switchHint: null, session: null, fallbackSession: null, currentSession: null,
+    source: null,
     executionCount: 0, fillCount: 0, skippedCount: 0, openPositionCount: null,
     readAt: null, lastAttemptAt: null, errorCode: null, errorMessage: null, warn: false,
   };
+}
+
+/** Contracts actually held open, summed across symbols — not the number of symbol rows. */
+function openQuantity(payload: any): number | null {
+  const rows = Array.isArray(payload?.positions) ? payload.positions.filter(Boolean) : null;
+  if (!rows) return null;
+  return rows.reduce((n: number, p: any) => n + Math.abs(Number(p.qty) || 0), 0);
 }
 
 /**
@@ -152,11 +160,16 @@ export class LiveFeedReader {
       const gate = liveFeed.brokerAvailability(payload.brokerId, this.mode === 'paper');
       if (!gate.available) return this.gateClosed(at, payload, gate);
 
-      // --- the shape ------------------------------------------------------
-      const shape = liveFeed.detectExecutionShape(payload.executions);
+      // --- the shape, of whichever collection this broker actually uses ----
+      // AMP keeps the current session in orders(); paper keeps it in allExecutions().
+      // Checking the wrong one is how TVCM-28's blindness went unnoticed.
+      const source = liveFeed.feedSourceFor(payload.brokerId);
+      const shape = source === 'orders'
+        ? liveFeed.detectOrderShape([...(payload.orders || []), ...(payload.ordersHistory || [])])
+        : liveFeed.detectExecutionShape(payload.executions);
       if (!shape.ok) {
         const detail = [
-          shape.notAnArray ? 'the reply was not a list of executions' : null,
+          shape.notAnArray ? `the reply was not a list of ${source}` : null,
           shape.missing.length  ? `missing field(s): ${shape.missing.join(', ')}`  : null,
           shape.badTypes.length ? `wrong type(s): ${shape.badTypes.join(', ')}` : null,
         ].filter(Boolean).join('; ');
@@ -165,10 +178,11 @@ export class LiveFeedReader {
       }
 
       // --- price it -------------------------------------------------------
-      const result = liveFeed.analyseExecutions(payload.executions, {
+      const feed = liveFeed.analyseFeed(payload, {
         perContractSideFee: this.feeRate(),
         source: `live-feed:${this.mode}`,
       });
+      const result = feed.result;
       const today = currentSessionDate(new Date(at));
       const match = (result.sessions || []).find((s: any) => s.sessionDate === today);
 
@@ -189,6 +203,7 @@ export class LiveFeedReader {
         state: 'ok',
         reason: null,
         switchHint: null,
+        source,
         session: match ? toImportedSession(match) : null,
         // The newest session that has fills, for the market-shut fallback. Never shown
         // while the market is open — that is the merge's call, not this one's.
@@ -196,17 +211,17 @@ export class LiveFeedReader {
           ? this.lastSessions.slice().sort((a, b) => (a.sessionDate < b.sessionDate ? 1 : -1))[0]
           : null,
         currentSession: today,
-        executionCount: Array.isArray(payload.executions) ? payload.executions.length : 0,
+        executionCount: (feed.fills || []).length,
         fillCount: (result.fills || []).length,
         skippedCount: (result.skipped || []).length,
-        openPositionCount: payload.openPositionCount ?? null,
+        openPositionCount: openQuantity(payload),
         readAt: at,
         lastAttemptAt: at,
         errorCode: null,
         errorMessage: null,
         warn: false,
       };
-      if (this.loggedCode) { this.log(`[live-feed] recovered — reading ${this.mode} account ${payload.account ?? '?'}`); this.loggedCode = null; }
+      if (this.loggedCode) { this.log(`[live-feed] recovered — reading ${this.mode} account ${payload.account ?? '?'} via ${source}()`); this.loggedCode = null; }
       if ((result.skipped || []).length > 0) {
         this.logOnce('TVCM-LF-SKIPPED', `[live-feed] TVCM-LF-SKIPPED: ${result.skipped.length} execution(s) could not be read — the current session is incomplete`);
       }

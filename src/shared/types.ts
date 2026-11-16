@@ -315,6 +315,8 @@ export interface LiveFeedState {
   /** The newest session the feed CAN see, shown only when the market is shut. */
   fallbackSession:   ImportedSession | null;
   currentSession:    string | null;
+  /** Which collection the fills came from: AMP uses orders(), paper uses allExecutions(). */
+  source:            'orders' | 'executions' | null;
   executionCount:    number;
   fillCount:         number;
   skippedCount:      number;

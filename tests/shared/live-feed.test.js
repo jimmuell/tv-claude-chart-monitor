@@ -288,3 +288,212 @@ test('the read expression returns a string, because deep objects break CDP trans
   assert.ok(liveFeedExpression().includes('JSON.stringify'),
     'TVCM-25 hit "Object reference chain is too long" returning live broker objects by value');
 });
+
+// ── AMP reads orders(), not allExecutions() (TVCM-29) ─────────────────────
+// TVCM-28 found allExecutions() is ALWAYS empty on AMP. 46 real fills sat in
+// orders() for fourteen hours while the feed reported itself healthy. These fix
+// the source per broker, and every payload below is synthetic.
+
+const { feedSourceFor, ordersToFills, detectOrderShape, fillsFromPayload,
+        analyseFeed, crossCheck, REQUIRED_ORDER_FIELDS, HISTORY_LIMIT } = lf;
+
+/** One synthetic AMP order, in the shape orders() returns. */
+function order(over = {}) {
+  const { statusTime, ...rest } = over;
+  return {
+    id: '336625414', symbol: 'CME_MINI:MESZ2026',
+    side: -1, qty: 5, filledQty: 5, avgPrice: 7598.5,
+    cqgStatus: 'Filled', status: 2,
+    statusTime: statusTime === undefined ? '2026-11-15T23:10:00.575Z' : statusTime, // 17:10:00 CT
+    ...rest,
+  };
+}
+
+test('the source is chosen by broker, because the two do not agree', () => {
+  assert.strictEqual(feedSourceFor('amp'), 'orders');
+  assert.strictEqual(feedSourceFor('paper'), 'executions');
+});
+
+test('an AMP order becomes the same fill the CSV row would have produced', () => {
+  const { fills, skipped } = ordersToFills([order()]);
+  assert.deepStrictEqual(skipped, []);
+  assert.deepStrictEqual(fills[0], {
+    orderId: '336625414', symbol: 'CME_MINI:MESZ2026', side: 'Sell',
+    qty: 5, price: 7598.5,
+    fillTime: '2026-11-15 17:10:00', sessionDate: '2026-11-16',
+    status: 'Filled', orderType: '', source: 'live-feed', line: 0,
+  });
+});
+
+test('RULE 2 holds: a Cancelled order that filled part of its size still counts', () => {
+  // Jim's own AMP history contains exactly this: qty 5, filledQty 2, Cancelled.
+  const { fills } = ordersToFills([order({ id: '333202840', qty: 5, filledQty: 2, cqgStatus: 'Cancelled', status: 1 })]);
+  assert.strictEqual(fills.length, 1, 'filtering on status would throw away 2 real contracts');
+  assert.strictEqual(fills[0].qty, 2, 'the FILLED quantity is the one that counts');
+});
+
+test('an order that filled nothing is skipped silently, not reported as bad', () => {
+  const { fills, skipped } = ordersToFills([order({ filledQty: 0, cqgStatus: 'Cancelled' })]);
+  assert.deepStrictEqual(fills, []);
+  assert.deepStrictEqual(skipped, [], 'a working or cancelled order is normal, not an error');
+});
+
+test('fill time comes from extra.status_utc_time and never from when_utc_time', () => {
+  const f = ordersToFills([order({ when_utc_time: 688454553 })]).fills[0];
+  assert.strictEqual(f.fillTime, '2026-11-15 17:10:00');
+  const bad = ordersToFills([order({ statusTime: null, when_utc_time: 688454553 })]);
+  assert.strictEqual(bad.fills.length, 0, 'no usable stamp means no fill, never a guess from when_utc_time');
+  assert.match(bad.skipped[0].reason, /TVCM-LF-BAD-ORDER.*time/i);
+});
+
+test('a fill after 17:00 CT belongs to the next session', () => {
+  assert.strictEqual(ordersToFills([order({ statusTime: '2026-11-15T23:10:00.575Z' })]).fills[0].sessionDate, '2026-11-16');
+  assert.strictEqual(ordersToFills([order({ statusTime: '2026-11-16T06:19:39.602Z' })]).fills[0].sessionDate, '2026-11-16');
+  assert.strictEqual(ordersToFills([order({ statusTime: '2026-11-16T20:00:00.000Z' })]).fills[0].sessionDate, '2026-11-16');
+});
+
+test('sides are decoded, and an unknown side is never guessed', () => {
+  assert.strictEqual(ordersToFills([order({ side: 1 })]).fills[0].side, 'Buy');
+  assert.strictEqual(ordersToFills([order({ side: -1 })]).fills[0].side, 'Sell');
+  const odd = ordersToFills([order({ side: 0 })]);
+  assert.strictEqual(odd.fills.length, 0);
+  assert.match(odd.skipped[0].reason, /TVCM-LF-BAD-ORDER/);
+});
+
+test('the same order id is counted once, however many collections it arrives in', () => {
+  const { fills } = ordersToFills([order(), order()]);
+  assert.strictEqual(fills.length, 1);
+  assert.strictEqual(fills[0].qty, 5, 'a repeated order doubled the quantity');
+});
+
+test('holes in the array do not crash the conversion — the TVCM-27 bug', () => {
+  const withHoles = [order({ id: 'A' }), null, undefined, order({ id: 'B' })];
+  assert.doesNotThrow(() => ordersToFills(withHoles));
+  assert.strictEqual(ordersToFills(withHoles).fills.length, 2);
+  assert.doesNotThrow(() => executionsToFills([exec({ id: 'x' }), null, undefined]));
+  assert.strictEqual(executionsToFills([exec({ id: 'x' }), null, undefined]).fills.length, 1);
+});
+
+test('an unusable price or quantity is dropped with a reason, the rest survive', () => {
+  const { fills, skipped } = ordersToFills([
+    order({ id: 'ok' }),
+    order({ id: 'noprice', avgPrice: 0 }),
+    order({ id: 'nan', avgPrice: NaN }),
+    order({ id: 'noid', id: '' }),
+  ]);
+  assert.strictEqual(fills.length, 1);
+  assert.strictEqual(fills[0].orderId, 'ok');
+  assert.strictEqual(skipped.length, 3, JSON.stringify(skipped));
+});
+
+// ── Shape detection for orders ────────────────────────────────────────────
+
+test('the AMP order shape we measured is accepted', () => {
+  const r = detectOrderShape([order()]);
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.missing, []);
+});
+
+test('every field the order conversion depends on is required', () => {
+  assert.deepStrictEqual(REQUIRED_ORDER_FIELDS.slice().sort(),
+    ['avgPrice', 'filledQty', 'id', 'side', 'statusTime']);
+  for (const field of REQUIRED_ORDER_FIELDS) {
+    const bad = order(); delete bad[field];
+    const r = detectOrderShape([bad]);
+    assert.strictEqual(r.ok, false, `a payload with no ${field} must be refused`);
+    assert.ok(r.missing.includes(field));
+  }
+});
+
+test('a shape judged on no rows is reported as empty, not quietly "OK"', () => {
+  // This is what let the AMP blindness go unnoticed for fourteen hours.
+  for (const r of [detectOrderShape([]), detectExecutionShape([])]) {
+    assert.strictEqual(r.ok, true, 'an empty list is not a BROKEN shape');
+    assert.strictEqual(r.empty, true, 'but it must never be reported as a shape that passed');
+    assert.strictEqual(r.sampled, 0);
+  }
+  assert.strictEqual(detectOrderShape([order()]).empty, false);
+});
+
+// ── Picking the source from a whole payload ───────────────────────────────
+
+test('on AMP the fills come from orders() unioned with ordersHistory()', () => {
+  const p = {
+    brokerId: 'amp',
+    executions: [],
+    orders: [order({ id: 'NEW', statusTime: '2026-11-15T23:10:00.575Z' })],
+    ordersHistory: [order({ id: 'OLD', statusTime: '2026-11-10T20:00:00.000Z' })],
+  };
+  const r = fillsFromPayload(p);
+  assert.strictEqual(r.source, 'orders');
+  assert.strictEqual(r.fills.length, 2);
+  assert.deepStrictEqual(r.fills.map(f => f.orderId).sort(), ['NEW', 'OLD']);
+});
+
+test('an order in both collections is counted once', () => {
+  const r = fillsFromPayload({ brokerId: 'amp', orders: [order({ id: 'SAME' })], ordersHistory: [order({ id: 'SAME' })] });
+  assert.strictEqual(r.fills.length, 1);
+});
+
+test('on paper the fills still come from allExecutions(), untouched', () => {
+  const r = fillsFromPayload({ brokerId: 'paper', executions: [exec()], orders: [], ordersHistory: [] });
+  assert.strictEqual(r.source, 'executions');
+  assert.strictEqual(r.fills.length, 1);
+  assert.strictEqual(r.fills[0].orderId, '3720527804');
+});
+
+test('a paper payload ignores any orders that happen to be present', () => {
+  const r = fillsFromPayload({ brokerId: 'paper', executions: [], orders: [order()], ordersHistory: [] });
+  assert.strictEqual(r.fills.length, 0, 'mixing the two sources is how a number gets double counted');
+});
+
+test('missing collections are survivable, not a crash', () => {
+  for (const p of [{ brokerId: 'amp' }, { brokerId: 'paper' }, { brokerId: 'amp', orders: null, ordersHistory: null }]) {
+    assert.doesNotThrow(() => fillsFromPayload(p));
+    assert.deepStrictEqual(fillsFromPayload(p).fills, []);
+  }
+});
+
+test('analyseFeed prices an AMP payload through the real engine', () => {
+  const r = analyseFeed({
+    brokerId: 'amp',
+    orders: [
+      order({ id: 'A', side: 1,  qty: 1, filledQty: 1, avgPrice: 7000, statusTime: '2026-11-15T23:30:00.000Z' }),
+      order({ id: 'B', side: -1, qty: 1, filledQty: 1, avgPrice: 7010, statusTime: '2026-11-16T00:30:00.000Z' }),
+    ],
+  }, { perContractSideFee: 0.60 });
+  assert.strictEqual(r.source, 'orders');
+  assert.strictEqual(r.result.sessions.length, 1);
+  const s = r.result.sessions[0];
+  assert.strictEqual(s.sessionDate, '2026-11-16');
+  assert.strictEqual(s.grossPnl, 50);
+  assert.strictEqual(s.fees, 1.20);
+  assert.strictEqual(s.netPnl, 48.80);
+});
+
+// ── The page expression ───────────────────────────────────────────────────
+
+test('the expression reads orders and ordersHistory as well as executions', () => {
+  const e = liveFeedExpression();
+  // Named rather than literal-call, because the expression reads them through one
+  // hole-guarding helper. Dropping a collection still fails this.
+  for (const needed of ["'orders'", "'ordersHistory'", "'allExecutions'", "'positions'", 'status_utc_time']) {
+    assert.ok(e.includes(needed), `the expression must read ${needed}`);
+  }
+  assert.ok(!e.includes('when_utc_time'), 'when_utc_time is not an epoch and must never be read');
+});
+
+test('the expression still calls nothing that could place, change or cancel an order', () => {
+  const e = liveFeedExpression();
+  for (const forbidden of ['placeOrder', 'modifyOrder', 'cancelOrder', 'cancelOrders',
+                           'closePosition', 'closeIndividualPosition', 'reversePosition',
+                           'editPositionBrackets', 'previewOrder', '.click(']) {
+    assert.ok(!e.includes(forbidden), `the feed expression must never contain ${forbidden}`);
+  }
+});
+
+test('the expression bounds how much history it ships back', () => {
+  assert.ok(HISTORY_LIMIT > 0 && HISTORY_LIMIT <= 2000, `HISTORY_LIMIT=${HISTORY_LIMIT}`);
+  assert.ok(liveFeedExpression().includes(String(HISTORY_LIMIT)),
+    'the cap must be applied in the page, not after 1356 rows have crossed the wire');
+});
