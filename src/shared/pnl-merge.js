@@ -106,9 +106,23 @@ function mergePnl(input) {
   const csvCurrent = (csvState && csvState.session && !csvState.isFallback
       && csvState.session.sessionDate === currentSession) ? csvState.session : null;
 
+  /**
+   * Whether the export may supply TODAY. Normally it may not: Jim's 12:13 mid-day export
+   * pinned the menu bar to that snapshot for the rest of the session while the live feed
+   * moved on (TVCM-34). "The export is the record" is true of a day that has ENDED; a
+   * mid-session export is a photograph. The one exception is a configuration with no live
+   * feed at all — then the export is the only source there is.
+   */
+  const feedOwnsToday = !modeMismatch && !!feed && feed.readAt != null
+    && feed.currentSession === currentSession;
+  const csvMaySupplyToday = !feedOwnsToday;
+
   // --- the disagreement check, before anything is chosen ---------------------
+  // Against a mid-session export this is information, not a fault (see csvMaySupplyToday).
+  const exportDiffers = !!(feedCurrent && csvCurrent
+    && Math.abs(Number(feedCurrent.netPnl) - Number(csvCurrent.netPnl)) > DISAGREE_TOLERANCE);
   let disagreement = null;
-  if (feedCurrent && csvCurrent) {
+  if (csvMaySupplyToday && feedCurrent && csvCurrent) {
     const delta = Number(feedCurrent.netPnl) - Number(csvCurrent.netPnl);
     if (Math.abs(delta) > DISAGREE_TOLERANCE) {
       disagreement = {
@@ -127,11 +141,12 @@ function mergePnl(input) {
     session = csvCurrent; source = 'csv'; asOf = csvState.importedAt;
   } else if (feedCurrent) {
     session = feedCurrent; source = 'feed'; asOf = feed.readAt;
-  } else if (csvCurrent) {
+  } else if (csvCurrent && csvMaySupplyToday) {
     session = csvCurrent; source = 'csv'; asOf = csvState.importedAt;
   } else if (feedLastKnown) {
     session = feedLastKnown; source = 'feed'; asOf = feed.readAt; lastKnown = true;
-  } else if (csvState && csvState.session) {
+  } else if (csvState && csvState.session
+             && (csvState.session.sessionDate !== currentSession || csvMaySupplyToday)) {
     session = csvState.session; source = 'csv'; isFallback = !!csvState.isFallback; asOf = csvState.importedAt;
   } else if (feedFallback) {
     session = feedFallback; source = 'feed'; isFallback = true; asOf = feed.readAt;
@@ -160,6 +175,8 @@ function mergePnl(input) {
     disagreement,
     /** True when the number is the feed's last reading for today, not a live one. */
     lastKnown,
+    /** True when an export also has today and says something different — information only. */
+    exportDiffers,
     feedStale:    stale,
     feedState:    feed ? feed.state : null,
     feedReason:   feed ? feed.reason : null,

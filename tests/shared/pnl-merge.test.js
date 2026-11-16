@@ -58,16 +58,16 @@ test('they agree: the feed drives the current session and says so', () => {
   assert.strictEqual(m.warn, false);
 });
 
-test('they disagree: the CSV wins and the disagreement is reported, not hidden', () => {
+test('they disagree about TODAY: the feed wins and the difference is reported', () => {
+  // TVCM-35 reverses TVCM-26 for the current session only: a mid-session export is a
+  // photograph, and letting it win froze Jim's menu bar for a whole session (TVCM-34).
   const m = mergePnl({ feed: feed({ session: session('2026-11-13', 250) }), csv: csv(), now: CT_OPEN });
-  assert.strictEqual(m.source, 'csv', 'the statement-proven path must win');
-  assert.strictEqual(m.session.netPnl, 100);
-  assert.ok(m.disagreement, 'a silent disagreement is the one thing that must not happen');
-  assert.strictEqual(m.disagreement.feedNet, 250);
-  assert.strictEqual(m.disagreement.csvNet, 100);
-  assert.strictEqual(m.disagreement.code, 'TVCM-PNL-DISAGREE');
-  assert.strictEqual(m.errorCode, 'TVCM-PNL-DISAGREE');
-  assert.strictEqual(m.warn, true);
+  assert.strictEqual(m.source, 'feed', 'the live number owns today');
+  assert.strictEqual(m.session.netPnl, 250);
+  assert.ok(m.exportDiffers, 'the difference must still be visible');
+  assert.strictEqual(m.disagreement, null, 'it is no longer a fault');
+  assert.strictEqual(m.errorCode, null);
+  assert.strictEqual(m.warn, false);
 });
 
 test('a rounding-sized difference is not a disagreement', () => {
@@ -77,14 +77,15 @@ test('a rounding-sized difference is not a disagreement', () => {
   assert.ok(DISAGREE_TOLERANCE > 0 && DISAGREE_TOLERANCE < 0.01, `tolerance=${DISAGREE_TOLERANCE}`);
 });
 
-test('a difference just past the tolerance IS a disagreement', () => {
+test('a difference just past the tolerance is reported, without taking over the number', () => {
   const m = mergePnl({ feed: feed({ session: session('2026-11-13', 100.02) }), csv: csv(), now: CT_OPEN });
-  assert.ok(m.disagreement);
-  assert.strictEqual(m.session.netPnl, 100);
+  assert.ok(m.exportDiffers);
+  assert.strictEqual(m.session.netPnl, 100.02, 'the feed still owns today');
 });
 
 test('feed down: the CSV carries it alone', () => {
-  const m = mergePnl({ feed: feed({ available: false, session: null, state: 'replay', reason: 'not available in replay' }),
+  // readAt null because the reader clears it whenever the gate closes.
+  const m = mergePnl({ feed: feed({ available: false, session: null, readAt: null, state: 'replay', reason: 'not available in replay' }),
                        csv: csv(), now: CT_OPEN });
   assert.strictEqual(m.source, 'csv');
   assert.strictEqual(m.session.netPnl, 100);
@@ -115,8 +116,10 @@ test('a feed session that is not the current one is never shown as today', () =>
   const m = mergePnl({
     feed: feed({ session: session('2026-11-12', 999), currentSession: '2026-11-13' }),
     csv: csv(), now: CT_OPEN });
-  assert.strictEqual(m.source, 'csv', 'the feed had no current-session result');
-  assert.strictEqual(m.session.netPnl, 100);
+  assert.notStrictEqual(m.session && m.session.netPnl, 999, 'yesterday must not read as today');
+  // The feed read today and found nothing for it, so today is a dash rather than a stale
+  // export number (TVCM-35).
+  assert.strictEqual(m.source, 'none');
 });
 
 test('with the market shut the CSV fallback still shows the last session with fills', () => {
@@ -141,12 +144,13 @@ test('a CSV fallback is never compared against the feed as if it were today', ()
 
 // ── Staleness now applies to the feed ─────────────────────────────────────
 
-test('a feed that stopped reading goes stale during market hours and hands over to the CSV', () => {
+test('a feed that stopped reading goes stale, and keeps today as last known', () => {
   const stale = feed({ readAt: CT_OPEN - 31 * MIN });
   assert.strictEqual(feedUsable(stale, CT_OPEN, 30), false);
   const m = mergePnl({ feed: stale, csv: csv(), now: CT_OPEN, staleMinutes: 30 });
-  assert.strictEqual(m.source, 'csv');
   assert.strictEqual(m.feedStale, true);
+  assert.strictEqual(m.source, 'feed');
+  assert.strictEqual(m.lastKnown, true, 'TVCM-35: an export snapshot of today is never shown');
 });
 
 test('the same gap outside market hours is not stale — nothing was happening', () => {
@@ -178,7 +182,7 @@ test('a read error does not drop the feed instantly — it goes stale like anyth
 
 test('an account mismatch warns and keeps the feed out of the number entirely', () => {
   const m = mergePnl({
-    feed: feed({ available: false, session: null, state: 'mismatch', warn: true,
+    feed: feed({ available: false, session: null, readAt: null, state: 'mismatch', warn: true,
                  errorCode: 'TVCM-LF-ACCOUNT-MISMATCH',
                  reason: 'TradingView is on Paper Trading but Paper mode is off',
                  switchHint: 'Turn Paper mode on, or switch TradingView to AMP Live.' }),
@@ -192,7 +196,7 @@ test('an account mismatch warns and keeps the feed out of the number entirely', 
 
 test('replay warns about nothing — it is a normal state', () => {
   const m = mergePnl({
-    feed: feed({ available: false, session: null, state: 'replay', warn: false, errorCode: null,
+    feed: feed({ available: false, session: null, readAt: null, state: 'replay', warn: false, errorCode: null,
                  reason: 'not available in replay — TradingView is in Bar Replay' }),
     csv: csv(), now: CT_OPEN });
   assert.strictEqual(m.warn, false);
@@ -209,12 +213,13 @@ test('a CSV import failure is reported even when the feed is carrying the number
   assert.match(m.errorMessage, /Fill quantity/);
 });
 
-test('a disagreement outranks a lesser complaint from either source', () => {
+test('a feed complaint still surfaces even when an export disagrees about today', () => {
   const m = mergePnl({
     feed: feed({ session: session('2026-11-13', 250), errorCode: 'TVCM-LF-READ-FAILED', errorMessage: 'blip' }),
     csv:  csv({ errorCode: 'TVCM-OI-SKIPPED-ROWS', errorMessage: 'some rows' }),
     now: CT_OPEN });
-  assert.strictEqual(m.errorCode, 'TVCM-PNL-DISAGREE');
+  assert.strictEqual(m.errorCode, 'TVCM-LF-READ-FAILED');
+  assert.ok(m.exportDiffers);
 });
 
 // ── Paper and live are never mixed ────────────────────────────────────────
@@ -254,18 +259,19 @@ test('a feed-sourced view reports the feed as its source and its read time as "a
 });
 
 test('a CSV-sourced view keeps the file name, so the window still says which export', () => {
-  const m = mergePnl({ feed: feed({ available: false, session: null }), csv: csv(), now: CT_OPEN });
-  const st = mergedToImportState(m, csv(), feed({ available: false, session: null }));
+  const f = feed({ available: false, session: null, readAt: null });
+  const m = mergePnl({ feed: f, csv: csv(), now: CT_OPEN });
+  const st = mergedToImportState(m, csv(), f);
   assert.strictEqual(st.fileName, 'amp-order-history-all.csv');
   assert.strictEqual(st.importedAt, CT_OPEN - 10 * MIN);
 });
 
-test('a disagreement reaches the tray through the flattened shape', () => {
+test('an export that disagrees about today does not reach the tray as a fault', () => {
   const f = feed({ session: session('2026-11-13', 250) });
   const m = mergePnl({ feed: f, csv: csv(), now: CT_OPEN });
   const st = mergedToImportState(m, csv(), f);
-  assert.strictEqual(st.errorCode, 'TVCM-PNL-DISAGREE');
-  assert.strictEqual(st.session.netPnl, 100, 'the CSV number must be the one shown');
+  assert.strictEqual(st.errorCode, null, 'this is what put a permanent warning on the menu bar');
+  assert.strictEqual(st.session.netPnl, 250, 'the live number must be the one shown');
 });
 
 test('nothing anywhere flattens to an empty state, not a zero', () => {
@@ -394,13 +400,13 @@ test('a disconnect that spans the 17:00 session change lets the old day go', () 
   assert.strictEqual(m.session.netPnl, 896.65);
 });
 
-test('the CSV still wins when it has TODAY — it is the statement-proven path', () => {
+test('even when the export has TODAY, a disconnected feed keeps its own last known', () => {
   const m = mergePnl({
     feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED' }),
     csv:  csv(),   // has the current session, not a fallback
     now: CT_OPEN });
-  assert.strictEqual(m.source, 'csv');
-  assert.strictEqual(m.lastKnown, false);
+  assert.strictEqual(m.source, 'feed');
+  assert.strictEqual(m.lastKnown, true);
 });
 
 test('a feed that never read today has nothing to keep', () => {
@@ -419,4 +425,67 @@ test('last known never crosses modes', () => {
     csv:  csv({ session: session('2026-11-12', 5), isFallback: true }), now: CT_OPEN });
   assert.strictEqual(m.lastKnown, false, 'a paper reading must never be kept in a live view');
   assert.strictEqual(m.source, 'csv');
+});
+
+// ── Today is always the live feed (TVCM-35 Task 1) ───────────────────────
+// Jim exported at 12:13 and TVCM-26's "the export wins a disagreement" rule
+// pinned the menu bar to that snapshot (+948.90 ⚠) for the rest of the session
+// while the feed moved on. That rule was written for an END-OF-DAY export.
+
+test('a mid-session export never overrides today, however much it disagrees', () => {
+  const m = mergePnl({
+    feed: feed({ session: session(TODAY, 1652.65) }),
+    csv:  csv({ session: session(TODAY, 948.90) }),   // the 12:13 snapshot
+    now: CT_OPEN });
+  assert.strictEqual(m.source, 'feed', 'the export froze the display for a whole session');
+  assert.strictEqual(m.session.netPnl, 1652.65);
+  assert.strictEqual(m.warn, false, 'a stale export is not a reason to alarm Jim');
+});
+
+test('the difference against a mid-session export is still reported, as information', () => {
+  const m = mergePnl({
+    feed: feed({ session: session(TODAY, 1652.65) }),
+    csv:  csv({ session: session(TODAY, 948.90) }), now: CT_OPEN });
+  assert.ok(m.exportDiffers, 'the export disagreeing about today is worth saying');
+  assert.strictEqual(m.errorCode, null, 'but it is not a fault');
+});
+
+test('an export still owns an ENDED day', () => {
+  const m = mergePnl({
+    feed: feed({ session: null, currentSession: '2026-11-17' }),
+    csv:  csv({ session: session('2026-11-13', 896.65), isFallback: true, currentSession: '2026-11-17' }),
+    now: Date.parse('2026-11-17T20:00:00Z') });
+  assert.strictEqual(m.source, 'csv');
+  assert.strictEqual(m.session.netPnl, 896.65);
+});
+
+test('feed down: today’s last known, never the export’s snapshot of today', () => {
+  const m = mergePnl({
+    feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED', lastAttemptAt: CT_OPEN }),
+    csv:  csv({ session: session(TODAY, 948.90) }), now: CT_OPEN, staleMinutes: 30 });
+  assert.strictEqual(m.source, 'feed');
+  assert.strictEqual(m.lastKnown, true);
+  assert.strictEqual(m.session.netPnl, 100, 'the export’s today must not be shown');
+});
+
+test('with no feed at all the export may still supply today', () => {
+  // The no-live-feed configuration (liveFeedEnabled false) must keep working.
+  const m = mergePnl({ feed: null, csv: csv({ session: session(TODAY, 494) }), now: CT_OPEN });
+  assert.strictEqual(m.source, 'csv');
+  assert.strictEqual(m.session.netPnl, 494);
+});
+
+test('once the feed has read today, the export never supplies today again', () => {
+  const m = mergePnl({
+    feed: feed({ session: null, readAt: CT_OPEN }),        // read fine, genuinely flat
+    csv:  csv({ session: session(TODAY, 948.90) }), now: CT_OPEN });
+  assert.notStrictEqual(m.source, 'csv');
+  assert.strictEqual(m.session, null, 'a flat day is a dash, not a stale export number');
+});
+
+test('the menu bar still never shows another day for today', () => {
+  const m = mergePnl({
+    feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED' }),
+    csv:  csv({ session: session('2026-11-12', 7777), isFallback: true }), now: CT_OPEN });
+  assert.strictEqual(m.session.sessionDate, TODAY);
 });
