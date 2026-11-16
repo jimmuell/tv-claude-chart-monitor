@@ -697,3 +697,31 @@ test('the TVCM-34 situation would now be caught', () => {
   assert.strictEqual(r.code, 'TVCM-LF-POSITION-MISMATCH');
   assert.strictEqual(r.warn, true);
 });
+
+// ── The broker's own money, for solving a missing fill (TVCM-36) ─────────
+// Measured 2026-11-16 14:24 with the account FLAT: Purchasing power 5,640.14
+// equalled Account balance 5,640.14. While a position is open, margin is held
+// against purchasing power and the two part company — so it is refused then.
+
+const { brokerSessionGross } = lf;
+
+test('while flat, purchasing power less the previous close is the session gross', () => {
+  const p = { summary: { 'Purchasing power': 5640.14, 'Total margin': 0, OTE: 0 } };
+  assert.strictEqual(brokerSessionGross(p, 4510.14), 1130.00);
+});
+
+test('while a position is open it refuses, rather than returning a wrong number', () => {
+  const p = { summary: { 'Purchasing power': 5415.14, 'Total margin': 200, OTE: -100 } };
+  assert.strictEqual(brokerSessionGross(p, 4510.14), null);
+});
+
+test('no summary and no previous balance both mean no answer', () => {
+  assert.strictEqual(brokerSessionGross({ summary: null }, 4510.14), null);
+  assert.strictEqual(brokerSessionGross({}, 4510.14), null);
+  assert.strictEqual(brokerSessionGross({ summary: { 'Purchasing power': 5640.14, 'Total margin': 0 } }, null), null);
+});
+
+test('the expression ships the header summary so the solve has something to use', () => {
+  assert.ok(liveFeedExpression().includes('accountManagerInfo'));
+  assert.ok(liveFeedExpression().includes('wValue'));
+});

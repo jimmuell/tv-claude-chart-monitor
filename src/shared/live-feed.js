@@ -468,6 +468,27 @@ function crossCheck(input) {
  */
 const POSITION_GRACE_MS = 30_000;
 
+/**
+ * The account's realized gross for the session, from the broker's own money.
+ *
+ * Purchasing power equals the account balance **while the account is flat** — measured
+ * on 2026-11-16 at 14:24 with both reading 5,640.14 — so the day's gross is that minus
+ * the previous day's closing balance. It is deliberately refused while a position is
+ * open, because margin is then held against purchasing power and the two part company.
+ */
+function brokerSessionGross(payload, prevDayBalance) {
+  const p = payload || {};
+  const pp = p.summary ? Number(p.summary['Purchasing power']) : NaN;
+  const margin = p.summary ? Number(p.summary['Total margin']) : NaN;
+  // Number(null) is 0, which would quietly turn "no previous balance" into a gross of
+  // the whole account — and then solve a missing fill's price from it. Refuse it.
+  if (prevDayBalance === null || prevDayBalance === undefined || prevDayBalance === '') return null;
+  const prev = Number(prevDayBalance);
+  if (!Number.isFinite(pp) || !Number.isFinite(prev)) return null;
+  if (Number.isFinite(margin) && margin !== 0) return null;   // not flat: PP is not the balance
+  return Math.round((pp - prev) * 100) / 100;
+}
+
 /** The broker's SIGNED open quantity, summed across symbols. Null when it has no answer. */
 function sumPositionQty(positions) {
   if (!Array.isArray(positions)) return null;
@@ -562,6 +583,21 @@ function liveFeedExpression() {
 
     out.account = typeof broker.currentAccount === 'function' ? String(broker.currentAccount()) : null;
 
+    // The account's own money, from the live header. Measured 2026-11-16 14:24 with the
+    // account FLAT: Purchasing power 5,640.14 equalled Account balance 5,640.14 exactly.
+    // It is the only balance figure that is live — the Account summary tab freezes.
+    try {
+      let ami = broker.accountManagerInfo();
+      if (ami && typeof ami.then === 'function') ami = await ami;
+      out.summary = {};
+      for (const row of ((ami && ami.summary) || [])) {
+        try {
+          out.summary[row.text] = row.wValue && typeof row.wValue.value === 'function'
+            ? row.wValue.value() : null;
+        } catch (e) { /* one unreadable row must not lose the rest */ }
+      }
+    } catch (e) { out.summary = null; }
+
     const mapOrder = (o) => ({
       id: o.id, symbol: o.symbol, side: o.side,
       qty: o.qty, filledQty: o.filledQty, avgPrice: o.avgPrice,
@@ -618,6 +654,7 @@ module.exports = {
   CROSS_CHECK_TOLERANCE,
   brokerAvailability, feedSourceFor, detectExecutionShape, detectOrderShape,
   crossCheck, sumBrokerProfit, sumOpenQty, sumPositionQty, positionMismatch, POSITION_GRACE_MS,
+  brokerSessionGross,
   chicagoStamp, chicagoStampFromIso, sessionDateForEpoch, decodeSide,
   executionsToFills, ordersToFills, fillsFromPayload,
   analyseExecutions, analyseFeed, liveFeedExpression,

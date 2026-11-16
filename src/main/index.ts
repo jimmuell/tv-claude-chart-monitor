@@ -10,6 +10,8 @@ import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './or
 import { PnlTracker } from './pnl-tracker';
 import { OrderImportWatcher } from './order-import';
 import { LiveFeedReader } from './live-feed-reader';
+import { CorrectionsStore } from './corrections-store';
+import { currentSessionDate } from './session-clock-bridge';
 import { sharedModule } from './shared-require';
 import type { FeeConfig } from './fee-calculator';
 import { loadSettings, saveSettings, getSettings } from './settings';
@@ -128,6 +130,10 @@ let lastResult: AnalysisResult | null = null;
 let pnlTracker:      PnlTracker     | null = null;
 let orderImport:     OrderImportWatcher | null = null;
 let liveFeed:        LiveFeedReader | null = null;
+let correctionsStore: CorrectionsStore | null = null;
+/** The previous trading day's closing balance, read once per session for the solve. */
+let prevDayBalance:  number | null = null;
+let prevDayFor:      string | null = null;
 let pnlWindow:       BrowserWindow | null = null;
 let trayTitleTimer:  ReturnType<typeof setInterval> | null = null;
 let tradeStore:      TradeStore     | null = null;
@@ -652,11 +658,29 @@ type TrayTitleOpts = {
   now?: number; staleMinutes?: number; isTestProfile?: boolean;
   paperMode?: boolean; source?: string | null; switchHint?: string | null; feedReason?: string | null;
   feedSource?: string | null; crossCheck?: unknown; lastKnown?: boolean;
+  appliedCorrections?: string[];
 };
 const { trayTitleColoured, trayTooltip } = sharedModule('tray-title.js') as {
   trayTitleColoured: (s: OrderImportState | null, o?: TrayTitleOpts) => string;
   trayTooltip:       (s: OrderImportState | null, o?: TrayTitleOpts) => string;
 };
+
+const liveFeedLib = sharedModule('live-feed.js') as {
+  brokerSessionGross: (payload: unknown, prevDayBalance: number | null) => number | null;
+};
+
+/**
+ * The previous trading day's closing balance, which the missing-fill solve subtracts from
+ * today's. Read once per session from the export's last ENDED session rather than from
+ * the Account summary tab, which freezes (TVCM-34).
+ */
+function previousDayBalance(currentSession: string | null): number | null {
+  if (!currentSession) return null;
+  if (prevDayFor === currentSession) return prevDayBalance;
+  prevDayFor = currentSession;
+  prevDayBalance = getSettings().prevDayBalance ?? null;
+  return prevDayBalance;
+}
 
 const { mergePnl, mergedToImportState } = sharedModule('pnl-merge.js') as {
   mergePnl: (i: Record<string, unknown>) => import('../shared/types').MergedPnlState;
@@ -770,6 +794,7 @@ function refreshTrayTitle(): void {
     feedSource:    liveFeed?.getState().source ?? null,
     crossCheck:    liveFeed?.getState().crossCheck ?? null,
     lastKnown:     merged.lastKnown,
+    appliedCorrections: liveFeed?.getState().appliedCorrections ?? [],
   };
   try {
     // monospacedDigit stops the title's width jittering as the number changes.
@@ -1017,6 +1042,7 @@ app.on('ready', () => {
 
   // Order-history import: the source of truth for session P&L and fees.
   const importSettings = getSettings();
+  correctionsStore = new CorrectionsStore(app.getPath('userData'));
   orderImport = new OrderImportWatcher({
     // The env override exists so the watcher can be pointed at a scratch folder
     // for testing without editing the real settings file.
@@ -1037,6 +1063,9 @@ app.on('ready', () => {
     mode:           feedMode,
     pollIntervalMs: Math.max(1, importSettings.liveFeedPollSeconds ?? 5) * 1000,
     perContractSideFee: () => getSettings().feePerContractSide ?? 0.60,
+    corrections: () => correctionsStore?.list(paperMode() ? 'paper' : 'live') ?? [],
+    brokerGross: (payload) => liveFeedLib.brokerSessionGross(
+      payload, previousDayBalance(currentSessionDate(new Date()))),
     statePath:      liveFeedStatePath(feedMode),
     onChange:       () => publishPnl(),
   });
@@ -1170,6 +1199,19 @@ app.on('ready', () => {
     merged:    currentMergedState(),
   }));
   ipcMain.handle(IPC.PAPER_MODE_SET, (_e, on: boolean) => { setPaperMode(!!on); return paperMode(); });
+
+  // Corrections: Jim's recorded missing fills. Nothing is ever added without his click.
+  ipcMain.handle(IPC.CORRECTION_LIST, () => correctionsStore?.list(paperMode() ? 'paper' : 'live') ?? []);
+  ipcMain.handle(IPC.CORRECTION_SUGGESTION, () => liveFeed?.getState().suggestion ?? null);
+  ipcMain.handle(IPC.CORRECTION_ADD, (_e, input: unknown) => {
+    const made = correctionsStore?.add(paperMode() ? 'paper' : 'live', input) ?? null;
+    void liveFeed?.readOnce().then(() => publishPnl());
+    return made;
+  });
+  ipcMain.handle(IPC.CORRECTION_REMOVE, (_e, id: string) => {
+    correctionsStore?.remove(paperMode() ? 'paper' : 'live', id);
+    void liveFeed?.readOnce().then(() => publishPnl());
+  });
   ipcMain.handle(IPC.PNL_WINDOW_CLOSE, () => { pnlWindow?.close(); });
   ipcMain.handle(IPC.ORDER_IMPORT_SESSIONS, () => sessionList());
   ipcMain.handle(IPC.ORDER_IMPORT_DETAIL, (_e, sessionDate: string) => sessionDetail(sessionDate));

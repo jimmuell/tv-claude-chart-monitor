@@ -9,6 +9,7 @@ import type { LiveFeedState, LiveFeedGate, ImportedSession, ImportedTrade, Impor
 // The pure half — broker gating, shape detection, conversion — lives in a shared
 // CommonJS module so it can be unit-tested without Electron or a CDP connection.
 const liveFeed = sharedModule('live-feed.js');
+const corrections = sharedModule('corrections.js');
 
 /** How often to read when nothing says otherwise. */
 const DEFAULT_POLL_MS = 5_000;
@@ -19,6 +20,10 @@ export interface LiveFeedOptions {
   mode?:           'live' | 'paper';
   pollIntervalMs?: number;
   perContractSideFee?: () => number;
+  /** Jim's recorded missing fills for this mode, read fresh on every poll. */
+  corrections?: () => unknown[];
+  /** The broker's realized gross for the session, used to solve a suggested price. */
+  brokerGross?: (payload: unknown) => number | null;
   now?:            () => number;
   /** Where this MODE's last reading is cached. Live and paper never share a file. */
   statePath?:      string | null;
@@ -32,6 +37,7 @@ export function emptyLiveFeedState(mode: 'live' | 'paper'): LiveFeedState {
     mode, brokerId: null, account: null, available: false, state: 'disconnected',
     reason: null, switchHint: null, session: null, fallbackSession: null, currentSession: null,
     source: null, brokerProfit: null, brokerQty: null, positionMismatch: null, crossCheck: null,
+    suggestion: null, appliedCorrections: [],
     executionCount: 0, fillCount: 0, skippedCount: 0, openPositionCount: null,
     readAt: null, lastAttemptAt: null, errorCode: null, errorMessage: null, warn: false,
   };
@@ -72,6 +78,8 @@ export class LiveFeedReader {
   private mode:     'live' | 'paper';
   private pollMs:   number;
   private feeRate:  () => number;
+  private corrections: () => unknown[];
+  private brokerGross: (payload: unknown) => number | null;
   private now:      () => number;
   private statePath: string | null;
   private onChange?: (state: LiveFeedState) => void;
@@ -95,6 +103,8 @@ export class LiveFeedReader {
     this.mode      = opts.mode ?? 'live';
     this.pollMs    = opts.pollIntervalMs ?? DEFAULT_POLL_MS;
     this.feeRate   = opts.perContractSideFee ?? (() => 0.60);
+    this.corrections = opts.corrections ?? (() => []);
+    this.brokerGross = opts.brokerGross ?? (() => null);
     this.now       = opts.now ?? (() => Date.now());
     this.statePath = opts.statePath ?? null;
     this.onChange  = opts.onChange;
@@ -189,7 +199,11 @@ export class LiveFeedReader {
         perContractSideFee: this.feeRate(),
         source: `live-feed:${this.mode}`,
       });
-      const result = feed.result;
+      // Jim's accepted corrections are part of every calculation from here on.
+      const corrected = corrections.analyseWithCorrections(feed.fills, this.corrections(), {
+        mode: this.mode, perContractSideFee: this.feeRate(), skipped: feed.skipped,
+      });
+      const result = corrected.result;
       const today = currentSessionDate(new Date(at));
       const match = (result.sessions || []).find((s: any) => s.sessionDate === today);
 
@@ -209,6 +223,16 @@ export class LiveFeedReader {
       // what notices. positions().qty is used because it is the only broker field that
       // is both live and a direct answer.
       const brokerQty = liveFeed.sumPositionQty(payload.positions);
+      // When TVCM's rows say a position is open and the broker says flat, work out the
+      // fill that must be missing. It is only ever offered — never applied here.
+      const suggestionRaw = corrections.suggestMissingFill({
+        fills: (result.fills || []).filter((f: any) => f.sessionDate === today),
+        brokerQty,
+        brokerGross: this.brokerGross(payload),
+      });
+      const suggestion = suggestionRaw
+        ? { ...suggestionRaw, text: corrections.suggestionText(suggestionRaw) }
+        : null;
       const posCheck = liveFeed.positionMismatch({
         engineQty: match ? match.openPositionAtEnd : 0,
         brokerQty, mismatchSince: this.mismatchSince, now: at,
@@ -264,6 +288,8 @@ export class LiveFeedReader {
         positionMismatch: posCheck.warn
           ? { since: posCheck.since as number, engineQty: match ? match.openPositionAtEnd : 0, brokerQty: brokerQty as number }
           : null,
+        suggestion,
+        appliedCorrections: corrected.appliedIds,
         crossCheck: { state: check.state, code: check.code, delta: check.delta, message: check.message },
         // A position mismatch outranks the informational cross-check: it means a fill is
         // missing, which makes every number on screen suspect. A difference against the
