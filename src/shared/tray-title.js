@@ -26,6 +26,12 @@ const NO_DATA_TITLE = 'P&L —';
 /** Appended when the number cannot be trusted — stale during trading, or a failed import. */
 const STALE_MARKER = ' ⚠';
 
+/**
+ * Codes that describe a problem with numbers that ARE current. Everything else means the
+ * read failed and what is on screen is the last good result.
+ */
+const LIVE_FAULT_CODES = new Set(['TVCM-LF-POSITION-MISMATCH']);
+
 /** How much of an error message the tooltip will carry before cutting it short. */
 const MAX_TOOLTIP_REASON = 120;
 
@@ -204,10 +210,15 @@ function trayTooltip(state, options) {
   }
   if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
   if (hasFailedImport(state)) {
-    lines.push(`Last import failed: ${state.errorCode} — ${shortReason(state.errorMessage)}`);
-    // Only true when the displayed number really is older than the last attempt. A
-    // successful read that merely disagrees with the broker is still a fresh number.
-    lines.push('Showing the last good import — the number above is not being refreshed');
+    // A fault does not always mean a stale number. A position mismatch is raised about
+    // figures that were read the same second, so calling them "not being refreshed"
+    // would be plainly false — the same wrongness TVCM-33 removed from the cross-check.
+    if (LIVE_FAULT_CODES.has(state.errorCode)) {
+      lines.push(`${state.errorCode}: ${shortReason(state.errorMessage)}`);
+    } else {
+      lines.push(`Last import failed: ${state.errorCode} — ${shortReason(state.errorMessage)}`);
+      lines.push('Showing the last good import — the number above is not being refreshed');
+    }
   }
   if (opts.switchHint) lines.push(opts.switchHint);
   if (opts.feedReason) lines.push(`Live feed: ${shortReason(opts.feedReason)}`);
@@ -215,7 +226,7 @@ function trayTooltip(state, options) {
 }
 
 module.exports = {
-  NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, PAPER_PREFIX,
+  NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, PAPER_PREFIX, LIVE_FAULT_CODES,
   DEFAULT_STALE_MINUTES, MAX_TOOLTIP_REASON, ANSI,
   formatNet, ansiFor, isStale, hasFailedImport, shortReason, titlePrefix, sourceLabel, crossCheckLine,
   trayTitle, trayTitleColoured, stripAnsi, trayTooltip,

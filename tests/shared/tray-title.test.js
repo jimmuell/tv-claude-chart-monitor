@@ -570,3 +570,29 @@ test('a live number is not labelled last known', () => {
   assert.ok(/Live feed \(orders\) read/.test(t), t);
   assert.ok(!/last known/i.test(t), t);
 });
+
+// ── A live fault is not a stale number (TVCM-35) ─────────────────────────
+// TVCM-33 fixed this for the cross-check by removing its error code. The
+// position mismatch is a genuine fault that DOES set one — and the numbers it
+// complains about were read that same second.
+
+test('a position mismatch is reported without claiming the number is stale', () => {
+  const s = state({ importedAt: FRI_OPEN });
+  s.errorCode = 'TVCM-LF-POSITION-MISMATCH';
+  s.errorMessage = "TradingView's records and its live position disagree (orders say -5, it reports 0) — a fill may be missing";
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders', lastKnown: false });
+  assert.ok(/live position disagree/.test(t), t);
+  assert.ok(/fill may be missing/.test(t), t);
+  assert.ok(!/not being refreshed/i.test(t), 'the number was read this second: ' + t);
+  assert.ok(!/Last import failed/i.test(t), 'a live fault is not an import failure: ' + t);
+  assert.strictEqual(t.split('\n').filter(l => /fill may be missing/.test(l)).length, 1);
+});
+
+test('a genuinely stale number still says so', () => {
+  const s = state({ importedAt: FRI_OPEN - 90 * MIN });
+  s.errorCode = 'TVCM-LF-NOT-CONNECTED';
+  s.errorMessage = 'WebSocket is not open';
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders', lastKnown: true });
+  assert.ok(/Last import failed/i.test(t), t);
+  assert.ok(/not being refreshed/i.test(t), t);
+});

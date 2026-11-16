@@ -505,8 +505,9 @@ function positionMismatch(input) {
   }
   return {
     mismatch: true, warn: true, code: 'TVCM-LF-POSITION-MISMATCH', since,
-    message: `TradingView's records and its live position disagree — its orders add up to `
-           + `${engineQty} contract(s) open but it reports ${brokerQty}; a fill may be missing`,
+    // Kept under the tooltip's 120-character cut so the words that matter survive it.
+    message: `TradingView's records and its live position disagree `
+           + `(orders say ${engineQty}, it reports ${brokerQty}) — a fill may be missing`,
   };
 }
 
