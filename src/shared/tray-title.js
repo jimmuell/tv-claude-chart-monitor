@@ -89,6 +89,43 @@ function isStale(importedAt, now, staleMinutes) {
   return (Number(now) - Number(importedAt)) > minutes * 60_000;
 }
 
+/** Weekday names, indexed the way the calendar does it. */
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** A session date as "Mon 11/16", read straight off the calendar with no conversion. */
+function dayLabel(sessionDate) {
+  const text = String(sessionDate == null ? '' : sessionDate);
+  const [y, m, d] = text.split('-').map(Number);
+  if (!y || !m || !d) return text;
+  const wd = WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()] || '?';
+  return `${wd} ${text.slice(5, 7)}/${text.slice(8, 10)}`;
+}
+
+/** Whole calendar days from one "YYYY-MM-DD" to another, or null if either is unusable. */
+function daysBetween(from, to) {
+  const at = (text) => {
+    const [y, m, d] = String(text || '').split('-').map(Number);
+    return y && m && d ? Date.UTC(y, m - 1, d) : null;
+  };
+  const a = at(from), b = at(to);
+  if (a === null || b === null) return null;
+  return Math.round((b - a) / 86_400_000);
+}
+
+/**
+ * What to call a session that is being shown while a different one is current.
+ *
+ * A trading session's predecessor is never more than three calendar days back — Friday's
+ * session ends on the Friday and Monday's is the next one — so a gap of one to three days
+ * is the session that has just ended. Anything longer means days went by without trading,
+ * and "just ended" would be false.
+ */
+function fallbackNote(sessionDate, currentSession) {
+  const gap = daysBetween(sessionDate, currentSession);
+  const just = gap !== null && gap >= 1 && gap <= 3;
+  return `${dayLabel(sessionDate)} — ${just ? 'the session just ended' : 'the last session with fills'}`;
+}
+
 /** The labels that go in front of the number: profile first, then account. */
 function titlePrefix(opts) {
   return (opts.isTestProfile ? TEST_PREFIX : '') + (opts.paperMode ? PAPER_PREFIX : '');
@@ -129,7 +166,12 @@ function trayTitle(state, options) {
 
   const base = formatNet(state.session.netPnl);
   const warn = failed || isStale(state.importedAt, now, opts.staleMinutes);
-  return prefix + (warn ? base + STALE_MARKER : base);
+  // A past day's number carries its day on the face of the menu bar. TVCM-38: at 17:00 a
+  // bare "-$3.00" was read as the new session's result when it belonged to the day before,
+  // and the only place that said so was a tooltip nobody opens mid-trade.
+  const day = state.isFallback && state.session.sessionDate
+    ? `${dayLabel(state.session.sessionDate)} ` : '';
+  return prefix + day + (warn ? base + STALE_MARKER : base);
 }
 
 /**
@@ -198,7 +240,7 @@ function trayTooltip(state, options) {
   if (opts.isTestProfile) lines.push('TEST PROFILE — not your everyday TVCM');
   if (opts.paperMode) lines.push('PAPER — paper account, not real money');
   lines.push(
-    `Session ${s.sessionDate}${state.isFallback ? ' (last session with fills)' : ''}`,
+    state.isFallback ? fallbackNote(s.sessionDate, state.currentSession) : `Session ${s.sessionDate}`,
     `Net ${formatNet(s.netPnl)}  ·  Gross ${formatNet(s.grossPnl)}  ·  Fees $${s.fees.toFixed(2)}`,
     `${s.contractSides} contract-sides (${s.roundTrips} RT)`,
     `${sourceLabel(opts.source, opts.feedSource, opts.lastKnown)} ${when} CT${isStale(state.importedAt, now, opts.staleMinutes) ? ' — stale' : ''}`,
@@ -232,5 +274,6 @@ module.exports = {
   NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, PAPER_PREFIX, LIVE_FAULT_CODES,
   DEFAULT_STALE_MINUTES, MAX_TOOLTIP_REASON, ANSI,
   formatNet, ansiFor, isStale, hasFailedImport, shortReason, titlePrefix, sourceLabel, crossCheckLine,
+  dayLabel, daysBetween, fallbackNote,
   trayTitle, trayTitleColoured, stripAnsi, trayTooltip,
 };

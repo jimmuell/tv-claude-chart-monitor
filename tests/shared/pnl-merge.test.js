@@ -299,15 +299,26 @@ test('with the market shut the feed falls back to its newest session', () => {
   assert.strictEqual(m.isFallback, true, 'an earlier session must be flagged as a fallback');
 });
 
-test('while the market is OPEN an empty current session stays empty', () => {
+// REVERSED in TVCM-39. This test used to assert that an empty current session stayed a
+// dash while the market was open, on the reasoning that an earlier number mid-session
+// would be read as today's. TVCM-38 measured the opposite: the CSV branch had no such
+// gate, so a two-day-old export supplied the menu bar at 17:00 while the feed held the
+// complete figure for the session that had just ended — and showed it UNMARKED, which is
+// the thing this test was trying to prevent. The protection is now the marking, so the
+// assertion is that the number appears AND cannot be mistaken for today's.
+test('an empty current session shows the newest day there is, plainly marked', () => {
   const m = mergePnl({
     mode: 'paper',
     feed: feed({ mode: 'paper', brokerId: 'paper', session: null, currentSession: '2026-11-13',
                  fallbackSession: session('2026-11-11', 275), readAt: CT_OPEN }),
     csv: csv(), now: CT_OPEN });
-  assert.strictEqual(m.source, 'none',
-    'showing an earlier session mid-session would be read as today');
-  assert.strictEqual(m.session, null);
+  assert.strictEqual(m.source, 'feed');
+  assert.strictEqual(m.session.netPnl, 275);
+  assert.strictEqual(m.session.sessionDate, '2026-11-11');
+  assert.strictEqual(m.isFallback, true,
+    'an earlier session mid-session is only safe because it is marked as one');
+  assert.notStrictEqual(m.session.sessionDate, m.currentSession,
+    'and it must never be presented under the current session\u2019s name');
 });
 
 test('a real current session always outranks the fallback', () => {
@@ -488,4 +499,85 @@ test('the menu bar still never shows another day for today', () => {
     feed: feed({ readAt: CT_OPEN - 90 * MIN, errorCode: 'TVCM-LF-NOT-CONNECTED' }),
     csv:  csv({ session: session('2026-11-12', 7777), isFallback: true }), now: CT_OPEN });
   assert.strictEqual(m.session.sessionDate, TODAY);
+});
+
+// ── An empty new day shows yesterday, marked (TVCM-38 §4 Fix 2 / TVCM-39) ─
+//
+// At 17:00:00 on 2026-11-16 the session rolled to 2026-11-17 with nothing in it. The feed
+// held Monday complete — 78 fills, +$964.15, reconciling to AMP to the cent — and the menu
+// bar showed the EXPORT's idea of a session instead, unmarked. These pin both halves:
+// the newest day either source has answers, and it is always flagged as a past day.
+
+const NEW_DAY = Date.parse('2026-11-16T23:09:00Z'); // Mon 17:09 CT — the new session, open
+
+test('a new session with nothing in it does not inherit a stale day as today', () => {
+  const m = mergePnl({
+    feed: feed({ session: null, currentSession: '2026-11-17', readAt: NEW_DAY,
+                 fallbackSession: session('2026-11-16', 964.15) }),
+    csv:  csv({ session: session('2026-11-13', 896.65), currentSession: '2026-11-16',
+                isFallback: true, importedAt: NEW_DAY - 40 * MIN }),
+    now: NEW_DAY });
+  assert.strictEqual(m.session.sessionDate, '2026-11-16', 'the newest day either source has');
+  assert.strictEqual(m.session.netPnl, 964.15);
+  assert.strictEqual(m.source, 'feed');
+  assert.strictEqual(m.isFallback, true, 'and it must never be shown as if it were today');
+});
+
+test('the export still wins when the export has the newer day', () => {
+  const m = mergePnl({
+    feed: feed({ session: null, currentSession: '2026-11-17', readAt: NEW_DAY,
+                 fallbackSession: session('2026-11-11', 275) }),
+    csv:  csv({ session: session('2026-11-13', 896.65), currentSession: '2026-11-16',
+                isFallback: true, importedAt: NEW_DAY - 40 * MIN }),
+    now: NEW_DAY });
+  assert.strictEqual(m.source, 'csv', 'newest day wins, whichever source holds it');
+  assert.strictEqual(m.session.netPnl, 896.65);
+  assert.strictEqual(m.isFallback, true);
+});
+
+test('a tie on the date goes to the feed — that is how the phantom won', () => {
+  // TVCM-38: the export's only Monday row was a correction, so both sources offered a
+  // session dated 2026-11-16 and the export's -$3.00 outranked the feed's +$964.15.
+  const m = mergePnl({
+    feed: feed({ session: null, currentSession: '2026-11-17', readAt: NEW_DAY,
+                 fallbackSession: session('2026-11-16', 964.15) }),
+    csv:  csv({ session: session('2026-11-16', -3), currentSession: '2026-11-16',
+                isFallback: false, importedAt: NEW_DAY - 40 * MIN }),
+    now: NEW_DAY });
+  assert.strictEqual(m.session.netPnl, 964.15, 'the live record of the day that just ended');
+  assert.strictEqual(m.source, 'feed');
+});
+
+test('a past day is marked as a fallback whichever branch chose it', () => {
+  // The invariant, not the branch: anything that is not the current session is a fallback.
+  const m = mergePnl({
+    feed: feed({ available: false, session: null, readAt: null, currentSession: '2026-11-17' }),
+    csv:  csv({ session: session('2026-11-13', 896.65), currentSession: '2026-11-17',
+                isFallback: false, importedAt: NEW_DAY - 40 * MIN }),
+    now: NEW_DAY });
+  assert.strictEqual(m.source, 'csv');
+  assert.strictEqual(m.isFallback, true, 'the export did not call it a fallback; the merge must');
+});
+
+test('a real current session is never marked as a fallback', () => {
+  const m = mergePnl({
+    feed: feed({ session: session('2026-11-17', 40.25), currentSession: '2026-11-17', readAt: NEW_DAY }),
+    csv:  csv({ session: session('2026-11-13', 896.65), currentSession: '2026-11-17', isFallback: true }),
+    now: NEW_DAY });
+  assert.strictEqual(m.session.netPnl, 40.25);
+  assert.strictEqual(m.isFallback, false);
+});
+
+test('the first fill of the new session takes the number straight off the fallback', () => {
+  const args = (feedOver) => ({
+    feed: feed({ currentSession: '2026-11-17', readAt: NEW_DAY,
+                 fallbackSession: session('2026-11-16', 964.15), ...feedOver }),
+    csv:  csv({ session: session('2026-11-13', 896.65), currentSession: '2026-11-16', isFallback: true }),
+    now: NEW_DAY });
+  const before = mergePnl(args({ session: null }));
+  const after  = mergePnl(args({ session: session('2026-11-17', 40.25) }));
+  assert.strictEqual(before.session.sessionDate, '2026-11-16');
+  assert.strictEqual(before.isFallback, true);
+  assert.strictEqual(after.session.sessionDate, '2026-11-17');
+  assert.strictEqual(after.isFallback, false, 'and the marking goes with it');
 });

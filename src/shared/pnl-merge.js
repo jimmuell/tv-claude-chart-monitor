@@ -95,12 +95,18 @@ function mergePnl(input) {
       && feed.session && feed.session.sessionDate === currentSession)
     ? feed.session : null;
 
-  // The same rule the CSV path uses: with the market SHUT and nothing in the current
-  // session, show the newest session that has fills — on a Saturday a trader wants
-  // Friday's result, not a dash. While the market is open an empty current session stays
-  // empty, because an earlier number mid-session would be read as today's.
-  const feedFallback = (feedOk && !feedCurrent && !feed.session
-      && feed.fallbackSession && !isMarketOpen(now))
+  /**
+   * The newest session the FEED has, for when the current one is empty.
+   *
+   * This used to be gated on the market being shut, on the reasoning that an earlier
+   * number shown mid-session would be read as today's. TVCM-38 showed the gate was only
+   * ever stopping the better of the two sources from answering: the CSV branch had no
+   * such gate, so at 17:00 on 2026-11-16 a two-day-old export supplied the menu bar while
+   * the feed sat on the complete, statement-matching figure for the session that had just
+   * ended. What makes an old number safe is SAYING it is old, which every fallback now
+   * does — `isFallback` below, and the day on the face of the menu bar.
+   */
+  const feedFallback = (feedOk && !feedCurrent && !feed.session && feed.fallbackSession)
     ? feed.fallbackSession : null;
 
   const csvCurrent = (csvState && csvState.session && !csvState.isFallback
@@ -116,6 +122,11 @@ function mergePnl(input) {
   const feedOwnsToday = !modeMismatch && !!feed && feed.readAt != null
     && feed.currentSession === currentSession;
   const csvMaySupplyToday = !feedOwnsToday;
+
+  /** The export's answer when the current session is empty — its session, whatever day. */
+  const csvFallback = (csvState && csvState.session
+      && (csvState.session.sessionDate !== currentSession || csvMaySupplyToday))
+    ? csvState.session : null;
 
   // --- the disagreement check, before anything is chosen ---------------------
   // Against a mid-session export this is information, not a fault (see csvMaySupplyToday).
@@ -145,12 +156,20 @@ function mergePnl(input) {
     session = csvCurrent; source = 'csv'; asOf = csvState.importedAt;
   } else if (feedLastKnown) {
     session = feedLastKnown; source = 'feed'; asOf = feed.readAt; lastKnown = true;
-  } else if (csvState && csvState.session
-             && (csvState.session.sessionDate !== currentSession || csvMaySupplyToday)) {
-    session = csvState.session; source = 'csv'; isFallback = !!csvState.isFallback; asOf = csvState.importedAt;
-  } else if (feedFallback) {
-    session = feedFallback; source = 'feed'; isFallback = true; asOf = feed.readAt;
+  } else if (feedFallback && (!csvFallback || csvFallback.sessionDate <= feedFallback.sessionDate)) {
+    // The current session is empty, so the newest day EITHER source has answers. Ties go
+    // to the feed, which is the live record of the day that has just ended; the export
+    // only reaches the same date by way of a correction, and a tie is how TVCM-38's
+    // phantom outranked the real Monday.
+    session = feedFallback; source = 'feed'; asOf = feed.readAt;
+  } else if (csvFallback) {
+    session = csvFallback; source = 'csv'; asOf = csvState.importedAt;
   }
+
+  // One invariant, applied after whichever branch won: a session that is not the CURRENT
+  // one is a fallback. Nothing may present a past day's number as today's, and leaving
+  // this to each branch is how the export's stale day reached the menu bar unmarked.
+  if (session && currentSession && session.sessionDate !== currentSession) isFallback = true;
 
   // --- what to complain about, strongest first -------------------------------
   const problem = firstError([

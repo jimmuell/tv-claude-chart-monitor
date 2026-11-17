@@ -132,9 +132,13 @@ test('the tooltip names the session, the money and the import time', () => {
   assert.ok(/Imported \d+:\d\d (AM|PM) CT/.test(t), t);
 });
 
+// REWORDED in TVCM-39: "(last session with fills)" became a line that leads with the day,
+// because the day is the part that stops the number being read as today's. The assertion
+// is strengthened, not relaxed — it now also requires the day to be named.
 test('the tooltip says when it is showing an earlier session', () => {
   const t = trayTooltip(state({ fallback: true }), { now: SAT });
-  assert.ok(t.includes('(last session with fills)'), t);
+  assert.ok(t.includes('Fri 11/13'), t);
+  assert.ok(t.includes('last session with fills'), t);
 });
 
 test('the tooltip surfaces a failed import and an open position', () => {
@@ -614,4 +618,78 @@ test('with no corrections the tooltip says nothing about them', () => {
   for (const v of [[], null, undefined]) {
     assert.ok(!/added fill/i.test(trayTooltip(state(), { now: FRI_OPEN, source: 'feed', appliedCorrections: v })));
   }
+});
+
+// ── A past day never wears the current session's clothes (TVCM-38/39) ────
+//
+// At 17:00 on 2026-11-16 the menu bar read a bare "-$3.00" for a session nobody had
+// traded. The number belonged to the day before; the only thing that said so was a
+// tooltip. The day now travels with the number.
+
+/** The state the merge produces when the new session is empty and yesterday is shown. */
+function yesterday(over = {}) {
+  return {
+    session: {
+      sessionDate: '2026-11-16', fillCount: 78, buys: 183, sells: 183,
+      avgBuy: 7534.98, avgSell: 7536.27, grossPnl: 1183.75,
+      contractSides: 366, roundTrips: 183, fees: 219.60, netPnl: 964.15,
+      openPositionAtStart: 0, openPositionAtEnd: 0,
+    },
+    isFallback: true, currentSession: '2026-11-17',
+    importedAt: at('2026-11-16T23:05:00Z'), fileName: 'live feed (live)', filePath: null,
+    fillCount: 78, skippedRows: 0, sessionCount: 1,
+    errorCode: null, errorMessage: null, lastAttemptAt: at('2026-11-16T23:05:00Z'),
+    watchFolder: null, ...over,
+  };
+}
+
+const NEW_SESSION = at('2026-11-16T23:09:00Z');  // Mon 17:09 CT — the new session, open
+
+test('a fallback number carries its day in the menu bar, not just the tooltip', () => {
+  const title = trayTitle(yesterday(), { now: NEW_SESSION });
+  assert.strictEqual(title, 'Mon 11/16 +$964.15');
+  assert.ok(!/^\+\$/.test(title), 'a bare number is what was misread as today');
+});
+
+test('the tooltip says the session just ended', () => {
+  const t = trayTooltip(yesterday(), { now: NEW_SESSION, source: 'feed', feedSource: 'orders' });
+  assert.ok(t.startsWith('Mon 11/16 — the session just ended'), t);
+});
+
+test('the current session keeps a bare number, with no day in front of it', () => {
+  const today = yesterday({ isFallback: false, currentSession: '2026-11-16' });
+  assert.strictEqual(trayTitle(today, { now: NEW_SESSION }), '+$964.15');
+  assert.ok(trayTooltip(today, { now: NEW_SESSION }).startsWith('Session 2026-11-16'));
+});
+
+test('the stale marker still lands on a fallback number', () => {
+  const old = yesterday({ importedAt: NEW_SESSION - 40 * MIN });
+  assert.strictEqual(trayTitle(old, { now: NEW_SESSION, staleMinutes: 30 }),
+    'Mon 11/16 +$964.15 ⚠', 'the ⚠ behaviour is unchanged');
+});
+
+test('a gap of more than three days is not "just ended"', () => {
+  // Friday to Monday is three days and IS the previous session; a week is not.
+  assert.ok(tt.fallbackNote('2026-11-13', '2026-11-16').endsWith('the session just ended'));
+  assert.ok(tt.fallbackNote('2026-11-09', '2026-11-17').endsWith('the last session with fills'));
+  assert.ok(tt.fallbackNote('2026-11-16', '2026-11-17').endsWith('the session just ended'));
+});
+
+test('the day label reads off the calendar, with no timezone conversion', () => {
+  assert.strictEqual(tt.dayLabel('2026-11-16'), 'Mon 11/16');
+  assert.strictEqual(tt.dayLabel('2026-11-15'), 'Sun 11/15');
+  assert.strictEqual(tt.dayLabel(''), '');
+  assert.strictEqual(tt.dayLabel(null), '');
+});
+
+test('an unusable date never produces a confident label', () => {
+  assert.strictEqual(tt.daysBetween('nonsense', '2026-11-17'), null);
+  assert.strictEqual(tt.daysBetween(null, null), null);
+  // With no current session to compare against, the cautious wording is used.
+  assert.ok(tt.fallbackNote('2026-11-16', null).endsWith('the last session with fills'));
+});
+
+test('a coloured fallback title still strips back to the plain one', () => {
+  const plain = trayTitle(yesterday(), { now: NEW_SESSION });
+  assert.strictEqual(tt.stripAnsi(tt.trayTitleColoured(yesterday(), { now: NEW_SESSION })), plain);
 });
