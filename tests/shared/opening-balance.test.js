@@ -263,7 +263,10 @@ test('the first reading after the roll is refused while AMP still shows the old 
   assert.strictEqual(out.action, 'unknown');
   assert.strictEqual(out.code, ob.NOT_ROLLED_CODE);
   assert.strictEqual(out.record.balance, null, 'the wrong day’s figure must not be stored');
-  assert.match(out.record.reason, /not rolled/);
+  // REWORDED in TVCM-46: the reason now says when to come back, because the roll is in
+  // the morning rather than minutes away.
+  assert.match(out.record.reason, /overnight/);
+  assert.match(out.record.reason, /check back in the morning/);
 });
 
 test('once AMP rolls, the correct figure is recorded', () => {
@@ -350,4 +353,86 @@ test('while AMP has not rolled, the gross is unknown too — not yesterday’s',
   const out = ob.observeReading(wed({ prevDayBalance: TUE_OPEN, accountBalance: TUE_CLOSE }));
   assert.strictEqual(out.record.known, false);
   assert.strictEqual(out.code, ob.NOT_ROLLED_CODE);
+});
+
+// ── The roll happens in the MORNING, not at 17:00 (TVCM-46) ─────────────
+//
+// Jim (2026-11-17 15:54): AMP updates its Balances table early the next morning. Measured
+// on 2026-11-17 at 17:05 CT, five minutes after the session rolled, AMP still reported a
+// prev day balance of 5,474.29 — Tuesday's opening — with account balance 6,414.29.
+//
+// TVCM-43 switched its guard off as soon as a session had traded ("by then AMP has long
+// since rolled"). Jim often trades from 17:00, so his first evening fill would have let
+// TVCM record YESTERDAY's opening balance as tonight's, silently, until the morning.
+
+const WED = '2026-11-18';
+const TUE_OPENING = 5474.29;    // what AMP still reports all evening
+const TUE_SETTLED = 6252.89;    // what it will report once it rolls
+
+/** A reading for the Wednesday session, with Tuesday's opening on record. */
+function evening(over = {}) {
+  return { sessionDate: WED, mode: 'live', brokerId: 'amp', at: 2,
+           previousSessionOpening: TUE_OPENING, ...over };
+}
+
+test('an evening fill no longer unlocks the guard', () => {
+  // The exact shape measured at 17:05, plus the evening trading Jim does.
+  const out = ob.observeReading(evening({
+    prevDayBalance: TUE_OPENING, accountBalance: 6500, fillsInSession: 4 }));
+  assert.strictEqual(out.action, 'unknown');
+  assert.strictEqual(out.code, ob.NOT_ROLLED_CODE);
+  assert.strictEqual(out.record.known, false);
+  assert.match(out.record.reason, /overnight/);
+});
+
+test('AMP still showing the previous session’s opening means it has not rolled', () => {
+  for (const fills of [0, 1, 57]) {
+    assert.strictEqual(
+      ob.hasRolled({ prevDayBalance: TUE_OPENING, previousSessionOpening: TUE_OPENING,
+                     accountBalance: 6414.29, fillsInSession: fills }),
+      false, `fills=${fills}`);
+  }
+});
+
+test('the morning roll is recorded, even with the night’s trading on the books', () => {
+  const out = ob.observeReading(evening({
+    prevDayBalance: TUE_SETTLED, accountBalance: 6600, fillsInSession: 12, at: 9 }));
+  assert.strictEqual(out.action, 'record');
+  assert.strictEqual(out.record.balance, TUE_SETTLED);
+  assert.strictEqual(out.record.source, ob.SOURCE_PREV_DAY);
+});
+
+test('a rolled table at an untraded session must also have its pair agree', () => {
+  // The figure moved, but the two numbers disagree with nothing traded — something is
+  // mid-update, so wait for the next poll rather than record half an update.
+  assert.strictEqual(
+    ob.hasRolled({ prevDayBalance: TUE_SETTLED, previousSessionOpening: TUE_OPENING,
+                   accountBalance: 9999, fillsInSession: 0 }), false);
+  assert.strictEqual(
+    ob.hasRolled({ prevDayBalance: TUE_SETTLED, previousSessionOpening: TUE_OPENING,
+                   accountBalance: TUE_SETTLED, fillsInSession: 0 }), true);
+});
+
+test('with no previous session on record, the no-fill check is all there is', () => {
+  for (const prior of [null, undefined, '', 'n/a']) {
+    assert.strictEqual(
+      ob.hasRolled({ prevDayBalance: TUE_SETTLED, previousSessionOpening: prior,
+                     accountBalance: TUE_SETTLED, fillsInSession: 0 }), true, String(prior));
+    assert.strictEqual(
+      ob.hasRolled({ prevDayBalance: TUE_SETTLED, previousSessionOpening: prior,
+                     accountBalance: 9999, fillsInSession: 0 }), false, String(prior));
+  }
+});
+
+test('nothing is solved while the opening balance is unknown', () => {
+  const out = ob.observeReading(evening({
+    prevDayBalance: TUE_OPENING, accountBalance: 6500, fillsInSession: 4 }));
+  const r = ob.resolveOpeningBalance({ sessionDate: WED, record: out.record });
+  assert.strictEqual(r.known, false);
+  assert.strictEqual(r.balance, null);
+  assert.match(r.reason, /overnight/);
+});
+
+test('the wait is explained in words Jim can act on', () => {
+  assert.match(ob.REASONS.notRolled, /check back in the morning/);
 });

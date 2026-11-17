@@ -37,7 +37,7 @@ const LIVE_BROKER = 'amp';
 /** Why an opening balance could not be recorded, in the order the checks run. */
 const REASONS = {
   unreadable: 'AMP did not report a previous day balance',
-  notRolled:  'AMP has not rolled its statement for this session yet',
+  notRolled:  'AMP updates its balance overnight — check back in the morning',
 };
 
 /** Raised while AMP's Balances table still carries the previous session's figures. */
@@ -76,19 +76,54 @@ function supersedes(existing) {
 /**
  * Whether AMP has rolled its statement into this session yet.
  *
- * At a session that has not traded, the account balance and the previous day's balance
- * are the same number — nothing has happened to separate them. If they differ, the
- * Balances table is still showing the last session's pair, and recording from it would
- * store the wrong day's opening balance. Once the session HAS traded the difference is
- * the day's P&L and proves nothing, so the check only applies before the first fill.
+ * TVCM-43 assumed the roll happens around 17:00, and so only checked before the first
+ * fill — "by then AMP has long since rolled". **That is false.** Jim (2026-11-17 15:54):
+ * AMP updates its Balances table early the NEXT MORNING, and on Monday at 17:07 it was
+ * still showing a prev day balance of 4,510.14. Measured again on 2026-11-17 at 17:05,
+ * five minutes after the session rolled: AMP still reported 5,474.29, Tuesday's opening.
+ *
+ * Jim often trades from 17:00. Under TVCM-43 his first evening fill would have switched
+ * the guard off — `fillsInSession > 0` meant "too late to tell" — and the next poll would
+ * have recorded YESTERDAY's opening balance as tonight's, silently, until the morning.
+ *
+ * So the primary evidence is no longer the clock or the fills. It is that **AMP's figure
+ * has visibly moved**: a prev day balance that still equals the PREVIOUS session's
+ * recorded opening balance is the previous session's figure, whatever time it is and
+ * however much has traded since.
+ *
+ * The no-fill equality check is kept as corroboration, and as the only evidence available
+ * when there is no previous session on record to compare against.
  */
 function hasRolled(input) {
   const i = input || {};
-  if (Number(i.fillsInSession) > 0) return true;        // too late to tell, and too late to matter
+  const prev = Number(i.prevDayBalance);
+  const priorRaw = i.previousSessionOpening;
+  const priorKnown = priorRaw !== null && priorRaw !== undefined && priorRaw !== ''
+    && Number.isFinite(Number(priorRaw));
+
+  if (priorKnown) {
+    // AMP still showing the previous session's opening means it has not rolled, whether
+    // or not anything has traded since.
+    if (Math.abs(prev - Number(priorRaw)) <= ROLL_TOLERANCE) return false;
+    // It has moved. With no fills yet, the pair must also agree — a rolled table at an
+    // untraded session has nothing to separate its two numbers.
+    return noFillsAgree(i);
+  }
+  // Nothing to compare against: the no-fill check is all the evidence there is.
+  return noFillsAgree(i);
+}
+
+/**
+ * The corroborating check: at a session that has not traded, the account balance and the
+ * previous day's balance are the same number. Once it HAS traded the difference is the
+ * day's own P&L and proves nothing either way.
+ */
+function noFillsAgree(input) {
+  const i = input || {};
+  if (Number(i.fillsInSession) > 0) return true;
   const acct = i.accountBalance;
-  const prev = i.prevDayBalance;
   if (acct === null || acct === undefined || acct === '') return true;   // nothing to check against
-  const a = Number(acct), p = Number(prev);
+  const a = Number(acct), p = Number(i.prevDayBalance);
   if (!Number.isFinite(a) || !Number.isFinite(p)) return true;
   return Math.abs(a - p) <= ROLL_TOLERANCE;
 }
@@ -193,5 +228,5 @@ function openingBalanceText(sessionDate, resolved) {
 module.exports = {
   LIVE_BROKER, REASONS, SOURCE_PREV_DAY, SOURCE_PP,
   NOT_ROLLED_CODE, CHANGED_CODE, ROLL_TOLERANCE,
-  supersedes, hasRolled, observeReading, resolveOpeningBalance, openingBalanceText,
+  supersedes, hasRolled, noFillsAgree, observeReading, resolveOpeningBalance, openingBalanceText,
 };

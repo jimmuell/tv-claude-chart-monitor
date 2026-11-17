@@ -74,7 +74,13 @@ export class OpeningBalanceStore {
     const mode = (info.mode === 'paper' ? 'paper' : 'live') as 'live' | 'paper';
     const sessionDate = String(info.sessionDate || '');
     if (!sessionDate) return null;
-    const decision = openingBalance.observeReading({ ...info, existing: this.get(mode, sessionDate) });
+    const decision = openingBalance.observeReading({
+      ...info,
+      existing: this.get(mode, sessionDate),
+      // The primary roll evidence: AMP still reporting the PREVIOUS session's opening
+      // means it has not rolled, whatever the time and however much has traded (TVCM-46).
+      previousSessionOpening: this.previousOpening(mode, sessionDate),
+    });
     if (decision.action === 'keep') return null;
     const rows = { ...this.all(mode), [sessionDate]: decision.record };
     this.save(mode, rows);
@@ -95,6 +101,17 @@ export class OpeningBalanceStore {
         `[opening-balance] TVCM-OB-UNKNOWN: ${sessionDate} — ${decision.record.reason}; the missing-fill banner will ask for a price instead of solving one`);
     }
     return decision.record;
+  }
+
+  /**
+   * The opening balance of the most recent settled session BEFORE this one, which is the
+   * figure AMP is still showing until it rolls. Null when there is no such record.
+   */
+  previousOpening(mode: 'live' | 'paper', sessionDate: string): number | null {
+    const earlier = Object.values(this.all(mode))
+      .filter(r => r && r.known && r.sessionDate < sessionDate && Number.isFinite(Number(r.balance)))
+      .sort((a, b) => (a.sessionDate < b.sessionDate ? 1 : -1));
+    return earlier.length > 0 ? Number(earlier[0].balance) : null;
   }
 
   /** Says a repeating condition once, so a 5-second poll cannot flood the log. */
