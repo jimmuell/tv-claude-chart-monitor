@@ -9,11 +9,12 @@ const openingBalance = sharedModule('opening-balance.js');
  * What each trading session opened with, kept in the app's user-data folder — one file
  * per mode, so a paper balance can never reach a live calculation.
  *
- * The decision of WHETHER to record is not made here; it lives in the pure module, which
- * will only ever record before the session has traded. This class's whole job is to
- * remember the answer, including the answer "unknown", which matters just as much: a
- * session that was first seen after trading began must stay unknown for the rest of the
- * day rather than pick up a balance from a later flat moment.
+ * The decision of WHETHER to record is not made here; it lives in the pure module. Since
+ * TVCM-42 the figure is AMP's own "Prev day balance", which is static for the session, so
+ * there is no moment it must be caught at. This class's whole job is to remember the
+ * answer, including the answer "unknown", which matters just as much — and to let a
+ * better source replace a worse one, which is what repairs a session recorded the
+ * TVCM-37 way without anybody editing a file.
  */
 export class OpeningBalanceStore {
   private dir: string;
@@ -76,7 +77,10 @@ export class OpeningBalanceStore {
     const rows = { ...this.all(mode), [sessionDate]: decision.record };
     this.save(mode, rows);
     if (decision.action === 'record') {
-      this.log(`[opening-balance] ${sessionDate} opened at $${decision.record.balance.toFixed(2)} (read while flat, before any fill)`);
+      const where = decision.record.source === 'prev-day-balance'
+        ? "from AMP's own Prev day balance"
+        : 'read while flat, before any fill';
+      this.log(`[opening-balance] ${sessionDate} opened at $${decision.record.balance.toFixed(2)} (${where})`);
     } else {
       this.log(`[opening-balance] TVCM-OB-UNKNOWN: ${sessionDate} — ${decision.record.reason}; the missing-fill banner will ask for a price instead of solving one`);
     }
