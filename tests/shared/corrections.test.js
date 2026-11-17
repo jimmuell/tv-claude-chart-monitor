@@ -222,3 +222,79 @@ test('the no-price banner says a price has to be entered', () => {
 test('no suggestion yields no banner', () => {
   assert.strictEqual(c.suggestionText(null), null);
 });
+
+// ── Rule 4: a correction never becomes a session on its own (TVCM-38/39) ──
+//
+// Jim's export stopped on the Friday. His Monday correction was the only row the export
+// path had for Monday, so applyCorrections() did not patch a session — it invented one:
+// a lone Buy 5, gross $0.00, fees $3.00, and "-$3.00" in the menu bar with no trade
+// behind it. These fixtures reproduce that shape.
+
+/** A Friday the export DOES cover, flat to flat. */
+const FRIDAY = [
+  fill('Buy',  5, 7600.00, '2026-11-13 09:00:00', 'F1'),
+  fill('Sell', 5, 7605.00, '2026-11-13 09:30:00', 'F2'),
+];
+
+test('a correction never becomes a session on its own', () => {
+  const { fills, appliedIds, withheld } = c.applyCorrections(FRIDAY, [missingExit()]);
+  assert.strictEqual(fills.length, FRIDAY.length, 'nothing was added');
+  assert.deepStrictEqual(appliedIds, []);
+  assert.deepStrictEqual(withheld, [missingExit().id]);
+
+  const priced = analyseFills(fills, { perContractSideFee: 0.60 });
+  assert.strictEqual(priced.sessions.find(s => s.sessionDate === '2026-11-16'), undefined,
+    'a day the source does not cover must not acquire a session');
+});
+
+test('the invented session was exactly what reached the menu bar', () => {
+  // What the old behaviour produced, pinned so it can never come back unnoticed.
+  const invented = analyseFills(FRIDAY.concat([c.correctionToFill(missingExit())]),
+    { perContractSideFee: 0.60 }).sessions.find(s => s.sessionDate === '2026-11-16');
+  assert.strictEqual(invented.netPnl, -3);
+  assert.strictEqual(invented.grossPnl, 0);
+  assert.strictEqual(invented.openPositionAtEnd, 5);
+  // And what the fix produces instead: no such session at all.
+  const now = c.analyseWithCorrections(FRIDAY, [missingExit()], { perContractSideFee: 0.60 });
+  assert.strictEqual(now.result.sessions.find(s => s.sessionDate === '2026-11-16'), undefined);
+  assert.deepStrictEqual(now.withheld, [missingExit().id]);
+});
+
+test('a withheld correction is kept, and applies the moment the day is covered', () => {
+  const list = [missingExit()];
+  assert.deepStrictEqual(c.applyCorrections(FRIDAY, list).withheld, [missingExit().id]);
+  // The same list, unchanged, against a source that does cover Monday.
+  const covered = c.applyCorrections(FRIDAY.concat(DAY), list);
+  assert.deepStrictEqual(covered.withheld, []);
+  assert.deepStrictEqual(covered.appliedIds, [missingExit().id]);
+  assert.strictEqual(list.length, 1, 'the correction was never removed from the file');
+});
+
+test('a day with records but no matching fill is still corrected, as before', () => {
+  // Rule 4 must not swallow the case the whole feature exists for.
+  const { appliedIds, withheld } = c.applyCorrections(DAY, [missingExit()]);
+  assert.deepStrictEqual(appliedIds, [missingExit().id]);
+  assert.deepStrictEqual(withheld, []);
+});
+
+test('withholding is judged per day, not across the whole set', () => {
+  const alsoFriday = c.makeCorrection({ side: 'Buy', qty: 1, price: 7601, status: 'added',
+                                        fillTime: '2026-11-13 09:15:00' });
+  const { appliedIds, withheld } = c.applyCorrections(FRIDAY, [missingExit(), alsoFriday]);
+  assert.deepStrictEqual(appliedIds, [alsoFriday.id], 'the covered day is corrected');
+  assert.deepStrictEqual(withheld, [missingExit().id], 'the uncovered day is not');
+});
+
+test('a correction held back is not reported as superseded', () => {
+  // The two outcomes mean different things: superseded is finished with, withheld is waiting.
+  const { superseded, withheld } = c.applyCorrections(FRIDAY, [missingExit()]);
+  assert.deepStrictEqual(superseded, []);
+  assert.deepStrictEqual(withheld, [missingExit().id]);
+});
+
+test('dayIsCovered answers the one question rule 4 asks', () => {
+  assert.strictEqual(c.dayIsCovered(DAY, '2026-11-16'), true);
+  assert.strictEqual(c.dayIsCovered(FRIDAY, '2026-11-16'), false);
+  assert.strictEqual(c.dayIsCovered([], '2026-11-16'), false);
+  assert.strictEqual(c.dayIsCovered(null, '2026-11-16'), false);
+});

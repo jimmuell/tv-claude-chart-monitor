@@ -325,6 +325,11 @@ export class LiveFeedReader {
         this.log(`[live-feed] recovered — reading ${this.mode} account ${payload.account ?? '?'} via ${source}()`);
         this.loggedCode = null;
       }
+      if ((corrected.withheld || []).length > 0) {
+        this.logOnce(corrections.NO_DAY_CODE,
+          `[live-feed] ${corrections.NO_DAY_CODE}: ${corrected.withheld.length} correction(s) held back — `
+          + 'the feed holds no rows for their day, so they would invent a session rather than correct one');
+      }
       if ((result.skipped || []).length > 0) {
         this.logOnce('TVCM-LF-SKIPPED', `[live-feed] TVCM-LF-SKIPPED: ${result.skipped.length} execution(s) could not be read — the current session is incomplete`);
       }

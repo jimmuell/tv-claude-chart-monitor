@@ -18,6 +18,13 @@
  *      'suggested' and only an explicit action makes it 'added'.
  *   3. **A real fill always wins.** When an export or statement later contains the fill,
  *      the inferred correction is superseded rather than counted twice.
+ *   4. **A correction supplements a day's records; it never constitutes them.** Applied to
+ *      a day the source does not cover at all, it would not patch a session — it would
+ *      invent one. On 2026-11-17 that put a lone Buy 5 into the menu bar as "-$3.00": one
+ *      contract-side of fees, no P&L and no trade behind it, because the newest export
+ *      stopped on the Friday and the only row it had for Monday was the correction
+ *      (TVCM-38). Such a correction is WITHHELD, not dropped — it stays in the file and
+ *      applies the moment a source covering that day arrives.
  *
  * Pure: no Electron, no filesystem, no clock of its own.
  */
@@ -30,6 +37,9 @@ const SOURCES = ['inferred from balance', 'entered by Jim', 'AMP statement'];
 
 /** A correction's life: suggested by TVCM, added by Jim, confirmed by a real record. */
 const STATUSES = ['suggested', 'added', 'confirmed'];
+
+/** Raised when a correction is held back because its day has no records to correct. */
+const NO_DAY_CODE = 'TVCM-CORR-NO-DAY';
 
 /** How close a real fill must be to supersede an inferred one. */
 const MATCH_PRICE_TOLERANCE = 0.25;      // one MES tick
@@ -106,10 +116,16 @@ function fillSupersedes(fill, c) {
   return Math.abs(a - b) <= MATCH_TIME_TOLERANCE_MS;
 }
 
+/** True when the supplied rows actually cover a day, so there is something to correct. */
+function dayIsCovered(fills, sessionDate) {
+  return (fills || []).some(f => f && f.sessionDate === sessionDate);
+}
+
 /**
  * Adds the corrections Jim has accepted to a set of real fills. Suggestions are not
- * applied — only 'added' and 'confirmed' are — and any correction a real fill has
- * overtaken is dropped, so the same trade can never be counted twice.
+ * applied — only 'added' and 'confirmed' are — any correction a real fill has overtaken is
+ * dropped, so the same trade can never be counted twice, and any correction whose day the
+ * rows do not cover at all is withheld rather than allowed to become a session of its own.
  */
 function applyCorrections(fills, corrections, options) {
   const opts = options || {};
@@ -117,25 +133,29 @@ function applyCorrections(fills, corrections, options) {
   const real = (fills || []).filter(Boolean);
   const applied = [];
   const superseded = [];
+  const withheld = [];
   for (const c of (corrections || []).filter(Boolean)) {
     if (c.mode !== mode) continue;
     if (c.status !== 'added' && c.status !== 'confirmed') continue;
+    // Rule 4. Checked before anything else: a day with no records has nothing to
+    // supersede the correction either, and nothing for it to supplement.
+    if (!dayIsCovered(real, c.sessionDate)) { withheld.push(c.id); continue; }
     if (real.some(f => fillSupersedes(f, c))) { superseded.push(c.id); continue; }
     applied.push(correctionToFill(c));
   }
-  return { fills: real.concat(applied), appliedIds: applied.map(f => f.correctionId), superseded };
+  return { fills: real.concat(applied), appliedIds: applied.map(f => f.correctionId), superseded, withheld };
 }
 
 /** The same fills priced through the engine, with Jim's accepted corrections included. */
 function analyseWithCorrections(fills, corrections, options) {
   const opts = options || {};
-  const { fills: merged, appliedIds, superseded } = applyCorrections(fills, corrections, opts);
+  const { fills: merged, appliedIds, superseded, withheld } = applyCorrections(fills, corrections, opts);
   const result = analyseFills(merged, {
     pointValue:         opts.pointValue == null ? MES_POINT_VALUE : opts.pointValue,
     perContractSideFee: opts.perContractSideFee == null ? DEFAULT_PER_CONTRACT_SIDE_FEE : opts.perContractSideFee,
     skipped: opts.skipped || [], errors: [],
   });
-  return { result, appliedIds, superseded };
+  return { result, appliedIds, superseded, withheld };
 }
 
 /** Removes one correction by id, leaving everything else untouched. */
@@ -217,7 +237,8 @@ function suggestionText(s) {
 }
 
 module.exports = {
-  SOURCES, STATUSES, MATCH_PRICE_TOLERANCE, MATCH_TIME_TOLERANCE_MS,
+  SOURCES, STATUSES, MATCH_PRICE_TOLERANCE, MATCH_TIME_TOLERANCE_MS, NO_DAY_CODE,
+  dayIsCovered,
   sessionDateForStamp, chicagoStamp,
   makeCorrection, correctionToFill, fillSupersedes,
   applyCorrections, analyseWithCorrections, removeCorrection,

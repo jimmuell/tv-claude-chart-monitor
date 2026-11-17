@@ -112,6 +112,8 @@ export class OrderImportWatcher {
   private lastFills: ImportedFill[] = [];
   /** The fills exactly as parsed from the export, so corrections can be re-applied
    *  without re-reading the file. */
+  /** The withheld ids last reported, so the same hold is not logged on every scan. */
+  private withheldKey: string | null = null;
   private lastRawFills: any[] = [];
   /** How each session's trade list relates to its statement total. */
   private lastBoundaries = new Map<string, SessionBoundary>();
@@ -326,10 +328,25 @@ export class OrderImportWatcher {
     const corrected = corrections.analyseWithCorrections(this.lastRawFills, this.corrections(), {
       mode: this.mode(), skipped: result.skipped,
     });
+    this.noteWithheld(corrected.withheld || []);
     // Always the analysed result, even with no corrections to apply: with none it is
     // simply the plain analysis of the same fills. Returning the caller's object instead
     // handed reapplyCorrections() a stub with no sessions and emptied the window.
     return { ...corrected.result, errors: result.errors, skipped: result.skipped };
+  }
+
+  /**
+   * Says once when a correction is being held back because this export does not cover its
+   * day. Silence here would leave Jim with a correction he added that changes nothing.
+   */
+  private noteWithheld(ids: string[]): void {
+    const key = ids.slice().sort().join(',');
+    if (key === this.withheldKey) return;
+    this.withheldKey = key;
+    if (ids.length === 0) return;
+    this.log(`[order-import] ${corrections.NO_DAY_CODE}: ${ids.length} correction(s) held back — `
+      + `this export does not cover their day, so they would invent a session rather than correct one. `
+      + `They stay recorded and apply as soon as an export covering that day arrives. (${ids.join(', ')})`);
   }
 
   /**
