@@ -140,6 +140,34 @@ class TvReader {
     this._lastSeenBarTime = null;
   }
 
+  /**
+   * Called the moment the underlying socket closes, so a connection that dies between
+   * polls is noticed at once rather than at the next failed read (TVCM-40).
+   */
+  onDisconnect(cb) {
+    this._onDisconnect = typeof cb === 'function' ? cb : null;
+  }
+
+  /** The CDP target this reader is attached to, so a page swap can be spotted. */
+  targetId() {
+    return this.target ? String(this.target.id) : null;
+  }
+
+  /**
+   * The id of the TradingView page target as it stands NOW, or null when there is none.
+   * A different id means TradingView opened a new page and this reader is attached to a
+   * window that no longer exists.
+   */
+  async liveTargetId() {
+    const { cdpHost, cdpPort } = this.config.tv;
+    const targets = await CDP.List({ host: cdpHost, port: cdpPort });
+    const page = targets.find(
+      (t) => t.type === "page" &&
+             (t.url.includes("tradingview") || (t.title || '').toLowerCase().includes("tradingview"))
+    );
+    return page ? String(page.id) : null;
+  }
+
   async connect() {
     const { cdpHost, cdpPort } = this.config.tv;
     const targets = await CDP.List({ host: cdpHost, port: cdpPort });
@@ -157,6 +185,11 @@ class TvReader {
     }
     this.target = pageTarget;
     this.client = await CDP({ host: cdpHost, port: cdpPort, target: pageTarget });
+    // A socket that dies on its own says so here. Without this the first anyone knew was
+    // the next failed read, and before TVCM-41 not even that (TVCM-40 §4.1).
+    this.client.on('disconnect', () => {
+      if (this._onDisconnect) this._onDisconnect();
+    });
     await this.client.Runtime.enable();
     await this.client.Page.enable();
     this.logger.info(`[tv-reader] connected to ${pageTarget.title}`);
@@ -700,6 +733,11 @@ class MockTvReader {
   }
   async connect() { this.logger.info("[mock-tv-reader] using synthetic data"); return true; }
   async disconnect() {}
+  /** The mock never loses a socket, so the hook is accepted and never fired. */
+  onDisconnect(_cb) {}
+  /** A stable fake target id, so target-change detection has something to compare. */
+  targetId() { return 'mock-target'; }
+  async liveTargetId() { return 'mock-target'; }
   async evalPage() { return null; }
   async setStudyInputs(_studyId, _partialUpdate) { return { ok: true, shape: "mock" }; }
   async createAlert(_price, _label, _symbol, _resolution) {

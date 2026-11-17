@@ -103,11 +103,40 @@ function loadConfig(): AppConfig {
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+const { createCdpManager } = require(path.join(app.getAppPath(), 'src/shared/cdp-manager.js')) as {
+  createCdpManager: (opts: Record<string, unknown>) => CdpManager;
+};
+
+export interface CdpStatus {
+  state: 'idle' | 'connected' | 'lost';
+  connected: boolean;
+  since: number | null;
+  lostAt: number | null;
+  attempts: number;
+  nextAttemptAt: number;
+  lastError: string | null;
+  description: string;
+}
+interface CdpManager {
+  withReader<T>(fn: (r: ReturnType<typeof createReader>) => Promise<T>): Promise<T>;
+  ensureConnected(): Promise<void>;
+  reset(): void;
+  close(): Promise<void>;
+  isConnected(): boolean;
+  status(): CdpStatus;
+  peekReader(): ReturnType<typeof createReader> | null;
+}
+
 const { createReader, PRICE_POLL_EXPR } = require(path.join(app.getAppPath(), 'src/shared/tv-reader')) as {
   PRICE_POLL_EXPR: string;
   createReader: (config: AppConfig, log: Logger) => {
     connect():                                    Promise<boolean>;
     disconnect():                                 Promise<void>;
+    /** Fires when the socket closes on its own, so an outage is seen at once. */
+    onDisconnect(cb: () => void):                 void;
+    /** The target this reader is attached to, and the live one, for page-swap detection. */
+    targetId():                                   string | null;
+    liveTargetId():                               Promise<string | null>;
     readSnapshot(opts?: { barCount?: number }):   Promise<unknown>;
     readBarState():                               Promise<unknown>;
     hasNewClose(snapshot: unknown):               boolean;
@@ -148,9 +177,43 @@ export function setLessonsProvider(fn: LessonsProvider): void {
 }
 
 let config: AppConfig = loadConfig();
-let reader: ReturnType<typeof createReader> | null = null;
 let engine: InstanceType<typeof CommentaryEngine> | null = null;
-let connected = false;
+
+/**
+ * The single connection manager every reader goes through. Before TVCM-41 each call site
+ * owned a little of this logic, and the one that owned none of it blinded the app for
+ * fourteen hours (TVCM-40 §4.1).
+ */
+const manager: CdpManager = createCdpManager({
+  createReader,
+  config: () => {
+    // Reloaded on every connect so hot-editing config.json — or the port setting — takes
+    // effect without a restart.
+    config = loadConfig();
+    return _cdpPortOverride === null
+      ? config
+      : { ...config, tv: { ...config.tv, cdpPort: _cdpPortOverride } };
+  },
+  logger,
+  onStatus: (s: string) => sendStatus(s),
+});
+
+/** What the tooltip and the panel need to say about the connection, in one object. */
+export function connectionState(): CdpStatus {
+  return manager.status();
+}
+
+/** One call against the reader, with the connection managed around it. */
+function withReader<T>(fn: (r: ReturnType<typeof createReader>) => Promise<T>): Promise<T> {
+  return manager.withReader(fn);
+}
+
+/** Ensure the CommentaryEngine is initialised. */
+function ensureEngine(): void {
+  if (!engine) {
+    engine = new CommentaryEngine(resolveLlm(config), logger);
+  }
+}
 
 let statusCallback: ((status: string) => void) | null = null;
 
@@ -170,9 +233,9 @@ export function setStatusCallback(cb: (status: string) => void): void {
 
 export function setCdpPort(port: number | null): void {
   _cdpPortOverride = port;
-  void (reader?.disconnect().catch(() => {}));
-  connected = false;
-  reader = null;
+  // A deliberate port change is not an outage: the backoff starts clean so the first
+  // attempt on the new port happens at once.
+  manager.reset();
 }
 
 export function setApiKeyOverride(key: string): void {
@@ -189,9 +252,7 @@ export function setApiKeyOverride(key: string): void {
 }
 
 export function resetConnection(): void {
-  void (reader?.disconnect().catch(() => {}));
-  connected = false;
-  reader = null;
+  manager.reset();
 }
 
 export function getKeyStatus(): KeyStatus {
@@ -206,62 +267,13 @@ function sendStatus(status: string): void {
   }
 }
 
-/** Ensure the reader is initialised and connected. */
-async function ensureConnected(): Promise<void> {
-  // Reload config each time so hot-editing config.json takes effect.
-  config = loadConfig();
-  if (_cdpPortOverride !== null) {
-    config = { ...config, tv: { ...config.tv, cdpPort: _cdpPortOverride } };
-  }
-
-  if (!reader) {
-    reader = createReader(config, logger);
-  }
-
-  if (!connected) {
-    sendStatus('Connecting to TradingView...');
-    try {
-      await reader.connect();
-      connected = true;
-    } catch (err: unknown) {
-      connected = false;
-      reader = null; // force re-create on next attempt
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.toLowerCase().includes('connection refused') || msg.toLowerCase().includes('econnrefused')) {
-        throw new Error(
-          'Cannot connect to TradingView. Launch TradingView Desktop with: --remote-debugging-port=9222',
-        );
-      }
-      throw err;
-    }
-  }
-}
-
-/** Ensure the CommentaryEngine is initialised. */
-function ensureEngine(): void {
-  if (!engine) {
-    engine = new CommentaryEngine(resolveLlm(config), logger);
-  }
-}
-
 export async function runAnalysis(): Promise<AnalysisResult> {
   const analysisStartedAt = Date.now();
-  try {
-    await ensureConnected();
-  } catch (err: unknown) {
-    connected = false;
-    reader = null;
-    throw err;
-  }
-
   sendStatus('Reading chart data...');
   let snapshot: unknown;
   try {
-    snapshot = await reader!.readSnapshot({ barCount: 300 });
+    snapshot = await withReader(r => r.readSnapshot({ barCount: 300 }));
   } catch (err: unknown) {
-    // Treat any read error as a lost connection so we reconnect next time.
-    connected = false;
-    reader = null;
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.toLowerCase().includes('connection refused') || msg.toLowerCase().includes('econnrefused')) {
       throw new Error(
@@ -333,8 +345,7 @@ export async function runAnalysis(): Promise<AnalysisResult> {
  */
 export async function peekBarState(): Promise<BarState | null> {
   try {
-    await ensureConnected();
-    const raw = await reader!.readBarState();
+    const raw = await withReader(r => r.readBarState());
     if (!raw || typeof raw !== 'object') return null;
     const s = raw as Partial<BarState>;
     if (typeof s.closedBarTime !== 'number') return null;
@@ -349,35 +360,14 @@ export async function peekBarState(): Promise<BarState | null> {
 }
 
 export async function getSnapshot(): Promise<unknown> {
-  try {
-    await ensureConnected();
-  } catch (err: unknown) {
-    connected = false;
-    reader = null;
-    throw err;
-  }
-
-  try {
-    return await reader!.readSnapshot({ barCount: 300 });
-  } catch (err: unknown) {
-    connected = false;
-    reader = null;
-    throw err;
-  }
+  return withReader(r => r.readSnapshot({ barCount: 300 }));
 }
 
 export async function callSetStudyInputs(
   studyId: string,
   patch: Record<string, unknown>,
 ): Promise<{ok: boolean; error?: string}> {
-  try {
-    await ensureConnected();
-  } catch (err: unknown) {
-    connected = false;
-    reader = null;
-    throw err;
-  }
-  return reader!.setStudyInputs(studyId, patch);
+  return withReader(r => r.setStudyInputs(studyId, patch));
 }
 
 /** The model id the active LLM block is configured to use, for provenance on saved calls. */
@@ -397,15 +387,18 @@ export async function peekBars(barCount = 300): Promise<{
   symbol: string; timeframe: string; replayMode: boolean;
   candles: Array<{ time: number; open: number; high: number; low: number; close: number }>;
 } | null> {
-  try {
-    await ensureConnected();
-  } catch {
-    return null;
-  }
-  const snap = (await reader!.readSnapshot({ barCount })) as {
+  let snap: {
     symbol?: string; timeframe?: string; replayMode?: boolean; readError?: string;
     candles?: Array<{ time: number; open: number; high: number; low: number; close: number }>;
   } | null;
+  try {
+    snap = (await withReader(r => r.readSnapshot({ barCount }))) as {
+    symbol?: string; timeframe?: string; replayMode?: boolean; readError?: string;
+      candles?: Array<{ time: number; open: number; high: number; low: number; close: number }>;
+    } | null;
+  } catch {
+    return null;
+  }
   if (!snap || snap.readError || !Array.isArray(snap.candles) || snap.candles.length === 0) {
     return null;
   }
@@ -423,48 +416,21 @@ export function getPricePollExpr(): string {
 }
 
 export async function evalPage(expression: string): Promise<unknown> {
-  try {
-    await ensureConnected();
-  } catch (err: unknown) {
-    connected = false;
-    reader = null;
-    throw err;
-  }
-  return reader!.evalPage(expression);
+  return withReader(r => r.evalPage(expression));
 }
 
 export async function createLevelAlert(
   price: number,
   label: string,
 ): Promise<AlertCreateResult> {
-  try {
-    await ensureConnected();
-  } catch (err: unknown) {
-    connected = false;
-    reader    = null;
-    throw err;
-  }
-  let symbol: string;
-  let resolution: string;
-  try {
-    symbol     = await reader!.evalPage("window.TradingViewApi.activeChart().symbol()") as string;
-    resolution = await reader!.evalPage("window.TradingViewApi.activeChart().resolution()") as string;
-  } catch (err: unknown) {
-    connected = false;
-    reader    = null;
-    throw err;
-  }
-  return reader!.createAlert(price, label, symbol, resolution) as Promise<AlertCreateResult>;
+  return withReader(async (r) => {
+    const symbol     = await r.evalPage("window.TradingViewApi.activeChart().symbol()") as string;
+    const resolution = await r.evalPage("window.TradingViewApi.activeChart().resolution()") as string;
+    return r.createAlert(price, label, symbol, resolution) as Promise<AlertCreateResult>;
+  });
 }
 
 export async function findStudyId(nameContains: string): Promise<string | null> {
-  try {
-    await ensureConnected();
-  } catch (err: unknown) {
-    connected = false;
-    reader = null;
-    throw err;
-  }
   const name = JSON.stringify(nameContains);
   const expr = `
     (() => {
@@ -478,18 +444,10 @@ export async function findStudyId(nameContains: string): Promise<string | null> 
       } catch { return null; }
     })()
   `;
-  const result = await reader!.evalPage(expr);
+  const result = await withReader(r => r.evalPage(expr));
   return typeof result === 'string' && result ? result : null;
 }
 
 export async function disconnect(): Promise<void> {
-  if (reader && connected) {
-    try {
-      await reader.disconnect();
-    } catch (_) {
-      // ignore errors on disconnect
-    }
-  }
-  connected = false;
-  reader = null;
+  await manager.close();
 }
