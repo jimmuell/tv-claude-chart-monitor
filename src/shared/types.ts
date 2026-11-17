@@ -20,6 +20,7 @@ export const IPC = {
   ANNOTATE_TRADE_PLAN:       'annotate:tradePlan',
   ANNOTATE_CLEAR_TRADE_PLAN: 'annotate:clearTradePlan',
   SETTINGS_GET:              'settings:get',
+  AI_WINDOW_STATUS:          'ai:windowStatus',
   SETTINGS_UPDATE:           'settings:update',
   SCHEDULER_PAUSE:           'scheduler:pause',
   SCHEDULER_RESUME:          'scheduler:resume',
@@ -433,8 +434,11 @@ export interface AppSettings {
   persistLevels:       boolean;
   notifications:       boolean;
   autoTrade:           boolean;  // auto-submit market order on valid_long / valid_short
-  /** AI chart analysis. Off since TVCM-44: nothing may reach an LLM while it is false. */
+  /** AI chart analysis at all. On by default; a kill switch rather than the budget. */
   aiAnalysisEnabled:   boolean;
+  /** America/Chicago "HH:MM". Inside this window the scheduler may analyse on bar close. */
+  aiAutoWindowStart:   string;
+  aiAutoWindowEnd:     string;
   autoTradeTestMode:   boolean;  // show Long/Short quick-fire buttons in panel header
   autoTradeStopDollars:   number;  // stop loss in $ per contract (default 15.00)
   autoTradeTargetDollars: number;  // take profit in $ per contract (default 30.00)

@@ -9,8 +9,13 @@ const DEFAULTS: AppSettings = {
   persistLevels:         false,
   notifications:         true,
   autoTrade:             false,
-  // Off by default: a setting that costs money per tick has to be asked for (TVCM-44).
-  aiAnalysisEnabled:     false,
+  // On by default since TVCM-46: the spending is bounded by the window below rather
+  // than by this switch, which is now only a kill switch.
+  aiAnalysisEnabled:     true,
+  // America/Chicago. Inside it the scheduler analyses on bar close; outside it only
+  // Jim pressing Refresh makes a call.
+  aiAutoWindowStart:     '07:30',
+  aiAutoWindowEnd:       '16:30',
   autoTradeTestMode:     false,
   autoTradeStopDollars:   15.00,
   autoTradeTargetDollars: 30.00,

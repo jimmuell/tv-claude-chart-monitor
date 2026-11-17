@@ -643,7 +643,16 @@ type UIStatus = 'idle' | 'loading' | 'complete' | 'error';
 const App: React.FC = () => {
   const [view, setView]                     = useState<'analysis' | 'settings'>('analysis');
   /** AI chart analysis. Off since TVCM-44; the panel says so instead of showing nothing. */
-  const [aiEnabled, setAiEnabled]           = useState(false);
+  /** AI chart analysis at all. On by default since TVCM-46; the window bounds the cost. */
+  const [aiEnabled, setAiEnabled]           = useState(true);
+  /**
+   * Whether the scheduler would analyse on its own right now, and the sentence to show
+   * when it would not. Both come from the MAIN process: the rule is one CommonJS module,
+   * which the renderer must never import — doing so blanked this panel with
+   * "module is not defined" (TVCM-46).
+   */
+  const [autoWindowOpen, setAutoWindowOpen]         = useState(true);
+  const [autoWindowSentence, setAutoWindowSentence] = useState('');
   const [uiStatus, setUiStatus]             = useState<UIStatus>('idle');
   const [loadingMessage, setLoadingMessage] = useState('');
   const [result, setResult]                 = useState<AnalysisResult | null>(null);
@@ -694,8 +703,23 @@ const App: React.FC = () => {
       setAutoTradeTestMode(s.autoTradeTestMode);
       setAutoTradeStopDollars(s.autoTradeStopDollars ?? 15);
       setAutoTradeTargetDollars(s.autoTradeTargetDollars ?? 30);
-      setAiEnabled(s.aiAnalysisEnabled === true);
+      setAiEnabled(s.aiAnalysisEnabled !== false);
     }).catch(() => {/* ignore */});
+  }, []);
+
+  // The window opens and closes while the panel is sitting there, so it is re-read on a
+  // minute timer rather than only on mount.
+  useEffect(() => {
+    let alive = true;
+    const read = () => window.api.getAiWindowStatus().then(w => {
+      if (!alive) return;
+      setAutoWindowOpen(w.autoOpen);
+      setAutoWindowSentence(w.sentence);
+      setAiEnabled(w.enabled);
+    }).catch(() => {});
+    read();
+    const t = setInterval(read, 60_000);
+    return () => { alive = false; clearInterval(t); };
   }, []);
 
   // Poll cooldown status every 5 s so the Del CD button colour stays current
@@ -836,8 +860,8 @@ const App: React.FC = () => {
         setAutoTradeTestMode(s.autoTradeTestMode);
         setAutoTradeStopDollars(s.autoTradeStopDollars ?? 15);
         setAutoTradeTargetDollars(s.autoTradeTargetDollars ?? 30);
-        setAiEnabled(s.aiAnalysisEnabled === true);
-      }).catch(() => {});
+        setAiEnabled(s.aiAnalysisEnabled !== false);
+        }).catch(() => {});
     }
   }, [view]);
 
@@ -1091,8 +1115,8 @@ const App: React.FC = () => {
         </div>
       );
     }
-    // Ahead of every other state: with AI off there is no loading, no error and no card
-    // to report, and the reason is the only useful thing on screen (TVCM-44).
+    // With AI switched off entirely there is no loading, no error and no card to report,
+    // and the reason is the only useful thing on screen.
     if (!aiEnabled) {
       return (
         <div className="body">
@@ -1104,6 +1128,19 @@ const App: React.FC = () => {
           <p className="ai-off-note dim">
             P&amp;L, the live feed, the menu bar and the Order History window are unaffected —
             they have never used AI.
+          </p>
+        </div>
+      );
+    }
+    // AI is on, but nothing has been analysed yet and the scheduler will not do it on its
+    // own right now. Say which hours it would, and what to press meanwhile (TVCM-46).
+    if (!result && uiStatus !== 'loading' && uiStatus !== 'error' && !autoWindowOpen) {
+      return (
+        <div className="body">
+          <p className="ai-off-title">{autoWindowSentence}</p>
+          <p className="ai-off-note">
+            Outside those hours TVCM does not analyse on its own, so nothing is sent to an
+            AI provider on a timer. Refresh runs one analysis whenever you want it.
           </p>
         </div>
       );
@@ -1301,7 +1338,7 @@ const App: React.FC = () => {
               className="refresh-btn"
               onClick={handleRefresh}
               disabled={uiStatus === 'loading' || !aiEnabled}
-              title={aiEnabled ? 'Run an analysis now' : 'AI analysis is off'}
+              title={aiEnabled ? 'Run one analysis now' : 'AI analysis is off'}
             >
               {!aiEnabled ? 'AI off' : uiStatus === 'loading' ? 'Loading...' : 'Refresh'}
             </button>

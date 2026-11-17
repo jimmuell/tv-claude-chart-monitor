@@ -38,6 +38,11 @@ function intervalForTimeframe(timeframe: string): number | null {
 // ---------------------------------------------------------------------------
 
 export class Scheduler {
+  /** How many ticks were skipped because auto-analysis was outside its window. */
+  private _skippedForWindow = 0;
+  /** How many ticks have been skipped, for the log and for tests. */
+  skippedForWindow(): number { return this._skippedForWindow; }
+
   private readonly onAnalysis: (result: AnalysisResult) => void;
   private readonly onError: (err: Error) => void;
   private readonly onStatus: (status: string) => void;
@@ -179,7 +184,26 @@ export class Scheduler {
     this._scheduleReplayPoll();
   }
 
+  /**
+   * Whether an AUTOMATIC analysis is allowed right now. Supplied by index.ts from the
+   * settings; a scheduler that is never told refuses, so it cannot spend by default.
+   */
+  private _autoAllowed: () => boolean = () => false;
+
+  /** Sets the permission the scheduler asks before every automatic analysis. */
+  setAutoGate(fn: () => boolean): void {
+    this._autoAllowed = fn;
+  }
+
   private _execute(): void {
+    // Outside the automatic window the scheduler makes NO call: it does not queue one and
+    // it does not make one late. It keeps its own clock so it resumes at the next bar
+    // once the window opens (TVCM-46).
+    if (!this._autoAllowed()) {
+      this._skippedForWindow += 1;
+      this._scheduleNext(this._lastIntervalMs);
+      return;
+    }
     runAnalysis()
       .then((result: AnalysisResult) => {
         this.onAnalysis(result);

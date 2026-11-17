@@ -11,6 +11,7 @@ declare global {
       toggleLevel(slotIndex: number, price: number, kind: string, label: string, visible: number, priority: string): Promise<void>;
       drawAllLevels(levels: LevelAnnotation[]): Promise<void>;
       clearAllLevels(): Promise<void>;
+      getAiWindowStatus(): Promise<{ enabled: boolean; autoOpen: boolean; sentence: string }>;
       getSettings(): Promise<AppSettings>;
       updateSettings(partial: Partial<AppSettings>): Promise<AppSettings>;
       pauseScheduler(): Promise<void>;

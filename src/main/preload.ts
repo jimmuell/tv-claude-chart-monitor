@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke(IPC.ANNOTATE_DRAW_ALL, levels),
   clearAllLevels: () =>
     ipcRenderer.invoke(IPC.ANNOTATE_CLEAR_ALL),
+  /** Whether the scheduler would analyse on its own right now, and the sentence to show
+   *  when it would not. Computed in the main process so the window rule lives in one
+   *  place — the gate is CommonJS and must never be imported by the renderer (TVCM-46). */
+  getAiWindowStatus: (): Promise<{ enabled: boolean; autoOpen: boolean; sentence: string }> =>
+    ipcRenderer.invoke(IPC.AI_WINDOW_STATUS),
   getSettings: (): Promise<AppSettings> =>
     ipcRenderer.invoke(IPC.SETTINGS_GET),
   updateSettings: (partial: Partial<AppSettings>): Promise<AppSettings> =>

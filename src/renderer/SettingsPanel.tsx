@@ -254,9 +254,34 @@ const SettingsPanel: React.FC = () => {
         </div>
         <div className="settings-row">
           <span className="settings-label settings-label-wrap">
-            Off since 2026-11-17. While it is off nothing is sent to an AI provider, the
+            The kill switch. While it is off nothing is sent to an AI provider at all, the
             scheduler does not run and nothing is drawn on the chart. P&amp;L, the live
             feed and the menu bar never used AI and are unaffected.
+          </span>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Auto from (CT)</span>
+          <input
+            type="time"
+            className="settings-input settings-input-sm"
+            value={settings.aiAutoWindowStart ?? '07:30'}
+            onChange={e => { if (e.target.value) update({ aiAutoWindowStart: e.target.value }); }}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Auto until (CT)</span>
+          <input
+            type="time"
+            className="settings-input settings-input-sm"
+            value={settings.aiAutoWindowEnd ?? '16:30'}
+            onChange={e => { if (e.target.value) update({ aiAutoWindowEnd: e.target.value }); }}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label settings-label-wrap">
+            Inside these hours, on Mon&ndash;Fri, TVCM analyses on each bar close. Outside
+            them it makes no call on its own &mdash; Refresh still runs one whenever you
+            press it.
           </span>
         </div>
 

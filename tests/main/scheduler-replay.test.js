@@ -55,6 +55,9 @@ test('a failed analysis in replay retries on the 3s replay poll, not the live in
   global.setTimeout = (cb, ms) => { delays.push(ms); return realSetTimeout(() => {}, 0); };
   try {
     const s = new Scheduler(() => {}, () => {}, () => {}, () => {});
+    // TVCM-46: a scheduler nobody tells refuses to analyse, so these tests — which
+    // are about cadence, not permission — have to grant it explicitly.
+    s.setAutoGate(() => true);
     s.start();                       // start() executes immediately
     for (let i = 0; i < 8; i++) await flush();
     s.stop();
@@ -78,6 +81,9 @@ test('a failed analysis in LIVE mode still backs off to the normal interval', as
   global.setTimeout = (cb, ms) => { delays.push(ms); return realSetTimeout(() => {}, 0); };
   try {
     const s = new Scheduler(() => {}, () => {}, () => {}, () => {});
+    // TVCM-46: a scheduler nobody tells refuses to analyse, so these tests — which
+    // are about cadence, not permission — have to grant it explicitly.
+    s.setAutoGate(() => true);
     s.start();
     for (let i = 0; i < 8; i++) await flush();
     s.stop();
@@ -101,10 +107,24 @@ test('a successful replay analysis keeps the replay cadence', async () => {
   global.setTimeout = (cb, ms) => { delays.push(ms); return realSetTimeout(() => {}, 0); };
   try {
     const s = new Scheduler(() => {}, () => {}, () => {}, () => {});
+    // TVCM-46: a scheduler nobody tells refuses to analyse, so these tests — which
+    // are about cadence, not permission — have to grant it explicitly.
+    s.setAutoGate(() => true);
     s.start();
     for (let i = 0; i < 8; i++) await flush();
     s.stop();
   } finally { global.setTimeout = realSetTimeout; }
 
   assert.ok(delays.includes(3000), `expected the 3s replay poll, got ${JSON.stringify(delays)}`);
+});
+
+test('a scheduler that was never granted permission does not analyse (TVCM-46)', () => {
+  // The safety property behind the automatic window: the permission is injected, and its
+  // absence means no. A scheduler wired up by a caller that forgets cannot spend money.
+  const s = new Scheduler(() => {}, () => {}, () => {}, () => {});
+  s._lastIntervalMs = 1000;
+  s._running = true;
+  s._execute();
+  assert.strictEqual(s.skippedForWindow(), 1, 'the tick must be skipped, not run');
+  s.stop();
 });

@@ -300,12 +300,14 @@ function maybeAutostartScheduler(): void {
 }
 
 function startSchedulerOnce(): void {
-  // Nothing timed runs while AI analysis is off — a scheduler that wakes up only to be
-  // refused is still a scheduler nobody asked for (TVCM-44).
+  // The scheduler runs whenever AI is on at all; its per-tick gate decides whether each
+  // bar close actually costs anything (TVCM-46). Only the kill switch stops it entirely.
   if (!aiGate.aiAllowed(getSettings())) {
     console.log(`[scheduler] ${aiGate.AI_OFF_MESSAGE} — not starting`);
     return;
   }
+  const status = aiGate.autoStatusText(getSettings(), Date.now());
+  if (status) console.log(`[scheduler] ${status}`);
   if (!schedulerStarted) {
     schedulerStarted = true;
     if (getSettings().autoRefresh !== false) {
@@ -710,8 +712,13 @@ const { mergePnl, mergedToImportState } = sharedModule('pnl-merge.js') as {
 
 const aiGate = sharedModule('ai-gate.js') as {
   AI_OFF_MESSAGE: string; AI_OFF_REASON: string; AI_OFF_CODE: string;
+  AI_OUTSIDE_WINDOW_CODE: string;
   aiAllowed: (settings: unknown) => boolean;
+  aiAutoAllowed: (settings: unknown, now?: number) => boolean;
+  aiManualAllowed: (settings: unknown) => boolean;
   aiOffReason: (settings: unknown) => string | null;
+  autoWindowText: (settings: unknown) => string;
+  autoStatusText: (settings: unknown, now?: number) => string | null;
 };
 
 const correctionsLib = sharedModule('corrections.js') as {
@@ -1190,6 +1197,9 @@ app.on('ready', () => {
       mainWindow?.webContents.send(IPC.SCHEDULER_NEXT_TICK, nextMs);
     },
   );
+  // The per-tick permission: inside the automatic window, on a trading weekday, with AI
+  // on at all. Outside it the scheduler keeps its clock and makes no call (TVCM-46).
+  scheduler.setAutoGate(() => aiGate.aiAutoAllowed(getSettings(), Date.now()));
 
   maybeAutostartScheduler();
 
@@ -1202,9 +1212,9 @@ app.on('ready', () => {
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, status);
     });
     try {
-      // Refresh Now is disabled in the panel while AI is off; this is the same refusal
-      // from the other side, so an IPC call that arrives anyway cannot spend anything.
-      if (!aiGate.aiAllowed(getSettings())) {
+      // Manual is always allowed while AI is on — Jim pressing Refresh IS the decision
+      // to spend, inside the window or outside it. Only the kill switch refuses here.
+      if (!aiGate.aiManualAllowed(getSettings())) {
         mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'error', aiGate.AI_OFF_REASON);
         throw new Error(`${aiGate.AI_OFF_CODE}: ${aiGate.AI_OFF_REASON}`);
       }
@@ -1240,6 +1250,14 @@ app.on('ready', () => {
   });
 
   // IPC: settings
+  ipcMain.handle(IPC.AI_WINDOW_STATUS, () => {
+    const settings = getSettings();
+    return {
+      enabled:  aiGate.aiAllowed(settings),
+      autoOpen: aiGate.aiAutoAllowed(settings, Date.now()),
+      sentence: aiGate.autoWindowText(settings),
+    };
+  });
   ipcMain.handle(IPC.SETTINGS_GET, () => getSettings());
   ipcMain.handle(IPC.SETTINGS_UPDATE, (_e, partial: Partial<import('../shared/types').AppSettings>) => {
     const updated = { ...getSettings(), ...partial };
