@@ -341,11 +341,18 @@ const CorrectionList: React.FC<{ corrections: any[]; onRemove: (id: string) => v
     <div className="corrections">
       <div className="perday-title">Added fills — missing from TradingView&rsquo;s records</div>
       {corrections.map(c => (
-        <div key={c.id} className="correction-row">
-          <span>{view.fmtDayStamp(c.fillTime)} · {c.side} {c.qty} @ {Number(c.price).toFixed(2)}</span>
+        <div key={c.id} className={`correction-row${c.needsReview ? ' needs-review' : ''}`}>
+          <span>
+            {view.fmtDayStamp(c.fillTime)} · {c.side} {c.qty} @ {Number(c.price).toFixed(2)}
+            {/* Flagged, never removed: whether a correction stays is Jim's decision. */}
+            {c.needsReview && <span className="review-flag" title={c.reviewText}>NEEDS REVIEW</span>}
+          </span>
           <span className="dim">{c.source}</span>
           <button className="btn-link" onClick={() => onRemove(c.id)}>Remove</button>
         </div>
+      ))}
+      {corrections.filter(c => c.needsReview).map(c => (
+        <p key={`${c.id}-why`} className="review-note">{c.reviewText}</p>
       ))}
     </div>
   );

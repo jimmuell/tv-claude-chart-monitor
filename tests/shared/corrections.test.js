@@ -298,3 +298,140 @@ test('dayIsCovered answers the one question rule 4 asks', () => {
   assert.strictEqual(c.dayIsCovered([], '2026-11-16'), false);
   assert.strictEqual(c.dayIsCovered(null, '2026-11-16'), false);
 });
+
+// ── A suggestion must be a price that could have traded (TVCM-42) ────────
+//
+// On 2026-11-17 the solve offered **Buy 1 @ 7,375.67** and Jim accepted it. MES trades in
+// quarter points; 7,375.67 has never printed. It came out because the broker gross it was
+// solved against was wrong by a day of fees (219.60) — and an impossible answer is the
+// loudest possible signal that an input is wrong, so it must never be offered as advice.
+
+test('the price that was actually offered is rejected', () => {
+  const v = c.validateSuggestion({ price: 7375.67, qty: 1, imbalanceQty: -1 });
+  assert.strictEqual(v.ok, false);
+  assert.match(v.problems.join(' '), /not on a 0\.25 tick/);
+});
+
+test('quarter points pass and anything between them does not', () => {
+  for (const p of [7375.00, 7375.25, 7375.50, 7375.75, 7376.00, 0.25, 12345.75]) {
+    assert.strictEqual(c.onTick(p), true, String(p));
+  }
+  for (const p of [7375.67, 7375.1, 7375.3, 7375.99, 7375.125]) {
+    assert.strictEqual(c.onTick(p), false, String(p));
+  }
+});
+
+test('a tick check survives floating point', () => {
+  // 0.1 + 0.15 is not exactly 0.25 in binary, and the solve divides before it rounds.
+  assert.strictEqual(c.onTick(0.1 + 0.15), true);
+  assert.strictEqual(c.onTick(7331.7499999999), true);
+  assert.strictEqual(c.onTick(7331.74), false);
+});
+
+test('the size must equal the imbalance, not merely be a number', () => {
+  assert.strictEqual(c.validateSuggestion({ price: 7331.75, qty: 1, imbalanceQty: -1 }).ok, true);
+  const v = c.validateSuggestion({ price: 7331.75, qty: 5, imbalanceQty: -1 });
+  assert.strictEqual(v.ok, false);
+  assert.match(v.problems.join(' '), /size is 5 but the rows are out by 1/);
+});
+
+test('a price outside the bar it claims to have traded in is rejected', () => {
+  const bar = { time: Date.parse('2026-11-17T19:53:00Z') / 1000, low: 7340, high: 7350 };
+  assert.strictEqual(c.validateSuggestion({ price: 7345.00, qty: 1, imbalanceQty: -1, bar }).ok, true);
+  assert.strictEqual(c.validateSuggestion({ price: 7340.00, qty: 1, imbalanceQty: -1, bar }).ok, true, 'the low itself traded');
+  assert.strictEqual(c.validateSuggestion({ price: 7350.00, qty: 1, imbalanceQty: -1, bar }).ok, true, 'and the high');
+  const v = c.validateSuggestion({ price: 7331.75, qty: 1, imbalanceQty: -1, bar });
+  assert.strictEqual(v.ok, false);
+  assert.match(v.problems.join(' '), /outside the bar/);
+});
+
+test('no bars is no evidence, not a refusal', () => {
+  assert.strictEqual(c.priceInBar(7331.75, null), true);
+  assert.strictEqual(c.validateSuggestion({ price: 7331.75, qty: 1, imbalanceQty: -1, bar: null }).ok, true);
+  assert.strictEqual(c.barFor(null, Date.now()), null);
+  assert.strictEqual(c.barFor([], Date.now()), null);
+});
+
+test('the bar covering a moment is the last one that opened before it', () => {
+  const t = (iso) => Date.parse(iso) / 1000;
+  const bars = [
+    { time: t('2026-11-17T19:51:00Z'), low: 7330, high: 7335 },
+    { time: t('2026-11-17T19:52:00Z'), low: 7331, high: 7336 },
+    { time: t('2026-11-17T19:53:00Z'), low: 7340, high: 7350 },
+  ];
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T19:53:56Z')).low, 7340);
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T19:52:30Z')).low, 7331);
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T19:50:00Z')), null, 'before every bar');
+});
+
+// ── The solve refuses rather than offering the impossible ────────────────
+
+test('a solve that lands off-tick asks Jim instead of suggesting it', () => {
+  // DAY is short 5; 156.50 puts the solved price at 7480.49, between two ticks.
+  const s = c.suggestMissingFill({ fills: DAY, brokerQty: 0, brokerGross: 156.50 });
+  assert.strictEqual(s.needsPrice, true);
+  assert.strictEqual(s.price, null);
+  assert.strictEqual(s.side, 'Buy');
+  assert.strictEqual(s.qty, 5, 'it still knows WHAT is missing, only not at what price');
+  assert.match(s.rejected.join(' '), /not on a 0\.25 tick/);
+});
+
+test('a solve that lands on a tick is offered as before', () => {
+  const s = c.suggestMissingFill({ fills: DAY, brokerQty: 0, brokerGross: 156.25 });
+  assert.strictEqual(s.needsPrice, false);
+  assert.strictEqual(s.price, 7480.50);
+  assert.strictEqual(s.rejected, undefined);
+});
+
+test('a solve outside the bars is refused even when it is on a tick', () => {
+  const bars = [{ time: Date.parse('2026-11-16T17:10:00Z') / 1000, low: 7490, high: 7500 }];
+  const s = c.suggestMissingFill({ fills: DAY, brokerQty: 0, brokerGross: 156.25, bars });
+  assert.strictEqual(s.needsPrice, true);
+  assert.match(s.rejected.join(' '), /outside the bar/);
+});
+
+test('the banner for a refused solve names what is missing and asks for a price', () => {
+  const s = c.suggestMissingFill({ fills: DAY, brokerQty: 0, brokerGross: 156.50 });
+  const text = c.suggestionText(s);
+  assert.match(text, /Buy 5/);
+  assert.match(text, /entered/i);
+  assert.ok(!/@/.test(text), 'it must not show a made-up price: ' + text);
+});
+
+// ── Corrections already accepted are re-checked, never removed ───────────
+
+test('the correction Jim accepted is flagged, and not touched', () => {
+  const bad = c.makeCorrection({ side: 'Buy', qty: 1, price: 7375.67, status: 'added',
+                                 fillTime: '2026-11-17 13:53:56' });
+  const r = c.reviewCorrection(bad, { imbalanceQty: -1 });
+  assert.strictEqual(r.needsReview, true);
+  assert.match(c.reviewText(r), /^Needs review — 7375\.67 is not on a 0\.25 tick/);
+  // The correction object itself is untouched: flagging is not editing.
+  assert.strictEqual(bad.price, 7375.67);
+  assert.strictEqual(bad.status, 'added');
+});
+
+test('a correction that still passes is not flagged', () => {
+  const good = c.makeCorrection({ side: 'Buy', qty: 1, price: 7331.75, status: 'added',
+                                  fillTime: '2026-11-17 13:53:56' });
+  const r = c.reviewCorrection(good, { imbalanceQty: -1 });
+  assert.strictEqual(r.needsReview, false);
+  assert.strictEqual(c.reviewText(r), null);
+});
+
+test('a list is reviewed and only the failures come back', () => {
+  const bad  = c.makeCorrection({ side: 'Buy', qty: 1, price: 7375.67, status: 'added', fillTime: '2026-11-17 13:53:56' });
+  const good = c.makeCorrection({ side: 'Buy', qty: 5, price: 7480.50, status: 'added', fillTime: '2026-11-16 11:10:09' });
+  const out = c.reviewCorrections([good, bad], {});
+  assert.deepStrictEqual(out.map(r => r.id), [bad.id]);
+  assert.strictEqual(c.reviewCorrections([good], {}).length, 0);
+  assert.deepStrictEqual(c.reviewCorrections(null, {}), []);
+});
+
+test('reviewing never changes what is applied — that stays Jim’s decision', () => {
+  const bad = c.makeCorrection({ side: 'Buy', qty: 5, price: 7480.67, status: 'added',
+                                 fillTime: '2026-11-16 11:10:09' });
+  assert.strictEqual(c.reviewCorrection(bad, {}).needsReview, true);
+  const { appliedIds } = c.applyCorrections(DAY, [bad]);
+  assert.deepStrictEqual(appliedIds, [bad.id], 'a flagged correction still applies until Jim says otherwise');
+});

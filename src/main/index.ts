@@ -702,6 +702,30 @@ const { mergePnl, mergedToImportState } = sharedModule('pnl-merge.js') as {
   mergedToImportState: (m: unknown, c: unknown, f: unknown) => OrderImportState;
 };
 
+const correctionsLib = sharedModule('corrections.js') as {
+  reviewCorrection: (c: unknown, ctx: Record<string, unknown>) => { id: string; needsReview: boolean; problems: string[] };
+  reviewText: (r: unknown) => string | null;
+};
+
+/**
+ * Jim's corrections with today's rules applied to each one. Nothing is removed or
+ * changed — a correction that no longer passes is simply marked, so he can decide.
+ * TVCM-42: the 7,375.67 fill he accepted is not a price MES ever traded.
+ */
+function correctionsWithReview(): unknown[] {
+  const mode = paperMode() ? 'paper' : 'live';
+  const rows = correctionsStore?.list(mode) ?? [];
+  return rows.map((c) => {
+    const review = correctionsLib.reviewCorrection(c, {
+      imbalanceQty: liveFeed?.rawImbalance(c.sessionDate) ?? null,
+      // Bars are deliberately not supplied: the active chart is not guaranteed to be the
+      // instrument that traded, and a wrong bar would reject a good price (TVCM-42 §7).
+      bars: null,
+    });
+    return { ...c, needsReview: review.needsReview, reviewText: correctionsLib.reviewText(review) };
+  });
+}
+
 /** Whether TVCM is reading the paper account instead of AMP Live. */
 function paperMode(): boolean {
   return getSettings().paperMode === true;
@@ -1228,7 +1252,7 @@ app.on('ready', () => {
   ipcMain.handle(IPC.PAPER_MODE_SET, (_e, on: boolean) => { setPaperMode(!!on); return paperMode(); });
 
   // Corrections: Jim's recorded missing fills. Nothing is ever added without his click.
-  ipcMain.handle(IPC.CORRECTION_LIST, () => correctionsStore?.list(paperMode() ? 'paper' : 'live') ?? []);
+  ipcMain.handle(IPC.CORRECTION_LIST, () => correctionsWithReview());
   ipcMain.handle(IPC.CORRECTION_SUGGESTION, () => liveFeed?.getState().suggestion ?? null);
   ipcMain.handle(IPC.CORRECTION_ADD, (_e, input: unknown) => {
     const made = correctionsStore?.add(paperMode() ? 'paper' : 'live', input) ?? null;

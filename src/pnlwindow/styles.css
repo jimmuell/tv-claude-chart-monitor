@@ -338,3 +338,24 @@ body {
   margin: 0 0 8px;
   font-size: 12px;
 }
+
+/* A correction that no longer passes the rules a suggestion must pass. It is marked,
+   never removed — whether it stays is Jim's decision (TVCM-42). */
+.correction-row.needs-review { color: #ffe9a8; }
+
+.review-flag {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid #8a6d1f;
+  border-radius: 3px;
+  background: #3a3220;
+  color: #ffe9a8;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.review-note {
+  margin: 2px 0 6px;
+  color: #e0b84a;
+  font-size: 11.5px;
+}

@@ -41,6 +41,80 @@ const STATUSES = ['suggested', 'added', 'confirmed'];
 /** Raised when a correction is held back because its day has no records to correct. */
 const NO_DAY_CODE = 'TVCM-CORR-NO-DAY';
 
+/** Raised when a stored correction no longer passes the rules a suggestion must pass. */
+const REVIEW_CODE = 'TVCM-CORR-REVIEW';
+
+/**
+ * The smallest price increment MES trades in. A price that is not a multiple of this
+ * never happened, whatever the arithmetic says.
+ *
+ * TVCM-42: the solve offered Buy 1 @ 7,375.67 and Jim accepted it. No such price exists —
+ * and the only reason it came out was that the broker gross it was solved against was
+ * wrong by a day of fees. An off-tick answer is a loud signal that an input is wrong, and
+ * it was being presented as a recommendation instead.
+ */
+const MES_TICK = 0.25;
+
+/** True when a price lands exactly on the instrument's tick, within a cent of rounding. */
+function onTick(price, tick) {
+  const t = Number(tick) || MES_TICK;
+  const n = Number(price);
+  if (!Number.isFinite(n) || !(t > 0)) return false;
+  const steps = n / t;
+  return Math.abs(steps - Math.round(steps)) < 1e-6;
+}
+
+/** The bar covering a moment, from a chart's bars, or null when none does. */
+function barFor(bars, timeMs) {
+  const at = Number(timeMs);
+  if (!Array.isArray(bars) || !Number.isFinite(at)) return null;
+  let best = null;
+  for (const b of bars) {
+    if (!b) continue;
+    // Bar times are the OPEN of the bar, in seconds, as TradingView reports them.
+    const start = Number(b.time) * 1000;
+    if (!Number.isFinite(start) || start > at) continue;
+    if (!best || start > Number(best.time) * 1000) best = b;
+  }
+  return best;
+}
+
+/** True when a price traded inside a bar — at or between its low and its high. */
+function priceInBar(price, bar) {
+  if (!bar) return true;                     // no bar is not a refusal, only no evidence
+  const lo = Number(bar.low), hi = Number(bar.high), n = Number(price);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || !Number.isFinite(n)) return true;
+  return n >= lo && n <= hi;
+}
+
+/**
+ * Checks a proposed fill against the three things that make it possible rather than
+ * merely arithmetically convenient. Returns the reasons it fails, so the banner and the
+ * corrections list can say which rule was broken rather than just "no".
+ */
+function validateSuggestion(input) {
+  const i = input || {};
+  const problems = [];
+  const price = Number(i.price);
+  const tick = i.tick == null ? MES_TICK : i.tick;
+  if (!Number.isFinite(price) || price <= 0) {
+    problems.push('the price is not a number');
+  } else if (!onTick(price, tick)) {
+    problems.push(`${price} is not on a ${tick} tick, so it is not a price that ever traded`);
+  }
+  const qty = Number(i.qty);
+  const need = i.imbalanceQty === null || i.imbalanceQty === undefined ? null : Math.abs(Number(i.imbalanceQty));
+  if (!Number.isFinite(qty) || qty <= 0) {
+    problems.push('the size is not a quantity');
+  } else if (need !== null && Number.isFinite(need) && qty !== need) {
+    problems.push(`the size is ${qty} but the rows are out by ${need}`);
+  }
+  if (i.bar && Number.isFinite(price) && !priceInBar(price, i.bar)) {
+    problems.push(`${price} is outside the bar's range of ${i.bar.low}–${i.bar.high} at that time`);
+  }
+  return { ok: problems.length === 0, problems };
+}
+
 /** How close a real fill must be to supersede an inferred one. */
 const MATCH_PRICE_TOLERANCE = 0.25;      // one MES tick
 const MATCH_TIME_TOLERANCE_MS = 60 * 60 * 1000;
@@ -211,15 +285,63 @@ function suggestMissingFill(input) {
   const signed = side === 'Buy' ? qty : -qty;
   const price = (sellN - buyN - Number(brokerGross) / pv) / signed;
 
-  return {
-    side, qty,
-    price: Math.round(price * 100) / 100,
-    needsPrice: false,
+  const rounded = Math.round(price * 100) / 100;
+  const window = {
     windowFrom: unmatched ? unmatched.fillTime : null,
     windowTo:   next ? next.fillTime : null,
     unmatchedOrderId: unmatched ? unmatched.orderId : null,
+  };
+
+  // A solved price is an inference, not an observation. It only becomes a suggestion if
+  // it is a price that could have traded: on a tick, the right size, and inside the bar
+  // if TVCM has one. TVCM-42: without this, a broker gross that was wrong by a day of
+  // fees produced 7,375.67 — a price MES has never printed — and it was offered as advice.
+  const check = validateSuggestion({
+    price: rounded, qty, imbalanceQty: run, tick: i.tick,
+    bar: i.bar || barFor(i.bars, unmatched ? Date.parse(String(unmatched.fillTime).replace(' ', 'T')) : NaN),
+  });
+  if (!check.ok) {
+    return { side, qty, price: null, needsPrice: true, ...window,
+             brokerGross: Number(brokerGross), rejected: check.problems,
+             reason: `the solved price could not be offered — ${check.problems.join('; ')}` };
+  }
+
+  return {
+    side, qty,
+    price: rounded,
+    needsPrice: false,
+    ...window,
     brokerGross: Number(brokerGross),
   };
+}
+
+/**
+ * Re-checks a correction Jim has already accepted against the rules a suggestion must
+ * pass today. Nothing is ever removed — that is Jim's call — but one that fails is
+ * flagged so the window can say so and he can decide.
+ */
+function reviewCorrection(correction, context) {
+  const c = correction || {};
+  const ctx = context || {};
+  const check = validateSuggestion({
+    price: c.price, qty: c.qty, tick: ctx.tick,
+    imbalanceQty: ctx.imbalanceQty,
+    bar: ctx.bar || barFor(ctx.bars, Date.parse(String(c.fillTime).replace(' ', 'T'))),
+  });
+  return { id: c.id, needsReview: !check.ok, problems: check.problems };
+}
+
+/** The same check over a whole list, returning only the ones that need Jim's attention. */
+function reviewCorrections(corrections, context) {
+  return (corrections || []).filter(Boolean)
+    .map(c => reviewCorrection(c, context))
+    .filter(r => r.needsReview);
+}
+
+/** The sentence shown beside a correction that no longer passes the rules. */
+function reviewText(review) {
+  if (!review || !review.needsReview) return null;
+  return `Needs review — ${review.problems.join('; ')}`;
 }
 
 /** The banner sentence shown in the window's Summary. */
@@ -238,6 +360,9 @@ function suggestionText(s) {
 
 module.exports = {
   SOURCES, STATUSES, MATCH_PRICE_TOLERANCE, MATCH_TIME_TOLERANCE_MS, NO_DAY_CODE,
+  REVIEW_CODE, MES_TICK,
+  onTick, barFor, priceInBar, validateSuggestion,
+  reviewCorrection, reviewCorrections, reviewText,
   dayIsCovered,
   sessionDateForStamp, chicagoStamp,
   makeCorrection, correctionToFill, fillSupersedes,
