@@ -337,3 +337,17 @@ test('a session already holding a good figure is not blanked by an unrolled read
   const out = ob.observeReading(wed({ prevDayBalance: TUE_OPEN, accountBalance: 9999, at: 2, existing: good }));
   assert.strictEqual(out.action, 'keep');
 });
+
+test('while AMP has not rolled, the gross is unknown too — not yesterday’s', () => {
+  // The other half of the roll guard. Between 17:00 and AMP rolling, the live Balances
+  // pair is the PREVIOUS session's, and subtracting it yields yesterday's P&L. The store
+  // refuses to record it; main's brokerGrossForSolve() refuses to solve from it. This
+  // pins the arithmetic the refusal avoids.
+  const unrolled = { balances: { accountBalance: TUE_CLOSE, prevDayBalance: TUE_OPEN } };
+  assert.strictEqual(brokerSessionGross(unrolled, null), 778.60,
+    'read straight, the pair gives TUESDAY’s P&L on a Wednesday');
+  // Which is why the record is withheld: an unknown opening balance is the signal.
+  const out = ob.observeReading(wed({ prevDayBalance: TUE_OPEN, accountBalance: TUE_CLOSE }));
+  assert.strictEqual(out.record.known, false);
+  assert.strictEqual(out.code, ob.NOT_ROLLED_CODE);
+});

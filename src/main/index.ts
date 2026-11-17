@@ -733,6 +733,23 @@ function correctionsWithReview(): unknown[] {
   });
 }
 
+/**
+ * The broker's realized gross, but only when the session's opening balance is settled.
+ *
+ * The roll guard protects what gets STORED; this is the other half. Between 17:00 and
+ * AMP rolling its statement, the live Balances pair is the previous session's — account
+ * balance against the previous day's opening — and subtracting them yields YESTERDAY'S
+ * P&L. Handing that to the missing-fill solve would produce exactly the class of
+ * confidently wrong price TVCM-42 and TVCM-43 exist to stop. While the opening balance is
+ * unknown, so is the gross, and the banner asks (TVCM-43).
+ */
+function brokerGrossForSolve(payload: unknown): number | null {
+  const today = currentSessionDate(new Date());
+  const record = openingStore?.get(paperMode() ? 'paper' : 'live', today) ?? null;
+  if (record && !record.known) return null;
+  return liveFeedLib.brokerSessionGross(payload, openingBalance(today));
+}
+
 /** Whether TVCM is reading the paper account instead of AMP Live. */
 function paperMode(): boolean {
   return getSettings().paperMode === true;
@@ -1119,8 +1136,7 @@ app.on('ready', () => {
     pollIntervalMs: Math.max(1, importSettings.liveFeedPollSeconds ?? 5) * 1000,
     perContractSideFee: () => getSettings().feePerContractSide ?? 0.60,
     corrections: () => correctionsStore?.list(paperMode() ? 'paper' : 'live') ?? [],
-    brokerGross: (payload) => liveFeedLib.brokerSessionGross(
-      payload, openingBalance(currentSessionDate(new Date()))),
+    brokerGross: (payload) => brokerGrossForSolve(payload),
     // Every poll is offered for the session's opening balance; at most one is recorded.
     onReading: (info) => { openingStore?.observe(info); },
     statePath:      liveFeedStatePath(feedMode),
