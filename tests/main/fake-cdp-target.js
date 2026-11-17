@@ -63,7 +63,11 @@ async function startFakeTarget(options) {
       if (msg.method === 'Runtime.evaluate') {
         evaluations += 1;
         const value = typeof answer === 'function' ? answer(msg.params) : answer;
-        ws.send(JSON.stringify({ id: msg.id, result: { result: { type: 'string', value } } }));
+        // returnByValue puts the plain value in result.value, so an expression that
+        // returns an object must be answered with one — the snapshot reader expects
+        // an object where the live feed expects a JSON string.
+        const type = value === null ? 'object' : typeof value;
+        ws.send(JSON.stringify({ id: msg.id, result: { result: { type, value } } }));
         return;
       }
       ws.send(JSON.stringify({ id: msg.id, result: {} }));
