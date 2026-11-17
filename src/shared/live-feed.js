@@ -471,22 +471,48 @@ const POSITION_GRACE_MS = 30_000;
 /**
  * The account's realized gross for the session, from the broker's own money.
  *
- * Purchasing power equals the account balance **while the account is flat** — measured
- * on 2026-11-16 at 14:24 with both reading 5,640.14 — so the day's gross is that minus
- * the previous day's closing balance. It is deliberately refused while a position is
- * open, because margin is then held against purchasing power and the two part company.
+ * **AMP's own Balances table is the source**: `account_balance` as it stands now, minus
+ * `balance` — the row labelled "Prev day balance" — which is the balance the session
+ * opened with, already net of the previous day's commissions. Measured 2026-11-17 15:08
+ * CT: 6,414.29 − 5,474.29 = 940.00, which is exactly AMP's own `pl` field.
+ *
+ * TVCM-37 used Purchasing power captured at 17:00 instead. That is taken BEFORE AMP
+ * debits the previous day's commissions: Monday closed at PP 5,693.89 and Tuesday's prev
+ * day balance is 5,474.29, the difference being Monday's fees of 219.60 to the cent. The
+ * broker gross was therefore low by 219.60 all day, and the missing-fill solve produced
+ * 7,375.67 — a price that is not even on a quarter-point tick (TVCM-42).
+ *
+ * The old route survives only as a fallback for an explicitly supplied opening balance —
+ * Jim's Settings override — and still refuses while a position is open, because margin is
+ * then held against purchasing power and the two part company. With no readable figure at
+ * all the answer is null: unknown, to be asked about, never guessed.
  */
-function brokerSessionGross(payload, prevDayBalance) {
+function brokerSessionGross(payload, openingBalance) {
   const p = payload || {};
+  const bal = p.balances;
+  // Number(null) is 0, so each figure is refused by name before the conversion — a null
+  // account balance would otherwise read as a loss of the whole previous day's balance.
+  const readable = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  if (bal && readable(bal.accountBalance) && readable(bal.prevDayBalance)) {
+    return Math.round((Number(bal.accountBalance) - Number(bal.prevDayBalance)) * 100) / 100;
+  }
   const pp = p.summary ? Number(p.summary['Purchasing power']) : NaN;
   const margin = p.summary ? Number(p.summary['Total margin']) : NaN;
-  // Number(null) is 0, which would quietly turn "no previous balance" into a gross of
+  // Number(null) is 0, which would quietly turn "no opening balance" into a gross of
   // the whole account — and then solve a missing fill's price from it. Refuse it.
-  if (prevDayBalance === null || prevDayBalance === undefined || prevDayBalance === '') return null;
-  const prev = Number(prevDayBalance);
+  if (openingBalance === null || openingBalance === undefined || openingBalance === '') return null;
+  const prev = Number(openingBalance);
   if (!Number.isFinite(pp) || !Number.isFinite(prev)) return null;
   if (Number.isFinite(margin) && margin !== 0) return null;   // not flat: PP is not the balance
   return Math.round((pp - prev) * 100) / 100;
+}
+
+/** AMP's "Prev day balance" from a payload, or null when it could not be read. */
+function prevDayBalanceFrom(payload) {
+  const raw = payload && payload.balances ? payload.balances.prevDayBalance : null;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : null;
 }
 
 /** The broker's SIGNED open quantity, summed across symbols. Null when it has no answer. */
@@ -598,6 +624,36 @@ function liveFeedExpression() {
       }
     } catch (e) { out.summary = null; }
 
+    // AMP's own Balances table, read through the broker's getData() rather than the
+    // Account summary TAB, which freezes (TVCM-34). It carries the two numbers that make
+    // the day's realized P&L arithmetic exact:
+    //   account_balance  — the balance as it stands now
+    //   balance          — "Prev day balance", the balance the session OPENED with,
+    //                      ALREADY NET of the previous day's fees
+    // TVCM-37 used Purchasing power captured at 17:00 instead, which is taken BEFORE AMP
+    // debits the previous day's commissions — on 2026-11-17 that made the broker gross
+    // low by exactly Monday's fees, $219.60, and the missing-fill solve produced a price
+    // that is not even on a tick (TVCM-42).
+    try {
+      let ami2 = broker.accountManagerInfo();
+      if (ami2 && typeof ami2.then === 'function') ami2 = await ami2;
+      const page = ((ami2 && ami2.pages) || []).find(p => p && p.id === 'summary');
+      const table = (((page && page.tables) || [])).find(t => t && t.id === 'balance');
+      let rows = table && typeof table.getData === 'function' ? table.getData() : null;
+      if (rows && typeof rows.then === 'function') rows = await rows;
+      // The per-currency row carries the previous day's balance; only the TOTAL row
+      // carries all of them, so the row is chosen by what it actually has.
+      const row = (rows || []).filter(Boolean).find(r =>
+        Number.isFinite(Number(r.account_balance)) && Number.isFinite(Number(r.balance)));
+      out.balances = row ? {
+        accountBalance:  Number(row.account_balance),
+        prevDayBalance:  Number(row.balance),
+        brokerPl:        Number.isFinite(Number(row.pl)) ? Number(row.pl) : null,
+        ote:             Number.isFinite(Number(row.ote)) ? Number(row.ote) : null,
+        currency:        row.currency == null ? null : String(row.currency),
+      } : null;
+    } catch (e) { out.balances = null; }
+
     const mapOrder = (o) => ({
       id: o.id, symbol: o.symbol, side: o.side,
       qty: o.qty, filledQty: o.filledQty, avgPrice: o.avgPrice,
@@ -655,6 +711,7 @@ module.exports = {
   brokerAvailability, feedSourceFor, detectExecutionShape, detectOrderShape,
   crossCheck, sumBrokerProfit, sumOpenQty, sumPositionQty, positionMismatch, POSITION_GRACE_MS,
   brokerSessionGross,
+  prevDayBalanceFrom,
   chicagoStamp, chicagoStampFromIso, sessionDateForEpoch, decodeSide,
   executionsToFills, ordersToFills, fillsFromPayload,
   analyseExecutions, analyseFeed, liveFeedExpression,

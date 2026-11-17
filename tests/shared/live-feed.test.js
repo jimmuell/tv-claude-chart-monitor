@@ -725,3 +725,56 @@ test('the expression ships the header summary so the solve has something to use'
   assert.ok(liveFeedExpression().includes('accountManagerInfo'));
   assert.ok(liveFeedExpression().includes('wValue'));
 });
+
+// ── AMP's own Balances table (TVCM-42) ───────────────────────────────────
+//
+// Read live from Jim's account on 2026-11-17 at 15:08 CT, flat:
+//   account_balance 6,414.29 · balance ("Prev day balance") 5,474.29 · pl 940.00
+// and the 17:00 Purchasing power capture TVCM-37 used was 5,693.89 — higher by exactly
+// Monday's fees of 219.60, because AMP debits them after the session rolls.
+
+const AMP_BALANCES = { accountBalance: 6414.29, prevDayBalance: 5474.29, brokerPl: 940, ote: 0, currency: 'USD' };
+
+test('the Balances table is the source, and it beats a handed-in opening balance', () => {
+  const p = { balances: AMP_BALANCES, summary: { 'Purchasing power': 6414.29, 'Total margin': 0 } };
+  assert.strictEqual(brokerSessionGross(p, 5693.89), 940.00, 'the stale 17:00 figure must not win');
+  assert.strictEqual(brokerSessionGross(p, null), 940.00, 'and none is needed at all');
+});
+
+test('the 17:00 route, alone, is low by exactly one day of fees', () => {
+  const p = { summary: { 'Purchasing power': 6414.29, 'Total margin': 0 } };
+  assert.strictEqual(brokerSessionGross(p, 5693.89), 720.40);
+  assert.strictEqual(Math.round((940.00 - 720.40) * 100) / 100, 219.60);
+});
+
+test('a half-read Balances row is refused, not half-used', () => {
+  for (const bal of [{ accountBalance: 6414.29 }, { prevDayBalance: 5474.29 },
+                     { accountBalance: null, prevDayBalance: 5474.29 },
+                     { accountBalance: 6414.29, prevDayBalance: null }]) {
+    assert.strictEqual(brokerSessionGross({ balances: bal }, null), null, JSON.stringify(bal));
+  }
+});
+
+test('the Balances route answers whether or not a position is open', () => {
+  // Unlike Purchasing power, account_balance is not reduced by margin — OTE is a
+  // separate field. The solve is still gated on a flat broker by suggestMissingFill().
+  const open = { balances: AMP_BALANCES, summary: { 'Purchasing power': 3600, 'Total margin': 2750 } };
+  assert.strictEqual(brokerSessionGross(open, 5474.29), 940.00);
+});
+
+test('prevDayBalanceFrom reads the one figure, or admits it cannot', () => {
+  assert.strictEqual(lf.prevDayBalanceFrom({ balances: AMP_BALANCES }), 5474.29);
+  assert.strictEqual(lf.prevDayBalanceFrom({ balances: { prevDayBalance: 'n/a' } }), null);
+  assert.strictEqual(lf.prevDayBalanceFrom({ balances: null }), null);
+  assert.strictEqual(lf.prevDayBalanceFrom({}), null);
+  assert.strictEqual(lf.prevDayBalanceFrom(null), null);
+});
+
+test('the expression reads the Balances table, not the Account summary tab', () => {
+  const expr = liveFeedExpression();
+  assert.ok(expr.includes('prevDayBalance'), 'it must ship the figure');
+  assert.ok(expr.includes("id === 'balance'"), 'from the Balances table');
+  assert.ok(expr.includes('getData'), 'through the broker, not the DOM');
+  // TVCM-34: the rendered Account summary tab freezes and is never read.
+  assert.ok(!/querySelector|accountSummaryField/.test(expr), 'and never off the screen');
+});

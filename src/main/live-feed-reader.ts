@@ -98,6 +98,8 @@ export class LiveFeedReader {
   private loggedCode: string | null = null;
   /** When TVCM's open quantity and the broker's first disagreed, for the 30 s grace. */
   private mismatchSince: number | null = null;
+  /** The raw fills of the last good read, before corrections, for the imbalance check. */
+  private lastRawFills: any[] = [];
   /** Everything the last good read produced, so the window can show trades and fills too. */
   private lastSessions:   ImportedSession[] = [];
   private lastTrades:     ImportedTrade[]   = [];
@@ -238,6 +240,9 @@ export class LiveFeedReader {
         brokerId: payload.brokerId ?? null,
         purchasingPower: payload.summary ? payload.summary['Purchasing power'] : null,
         totalMargin:     payload.summary ? payload.summary['Total margin'] : null,
+        // AMP's own "Prev day balance" — static for the session and already net of the
+        // previous day's commissions, which the 17:00 Purchasing power capture was not.
+        prevDayBalance:  liveFeed.prevDayBalanceFrom(payload),
         brokerQty,
         fillsInSession: match ? match.fillCount : 0,
         at,
@@ -271,6 +276,7 @@ export class LiveFeedReader {
       // says something happened, that is the blind case, named.
       const blindDetail = shape.empty ? ' (nothing was returned, so the shape proved nothing)' : '';
 
+      this.lastRawFills = feed.fills || [];
       this.lastSessions = (result.sessions || []).map(toImportedSession);
       this.lastTrades   = (result.trades  || []).map(toImportedTrade);
       this.lastFills    = (result.fills   || []).map(toImportedFill);
@@ -433,6 +439,17 @@ export class LiveFeedReader {
       fills:    this.lastFills.filter(f => f.sessionDate === sessionDate),
       boundary: this.lastBoundaries.get(sessionDate) ?? null,
     };
+  }
+
+  /**
+   * The signed quantity TradingView's OWN rows leave open for a session, before any
+   * correction. That is the imbalance a correction was meant to close, so it is what a
+   * correction's size has to equal.
+   */
+  rawImbalance(sessionDate: string): number | null {
+    const rows = this.lastRawFills.filter((f: any) => f && f.sessionDate === sessionDate);
+    if (rows.length === 0) return null;
+    return rows.reduce((n: number, f: any) => n + (f.side === 'Buy' ? 1 : -1) * Number(f.qty), 0);
   }
 
   /** Logs a coded condition once per episode, so a 5-second poll cannot flood the log. */

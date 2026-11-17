@@ -1,10 +1,16 @@
 'use strict';
 
-// The account balance each trading session opened with.
+// The balance each trading session opened with.
 //
-// Every figure here is SYNTHETIC apart from the SHAPE: TVCM-36 measured, at 14:24:52 on
-// 2026-11-16 with the account flat, Purchasing power 5,640.14 == Account balance
-// 5,640.14, having opened at 4,510.14. These tests use round numbers of the same shape.
+// TVCM-37 captured it at 17:00 from Purchasing power. TVCM-42 replaced the source with
+// AMP's own "Prev day balance", because the two are not the same number: AMP debits the
+// previous day's commissions AFTER 17:00, so the 17:00 capture is taken before the debit.
+//
+// The figures below are REAL, and they are the whole reason this file changed:
+//   Monday 2026-11-16 closed at Purchasing power  5,693.89   (TVCM-37's capture)
+//   Tuesday 2026-11-17 prev day balance            5,474.29   (AMP's own figure)
+//   the difference                                   219.60   = Monday's fees, to the cent
+//   Monday opening 4,510.14 + Monday net 964.15 =  5,474.29   — the engine, validated
 
 const test   = require('node:test');
 const assert = require('node:assert');
@@ -14,65 +20,123 @@ const ob = require(path.join(__dirname, '../../src/shared/opening-balance.js'));
 const { suggestMissingFill } = require(path.join(__dirname, '../../src/shared/corrections.js'));
 const { brokerSessionGross } = require(path.join(__dirname, '../../src/shared/live-feed.js'));
 
-/** One feed reading at the start of a session, with overridable fields. */
+const MONDAY_CLOSE_PP   = 5693.89;
+const TUESDAY_PREV_DAY  = 5474.29;
+const MONDAY_FEES       = 219.60;
+const TUESDAY_BALANCE   = 6414.29;
+const TUESDAY_TRUE_GROSS = 940.00;
+
+/** One feed reading, with overridable fields. */
 function reading(over = {}) {
   return {
-    sessionDate: '2026-11-16', mode: 'live', brokerId: 'amp',
-    purchasingPower: 4510.14, totalMargin: 0, brokerQty: 0,
-    fillsInSession: 0, existing: null, at: 1_794_800_000_000, ...over,
+    sessionDate: '2026-11-17', mode: 'live', brokerId: 'amp',
+    prevDayBalance: TUESDAY_PREV_DAY,
+    purchasingPower: TUESDAY_BALANCE, totalMargin: 0, brokerQty: 0,
+    fillsInSession: 0, existing: null, at: 1_794_900_000_000, ...over,
   };
 }
 
-// ── Recorded at the session open ─────────────────────────────────────────
+// ── The arithmetic that forced the change ────────────────────────────────
 
-test('a flat account with no fills yet has its balance recorded', () => {
+test('the 17:00 capture and AMP’s own figure differ by exactly a day of fees', () => {
+  assert.strictEqual(Math.round((MONDAY_CLOSE_PP - TUESDAY_PREV_DAY) * 100) / 100, MONDAY_FEES);
+});
+
+test('solving against the 17:00 capture is low by that day of fees', () => {
+  const payload = { summary: { 'Purchasing power': TUESDAY_BALANCE, 'Total margin': 0 } };
+  const wrong = brokerSessionGross(payload, MONDAY_CLOSE_PP);
+  assert.strictEqual(wrong, 720.40, 'what TVCM-37 computed all day');
+  assert.strictEqual(Math.round((TUESDAY_TRUE_GROSS - wrong) * 100) / 100, MONDAY_FEES);
+});
+
+test('AMP’s Balances table gives the right gross, and beats anything handed in', () => {
+  const payload = {
+    balances: { accountBalance: TUESDAY_BALANCE, prevDayBalance: TUESDAY_PREV_DAY, brokerPl: 940 },
+    summary:  { 'Purchasing power': TUESDAY_BALANCE, 'Total margin': 0 },
+  };
+  assert.strictEqual(brokerSessionGross(payload, MONDAY_CLOSE_PP), TUESDAY_TRUE_GROSS,
+    'the live figure must win over a stale opening balance');
+  assert.strictEqual(brokerSessionGross(payload, null), TUESDAY_TRUE_GROSS,
+    'and it needs no opening balance handed in at all');
+});
+
+test('the old route survives only for an opening balance supplied on purpose', () => {
+  const payload = { summary: { 'Purchasing power': TUESDAY_BALANCE, 'Total margin': 0 } };
+  assert.strictEqual(brokerSessionGross(payload, TUESDAY_PREV_DAY), TUESDAY_TRUE_GROSS);
+  assert.strictEqual(brokerSessionGross(payload, null), null, 'and never without one');
+  assert.strictEqual(brokerSessionGross({}, null), null);
+});
+
+test('the old route still refuses while a position is open', () => {
+  const open = { summary: { 'Purchasing power': TUESDAY_BALANCE, 'Total margin': 2750 } };
+  assert.strictEqual(brokerSessionGross(open, TUESDAY_PREV_DAY), null,
+    'margin is held against purchasing power, so it is not the balance');
+});
+
+// ── Recording it ─────────────────────────────────────────────────────────
+
+test('AMP’s prev day balance is recorded as the opening balance', () => {
   const out = ob.observeReading(reading());
   assert.strictEqual(out.action, 'record');
-  assert.strictEqual(out.record.balance, 4510.14);
+  assert.strictEqual(out.record.balance, TUESDAY_PREV_DAY);
   assert.strictEqual(out.record.known, true);
-  assert.strictEqual(out.record.source, 'feed');
-  assert.strictEqual(out.record.sessionDate, '2026-11-16');
+  assert.strictEqual(out.record.source, ob.SOURCE_PREV_DAY);
 });
 
-test('once a session is settled no later reading touches it', () => {
-  const settled = ob.observeReading(reading()).record;
-  // Flat again at 14:24 with a different balance — the classic way to record the wrong one.
-  const later = ob.observeReading(reading({ purchasingPower: 5640.14, fillsInSession: 12, existing: settled }));
-  assert.strictEqual(later.action, 'keep');
-  assert.strictEqual(later.record, null);
-});
-
-test('a reading with no balance in it yet is simply skipped, not refused', () => {
-  for (const pp of [null, undefined, NaN, 'n/a']) {
-    assert.strictEqual(ob.observeReading(reading({ purchasingPower: pp })).action, 'keep');
+test('it no longer matters when in the day TVCM first looks', () => {
+  // The prev day balance is STATIC for the session. TVCM-37 could only capture it at
+  // 17:00 while flat and before any fill; those gates are gone because the number cannot
+  // move. A session first seen at noon, mid-trade, holding a position, records fine.
+  for (const over of [{ fillsInSession: 57 }, { brokerQty: -5, totalMargin: 2750 },
+                      { fillsInSession: 57, brokerQty: 3, totalMargin: 1650 }]) {
+    const out = ob.observeReading(reading(over));
+    assert.strictEqual(out.action, 'record', JSON.stringify(over));
+    assert.strictEqual(out.record.balance, TUESDAY_PREV_DAY);
   }
+});
+
+test('a session recorded the TVCM-37 way is repaired by AMP’s own figure', () => {
+  // This is what fixes Jim's stored 2026-11-17 on the next poll, with nobody editing a file.
+  const stale = { sessionDate: '2026-11-17', balance: MONDAY_CLOSE_PP, known: true,
+                  source: ob.SOURCE_PP, reason: null, capturedAt: 1 };
+  assert.strictEqual(ob.supersedes(stale), true);
+  const out = ob.observeReading(reading({ existing: stale }));
+  assert.strictEqual(out.action, 'record');
+  assert.strictEqual(out.record.balance, TUESDAY_PREV_DAY);
+  assert.strictEqual(out.record.source, ob.SOURCE_PREV_DAY);
+});
+
+test('an unknown session is filled in the moment the figure can be read', () => {
+  const unknown = { sessionDate: '2026-11-17', balance: null, known: false, source: null,
+                    reason: ob.REASONS.unreadable, capturedAt: 1 };
+  assert.strictEqual(ob.supersedes(unknown), true);
+  assert.strictEqual(ob.observeReading(reading({ existing: unknown })).record.balance, TUESDAY_PREV_DAY);
+});
+
+test('a balance already from AMP’s own figure is left alone', () => {
+  const good = { sessionDate: '2026-11-17', balance: TUESDAY_PREV_DAY, known: true,
+                 source: ob.SOURCE_PREV_DAY, reason: null, capturedAt: 1 };
+  assert.strictEqual(ob.supersedes(good), false);
+  assert.strictEqual(ob.observeReading(reading({ existing: good })).action, 'keep');
 });
 
 // ── Never guessed ────────────────────────────────────────────────────────
 
-test('a session first seen after it had traded is marked unknown, not guessed', () => {
-  const out = ob.observeReading(reading({ fillsInSession: 4, purchasingPower: 5640.14 }));
-  assert.strictEqual(out.action, 'unknown');
-  assert.strictEqual(out.record.balance, null);
-  assert.strictEqual(out.record.known, false);
-  assert.match(out.record.reason, /already traded/);
+test('a figure that cannot be read is unknown, not zero', () => {
+  // Number(null) is 0, which would record an opening balance of nothing and then solve a
+  // missing fill's price from it — the trap TVCM-36 found and TVCM-37 nearly repeated.
+  for (const bad of [null, undefined, '', NaN, 'n/a']) {
+    const out = ob.observeReading(reading({ prevDayBalance: bad }));
+    assert.strictEqual(out.action, 'unknown', JSON.stringify(bad));
+    assert.strictEqual(out.record.balance, null);
+    assert.strictEqual(out.record.known, false);
+    assert.match(out.record.reason, /did not report/);
+  }
 });
 
-test('the refusal is written down, so a later flat moment cannot overwrite it', () => {
-  const refusal = ob.observeReading(reading({ fillsInSession: 4 })).record;
-  const later = ob.observeReading(reading({ purchasingPower: 5640.14, existing: refusal }));
-  assert.strictEqual(later.action, 'keep', 'the session stays unknown for the rest of the day');
-});
-
-test('a position carried into the session is unknown — purchasing power is not the balance', () => {
-  const out = ob.observeReading(reading({ brokerQty: -5, totalMargin: 2750 }));
-  assert.strictEqual(out.action, 'unknown');
-  assert.match(out.record.reason, /carried/);
-});
-
-test('margin held against the account counts as not flat even with no position row', () => {
-  assert.strictEqual(ob.observeReading(reading({ brokerQty: null, totalMargin: 2750 })).action, 'unknown');
-  assert.strictEqual(ob.observeReading(reading({ brokerQty: null, totalMargin: 0 })).action, 'record');
+test('a session already given up on is not re-judged every poll', () => {
+  const unknown = ob.observeReading(reading({ prevDayBalance: null })).record;
+  assert.strictEqual(ob.observeReading(reading({ prevDayBalance: null, existing: unknown })).action, 'keep');
 });
 
 test('paper money and any broker but AMP Live are never recorded', () => {
@@ -86,100 +150,85 @@ test('paper money and any broker but AMP Live are never recorded', () => {
 
 test('a recorded balance is used instead of the hand-typed setting', () => {
   const record = ob.observeReading(reading()).record;
-  const r = ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record, legacy: 9999 });
-  assert.strictEqual(r.balance, 4510.14);
-  assert.strictEqual(r.source, 'feed');
+  const r = ob.resolveOpeningBalance({ sessionDate: '2026-11-17', record, legacy: 9999 });
+  assert.strictEqual(r.balance, TUESDAY_PREV_DAY);
+  assert.strictEqual(r.source, ob.SOURCE_PREV_DAY);
 });
 
 test('a manual override for this session wins over everything', () => {
   const record = ob.observeReading(reading()).record;
   const r = ob.resolveOpeningBalance({
-    sessionDate: '2026-11-16', record, legacy: 9999,
-    override: { sessionDate: '2026-11-16', balance: 4600.00 },
+    sessionDate: '2026-11-17', record, legacy: 9999,
+    override: { sessionDate: '2026-11-17', balance: 5400 },
   });
-  assert.strictEqual(r.balance, 4600.00);
+  assert.strictEqual(r.balance, 5400);
   assert.strictEqual(r.source, 'override');
 });
 
 test('an override stamped with another session is ignored', () => {
   const record = ob.observeReading(reading()).record;
   const r = ob.resolveOpeningBalance({
-    sessionDate: '2026-11-16', record,
-    override: { sessionDate: '2026-11-13', balance: 4600.00 },
+    sessionDate: '2026-11-17', record, override: { sessionDate: '2026-11-13', balance: 5400 },
   });
-  assert.strictEqual(r.source, 'feed');
-  assert.strictEqual(r.balance, 4510.14);
+  assert.strictEqual(r.balance, TUESDAY_PREV_DAY);
 });
 
 test('the legacy setting is the last resort, used only when nothing was recorded', () => {
-  const r = ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record: null, legacy: 4510.14 });
-  assert.strictEqual(r.balance, 4510.14);
+  const r = ob.resolveOpeningBalance({ sessionDate: '2026-11-17', record: null, legacy: TUESDAY_PREV_DAY });
+  assert.strictEqual(r.balance, TUESDAY_PREV_DAY);
   assert.strictEqual(r.source, 'manual');
 });
 
 test('an unknown session resolves to nothing, and says why', () => {
-  const record = ob.observeReading(reading({ fillsInSession: 4 })).record;
-  const r = ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record, legacy: 4510.14 });
+  const record = ob.observeReading(reading({ prevDayBalance: null })).record;
+  const r = ob.resolveOpeningBalance({ sessionDate: '2026-11-17', record, legacy: TUESDAY_PREV_DAY });
   assert.strictEqual(r.known, false);
   assert.strictEqual(r.balance, null);
-  assert.match(r.reason, /already traded/);
-  const none = ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record: null, legacy: null });
+  assert.match(r.reason, /did not report/);
+  const none = ob.resolveOpeningBalance({ sessionDate: '2026-11-17', record: null, legacy: null });
   assert.strictEqual(none.known, false);
   assert.strictEqual(none.balance, null);
 });
 
 // ── What it is for: the missing-fill solve ───────────────────────────────
 
-const PAYLOAD = { summary: { 'Purchasing power': 5640.14, 'Total margin': 0 } };
-
-/** The fills of a day whose closing buy never arrived, as TVCM-34 found. */
-const ORPHANED = [
-  { orderId: 'A', side: 'Sell', qty: 5, price: 7482.75, fillTime: '2026-11-16 11:10:09', sessionDate: '2026-11-16' },
-  { orderId: 'B', side: 'Sell', qty: 5, price: 7469.00, fillTime: '2026-11-16 11:46:23', sessionDate: '2026-11-16' },
-  { orderId: 'C', side: 'Buy',  qty: 5, price: 7465.00, fillTime: '2026-11-16 12:00:33', sessionDate: '2026-11-16' },
+/** Tuesday's shape: one more sell than buy, the broker flat. Synthetic prices. */
+const SHORT_ONE = [
+  { orderId: 'A', side: 'Sell', qty: 5, price: 7400.00, fillTime: '2026-11-17 09:00:00', sessionDate: '2026-11-17' },
+  { orderId: 'B', side: 'Buy',  qty: 5, price: 7392.00, fillTime: '2026-11-17 09:30:00', sessionDate: '2026-11-17' },
+  { orderId: 'C', side: 'Sell', qty: 1, price: 7380.00, fillTime: '2026-11-17 13:53:56', sessionDate: '2026-11-17' },
 ];
 
-test('with a recorded opening balance the missing fill is solved', () => {
-  const record = ob.observeReading(reading()).record;
-  const opening = ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record });
-  const gross = brokerSessionGross(PAYLOAD, opening.balance);
-  assert.strictEqual(gross, 1130.00);
-  const s = suggestMissingFill({ fills: ORPHANED, brokerQty: 0, brokerGross: gross });
-  assert.strictEqual(s.needsPrice, false);
+test('with AMP’s figure the solve lands on a real tick', () => {
+  const payload = { balances: { accountBalance: 7420 + 40, prevDayBalance: 7420 } };
+  const gross = brokerSessionGross(payload, null);
+  assert.strictEqual(gross, 40);
+  const s = suggestMissingFill({ fills: SHORT_ONE, brokerQty: 0, brokerGross: gross });
   assert.strictEqual(s.side, 'Buy');
-  assert.strictEqual(s.qty, 5);
+  assert.strictEqual(s.qty, 1);
+  assert.strictEqual(s.price, 7412.00);   // 7420 notional gap - 40/5 points
+  assert.strictEqual(Math.round(s.price * 100) % 25, 0, 'and it is on a quarter-point tick');
 });
 
-test('without one the banner asks for the price instead of solving a wrong one', () => {
-  const record = ob.observeReading(reading({ fillsInSession: 4 })).record;
-  const opening = ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record });
+test('without a readable figure the banner asks for the price instead of solving one', () => {
+  const record = ob.observeReading(reading({ prevDayBalance: null })).record;
+  const opening = ob.resolveOpeningBalance({ sessionDate: '2026-11-17', record });
   assert.strictEqual(opening.balance, null);
-  const gross = brokerSessionGross(PAYLOAD, opening.balance);
+  const gross = brokerSessionGross({ summary: { 'Purchasing power': 6414.29, 'Total margin': 0 } }, opening.balance);
   assert.strictEqual(gross, null, 'a null opening balance must not be read as zero');
-  const s = suggestMissingFill({ fills: ORPHANED, brokerQty: 0, brokerGross: gross });
+  const s = suggestMissingFill({ fills: SHORT_ONE, brokerQty: 0, brokerGross: gross });
   assert.strictEqual(s.needsPrice, true);
   assert.strictEqual(s.price, null);
-});
-
-test('a stale opening balance would have been wrong, and that is the point', () => {
-  // Yesterday's figure against today's account: the solve would have been out by the
-  // difference, and nothing on screen would have said so.
-  const stale = ob.resolveOpeningBalance({ sessionDate: '2026-11-17', record: null, legacy: 4510.14 });
-  const fresh = ob.resolveOpeningBalance({ sessionDate: '2026-11-17', legacy: 4510.14,
-    record: ob.observeReading(reading({ sessionDate: '2026-11-17', purchasingPower: 5640.14 })).record });
-  assert.notStrictEqual(stale.balance, fresh.balance);
-  assert.strictEqual(fresh.balance, 5640.14);
 });
 
 // ── How it reads ─────────────────────────────────────────────────────────
 
 test('the status line says the number and where it came from', () => {
   const record = ob.observeReading(reading()).record;
-  const known = ob.openingBalanceText('2026-11-16', ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record }));
-  assert.match(known, /\$4510\.14/);
-  assert.match(known, /recorded at the session open/);
-  const unknown = ob.openingBalanceText('2026-11-16',
-    ob.resolveOpeningBalance({ sessionDate: '2026-11-16', record: ob.observeReading(reading({ fillsInSession: 2 })).record }));
+  const known = ob.openingBalanceText('2026-11-17', ob.resolveOpeningBalance({ sessionDate: '2026-11-17', record }));
+  assert.match(known, /\$5474\.29/);
+  const unknown = ob.openingBalanceText('2026-11-17', ob.resolveOpeningBalance({
+    sessionDate: '2026-11-17', record: ob.observeReading(reading({ prevDayBalance: null })).record }));
   assert.match(unknown, /unknown/);
   assert.ok(!/\$/.test(unknown), 'it must not show a balance it does not have: ' + unknown);
 });
