@@ -37,23 +37,60 @@ const LIVE_BROKER = 'amp';
 /** Why an opening balance could not be recorded, in the order the checks run. */
 const REASONS = {
   unreadable: 'AMP did not report a previous day balance',
-  traded:     'the session had already traded when TVCM first saw it',
-  carried:    'a position was carried into the session, so Purchasing power is not the balance',
+  notRolled:  'AMP has not rolled its statement for this session yet',
 };
+
+/** Raised while AMP's Balances table still carries the previous session's figures. */
+const NOT_ROLLED_CODE = 'TVCM-OB-NOT-ROLLED';
+
+/** Raised when a session's opening balance changes after it was first recorded. */
+const CHANGED_CODE = 'TVCM-OB-CHANGED';
+
+/**
+ * How far `account balance − prev day balance` may sit from zero at a session that has
+ * not traded yet. Both are cents, so anything past a cent is a real difference.
+ */
+const ROLL_TOLERANCE = 0.01;
 
 /** Where a recorded balance came from, best first. */
 const SOURCE_PREV_DAY = 'prev-day-balance';   // AMP's own figure, net of yesterday's fees
 const SOURCE_PP       = 'feed';               // TVCM-37's 17:00 Purchasing power capture
 
 /**
- * True when a stored record should be replaced by a reading from a better source. The
- * 17:00 capture is superseded by AMP's own figure the moment one can be read, which is
- * what repairs a session recorded before TVCM-42 without anybody editing a file.
+ * True when a stored record should be replaced by a fresh prev-day-balance reading.
+ *
+ * TVCM-42 locked a session's first reading in for the day, and TVCM-43 found what that
+ * costs: AMP's Balances table rolls its statement some time AFTER 17:00, so a reading
+ * taken in the first seconds of a session is the PREVIOUS session's figure. Locked in,
+ * that is an error of a whole day's P&L — reproduced at 778.60 — and it is silent,
+ * because the stored source says it came from AMP.
+ *
+ * So within a session the LATEST reading wins. TVCM's own session clock rolls exactly at
+ * 17:00 and is the authority for which session this is; the only thing that can move
+ * AMP's figure inside one session is AMP catching up, and catching up is an improvement.
  */
 function supersedes(existing) {
-  if (!existing) return true;
-  if (!existing.known) return true;                       // an unknown is always worth filling in
-  return existing.source !== SOURCE_PREV_DAY;             // anything older yields to AMP's own
+  return true;
+}
+
+/**
+ * Whether AMP has rolled its statement into this session yet.
+ *
+ * At a session that has not traded, the account balance and the previous day's balance
+ * are the same number — nothing has happened to separate them. If they differ, the
+ * Balances table is still showing the last session's pair, and recording from it would
+ * store the wrong day's opening balance. Once the session HAS traded the difference is
+ * the day's P&L and proves nothing, so the check only applies before the first fill.
+ */
+function hasRolled(input) {
+  const i = input || {};
+  if (Number(i.fillsInSession) > 0) return true;        // too late to tell, and too late to matter
+  const acct = i.accountBalance;
+  const prev = i.prevDayBalance;
+  if (acct === null || acct === undefined || acct === '') return true;   // nothing to check against
+  const a = Number(acct), p = Number(prev);
+  if (!Number.isFinite(a) || !Number.isFinite(p)) return true;
+  return Math.abs(a - p) <= ROLL_TOLERANCE;
 }
 
 /**
@@ -67,28 +104,48 @@ function supersedes(existing) {
 function observeReading(input) {
   const i = input || {};
   const sessionDate = i.sessionDate;
+  const existing = i.existing || null;
   if (!sessionDate) return { action: 'keep', record: null };
   if (i.mode === 'paper' || i.brokerId !== LIVE_BROKER) return { action: 'keep', record: null };
-  if (!supersedes(i.existing)) return { action: 'keep', record: null };
 
-  const base = { sessionDate, capturedAt: Number(i.at) || null };
+  const at = Number(i.at) || null;
+  const base = { sessionDate, capturedAt: at };
 
-  // AMP's own number, which is static for the session and already net of the previous
-  // day's commissions. Number(null) is 0, so the absent cases are refused by name before
-  // the conversion — the trap TVCM-36 found in brokerSessionGross and TVCM-37 here.
+  // AMP's own number, which is already net of the previous day's commissions. Number(null)
+  // is 0, so the absent cases are refused by name before the conversion — the trap
+  // TVCM-36 found in brokerSessionGross and TVCM-37 repeated here.
   const raw = i.prevDayBalance;
-  if (raw !== null && raw !== undefined && raw !== '') {
-    const prev = Number(raw);
-    if (Number.isFinite(prev)) {
-      return { action: 'record',
-               record: { ...base, balance: Math.round(prev * 100) / 100, known: true,
-                         source: SOURCE_PREV_DAY, reason: null } };
+  const readable = raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw));
+
+  if (readable) {
+    // The roll guard. Recording a figure AMP has not rolled yet is how a whole day's P&L
+    // gets stored as an opening balance (TVCM-43).
+    if (!hasRolled(i)) {
+      if (existing && existing.known) return { action: 'keep', record: null };
+      return { action: 'unknown', code: NOT_ROLLED_CODE,
+               record: { ...base, balance: null, known: false, source: null, reason: REASONS.notRolled } };
     }
+    const prev = Math.round(Number(raw) * 100) / 100;
+    // Unchanged is not news: rewriting the same number every five seconds would churn
+    // the file and make every poll look like a correction.
+    if (existing && existing.known && Number(existing.balance) === prev) {
+      return { action: 'keep', record: null };
+    }
+    const changed = !!(existing && existing.known) && Number(existing.balance) !== prev;
+    return {
+      action: changed ? 'changed' : 'record',
+      code: changed ? CHANGED_CODE : null,
+      previousBalance: changed ? Number(existing.balance) : null,
+      record: { ...base, balance: prev, known: true, source: SOURCE_PREV_DAY, reason: null,
+                // When the figure moved, everything inferred from the old one is suspect.
+                changedAt: changed ? at : (existing && existing.changedAt) || null,
+                previousBalance: changed ? Number(existing.balance) : null },
+    };
   }
 
   // Nothing readable yet is not a refusal while a session has never been judged — the
   // next poll may do better. Only a session TVCM has already given up on stays given up.
-  if (!i.existing) {
+  if (!existing) {
     return { action: 'unknown',
              record: { ...base, balance: null, known: false, source: null, reason: REASONS.unreadable } };
   }
@@ -135,5 +192,6 @@ function openingBalanceText(sessionDate, resolved) {
 
 module.exports = {
   LIVE_BROKER, REASONS, SOURCE_PREV_DAY, SOURCE_PP,
-  supersedes, observeReading, resolveOpeningBalance, openingBalanceText,
+  NOT_ROLLED_CODE, CHANGED_CODE, ROLL_TOLERANCE,
+  supersedes, hasRolled, observeReading, resolveOpeningBalance, openingBalanceText,
 };

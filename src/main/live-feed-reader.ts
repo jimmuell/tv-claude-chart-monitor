@@ -243,6 +243,9 @@ export class LiveFeedReader {
         // AMP's own "Prev day balance" — static for the session and already net of the
         // previous day's commissions, which the 17:00 Purchasing power capture was not.
         prevDayBalance:  liveFeed.prevDayBalanceFrom(payload),
+        // The roll guard needs both halves: at a session that has not traded they are the
+        // same number, and if they are not, AMP has not rolled its statement yet.
+        accountBalance:  payload.balances ? payload.balances.accountBalance : null,
         brokerQty,
         fillsInSession: match ? match.fillCount : 0,
         at,

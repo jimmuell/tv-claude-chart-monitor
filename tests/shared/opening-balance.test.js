@@ -99,25 +99,30 @@ test('a session recorded the TVCM-37 way is repaired by AMP’s own figure', () 
   // This is what fixes Jim's stored 2026-11-17 on the next poll, with nobody editing a file.
   const stale = { sessionDate: '2026-11-17', balance: MONDAY_CLOSE_PP, known: true,
                   source: ob.SOURCE_PP, reason: null, capturedAt: 1 };
-  assert.strictEqual(ob.supersedes(stale), true);
+  // UPDATED in TVCM-43: repairing a TVCM-37 record is a CHANGE of value, so it reports as
+  // one — which is the point, because anything solved from the old figure gets flagged.
   const out = ob.observeReading(reading({ existing: stale }));
-  assert.strictEqual(out.action, 'record');
+  assert.strictEqual(out.action, 'changed');
+  assert.strictEqual(out.previousBalance, MONDAY_CLOSE_PP);
   assert.strictEqual(out.record.balance, TUESDAY_PREV_DAY);
   assert.strictEqual(out.record.source, ob.SOURCE_PREV_DAY);
+  assert.ok(out.record.changedAt > 0, 'dated, so what was solved from 5693.89 can be found');
 });
 
 test('an unknown session is filled in the moment the figure can be read', () => {
   const unknown = { sessionDate: '2026-11-17', balance: null, known: false, source: null,
                     reason: ob.REASONS.unreadable, capturedAt: 1 };
-  assert.strictEqual(ob.supersedes(unknown), true);
   assert.strictEqual(ob.observeReading(reading({ existing: unknown })).record.balance, TUESDAY_PREV_DAY);
 });
 
 test('a balance already from AMP’s own figure is left alone', () => {
   const good = { sessionDate: '2026-11-17', balance: TUESDAY_PREV_DAY, known: true,
                  source: ob.SOURCE_PREV_DAY, reason: null, capturedAt: 1 };
-  assert.strictEqual(ob.supersedes(good), false);
+  // UPDATED in TVCM-43: supersedes() no longer refuses on source — refusing is exactly
+  // what locked a stale roll-time reading in for a whole day. The behaviour this test
+  // cared about is unchanged and still asserted: the same figure read again writes nothing.
   assert.strictEqual(ob.observeReading(reading({ existing: good })).action, 'keep');
+  assert.strictEqual(ob.observeReading(reading({ existing: good })).record, null);
 });
 
 // ── Never guessed ────────────────────────────────────────────────────────
@@ -231,4 +236,104 @@ test('the status line says the number and where it came from', () => {
     sessionDate: '2026-11-17', record: ob.observeReading(reading({ prevDayBalance: null })).record }));
   assert.match(unknown, /unknown/);
   assert.ok(!/\$/.test(unknown), 'it must not show a balance it does not have: ' + unknown);
+});
+
+// ── The 17:00 roll (TVCM-43) ─────────────────────────────────────────────
+//
+// TVCM-42 locked a session's FIRST prev-day-balance reading in for the day. AMP's
+// Balances table rolls its statement some time AFTER 17:00 — the same back-office lag
+// that debits the previous day's fees after the session ends — so the first reading of a
+// new session is the PREVIOUS session's figure. The review reproduced it: 17:00:05 reads
+// 5,474.29 and is locked; 17:20 AMP rolls and the correct figure is refused. The error is
+// a whole day's P&L, and silent, because the stored source says it came from AMP.
+
+const TUE_OPEN  = 5474.29;    // Tuesday's opening — what AMP still shows at 17:00:05
+const TUE_CLOSE = 6252.89;    // Tuesday's close after fees — Wednesday's true opening
+
+/** A reading for the new Wednesday session. */
+function wed(over = {}) {
+  return { sessionDate: '2026-11-18', mode: 'live', brokerId: 'amp',
+           fillsInSession: 0, at: 1_795_000_000_000, ...over };
+}
+
+test('the first reading after the roll is refused while AMP still shows the old pair', () => {
+  // 17:00:05. AMP has not rolled: account balance is Tuesday's close, prev day is
+  // Tuesday's open, and the gap between them is Tuesday's whole P&L.
+  const out = ob.observeReading(wed({ prevDayBalance: TUE_OPEN, accountBalance: TUE_CLOSE }));
+  assert.strictEqual(out.action, 'unknown');
+  assert.strictEqual(out.code, ob.NOT_ROLLED_CODE);
+  assert.strictEqual(out.record.balance, null, 'the wrong day’s figure must not be stored');
+  assert.match(out.record.reason, /not rolled/);
+});
+
+test('once AMP rolls, the correct figure is recorded', () => {
+  // 17:20. Nothing has traded, so the two agree, which is what proves the roll happened.
+  const out = ob.observeReading(wed({ prevDayBalance: TUE_CLOSE, accountBalance: TUE_CLOSE, at: 2 }));
+  assert.strictEqual(out.action, 'record');
+  assert.strictEqual(out.record.balance, TUE_CLOSE);
+  assert.strictEqual(out.record.source, ob.SOURCE_PREV_DAY);
+});
+
+test('the exact scenario the review reproduced no longer locks anything in', () => {
+  // 17:00:05 — refused rather than stored.
+  const first = ob.observeReading(wed({ prevDayBalance: TUE_OPEN, accountBalance: TUE_CLOSE, at: 1 }));
+  assert.strictEqual(first.record.known, false);
+  // 17:20 — AMP rolls, and the reading is taken.
+  const second = ob.observeReading(wed({ prevDayBalance: TUE_CLOSE, accountBalance: TUE_CLOSE,
+                                         at: 2, existing: first.record }));
+  assert.strictEqual(second.action, 'record');
+  assert.strictEqual(second.record.balance, TUE_CLOSE);
+  // Under TVCM-42 this returned {"action":"keep"} and 5,474.29 stood for the day.
+  assert.strictEqual(Math.round((TUE_CLOSE - TUE_OPEN) * 100) / 100, 778.60,
+    'the error this avoids is a whole day of P&L');
+});
+
+test('a later reading replaces an earlier one, and says that it moved', () => {
+  const first = ob.observeReading(wed({ prevDayBalance: TUE_OPEN, accountBalance: TUE_OPEN, at: 1 })).record;
+  assert.strictEqual(first.balance, TUE_OPEN, 'recorded: the two agreed, so it looked rolled');
+  const out = ob.observeReading(wed({ prevDayBalance: TUE_CLOSE, accountBalance: TUE_CLOSE,
+                                      at: 9, existing: first }));
+  assert.strictEqual(out.action, 'changed');
+  assert.strictEqual(out.code, ob.CHANGED_CODE);
+  assert.strictEqual(out.previousBalance, TUE_OPEN);
+  assert.strictEqual(out.record.balance, TUE_CLOSE);
+  assert.strictEqual(out.record.changedAt, 9, 'dated, so what was solved from the old one can be found');
+  assert.strictEqual(out.record.previousBalance, TUE_OPEN);
+});
+
+test('the same figure read again is not news, and does not churn the file', () => {
+  const first = ob.observeReading(wed({ prevDayBalance: TUE_CLOSE, accountBalance: TUE_CLOSE, at: 1 })).record;
+  const again = ob.observeReading(wed({ prevDayBalance: TUE_CLOSE, accountBalance: TUE_CLOSE,
+                                        at: 2, existing: first }));
+  assert.strictEqual(again.action, 'keep');
+  assert.strictEqual(again.record, null);
+});
+
+test('once the session has traded the roll check cannot and need not apply', () => {
+  // The gap is now the day's own P&L and proves nothing. By the time a session has
+  // traded, AMP has long since rolled.
+  assert.strictEqual(ob.hasRolled({ fillsInSession: 57, accountBalance: 6414.29, prevDayBalance: 5474.29 }), true);
+  const out = ob.observeReading(wed({ prevDayBalance: TUE_CLOSE, accountBalance: 9999, fillsInSession: 57 }));
+  assert.strictEqual(out.action, 'record');
+  assert.strictEqual(out.record.balance, TUE_CLOSE);
+});
+
+test('a cent of rounding is not a failed roll', () => {
+  assert.strictEqual(ob.hasRolled({ fillsInSession: 0, accountBalance: 6252.89, prevDayBalance: 6252.89 }), true);
+  assert.strictEqual(ob.hasRolled({ fillsInSession: 0, accountBalance: 6252.90, prevDayBalance: 6252.89 }), true);
+  assert.strictEqual(ob.hasRolled({ fillsInSession: 0, accountBalance: 6252.99, prevDayBalance: 6252.89 }), false);
+});
+
+test('with no account balance to check against, the guard does not block', () => {
+  // Half a Balances row is better than none: the figure is still AMP's own.
+  for (const acct of [null, undefined, '', 'n/a']) {
+    assert.strictEqual(ob.hasRolled({ fillsInSession: 0, accountBalance: acct, prevDayBalance: TUE_CLOSE }), true, String(acct));
+  }
+});
+
+test('a session already holding a good figure is not blanked by an unrolled read', () => {
+  // Defensive: if AMP ever goes backwards mid-session, what is known is kept.
+  const good = ob.observeReading(wed({ prevDayBalance: TUE_CLOSE, accountBalance: TUE_CLOSE, at: 1 })).record;
+  const out = ob.observeReading(wed({ prevDayBalance: TUE_OPEN, accountBalance: 9999, at: 2, existing: good }));
+  assert.strictEqual(out.action, 'keep');
 });

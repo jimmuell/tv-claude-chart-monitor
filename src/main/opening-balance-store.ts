@@ -19,6 +19,8 @@ const openingBalance = sharedModule('opening-balance.js');
 export class OpeningBalanceStore {
   private dir: string;
   private cache = new Map<'live' | 'paper', Record<string, OpeningBalanceRecord>>();
+  /** Conditions already reported, so a repeating one is not logged every five seconds. */
+  private said = new Set<string>();
   private log: (line: string) => void;
 
   constructor(userDataDir: string, log?: (line: string) => void) {
@@ -77,14 +79,35 @@ export class OpeningBalanceStore {
     const rows = { ...this.all(mode), [sessionDate]: decision.record };
     this.save(mode, rows);
     if (decision.action === 'record') {
-      const where = decision.record.source === 'prev-day-balance'
-        ? "from AMP's own Prev day balance"
-        : 'read while flat, before any fill';
-      this.log(`[opening-balance] ${sessionDate} opened at $${decision.record.balance.toFixed(2)} (${where})`);
+      this.log(`[opening-balance] ${sessionDate} opened at $${decision.record.balance.toFixed(2)} (from AMP's own Prev day balance)`);
+    } else if (decision.action === 'changed') {
+      // AMP caught up. Everything inferred from the old figure is now suspect, which is
+      // why the change is loud and dated rather than a silent overwrite (TVCM-43).
+      this.log(`[opening-balance] ${openingBalance.CHANGED_CODE}: ${sessionDate} opening balance moved from `
+        + `$${Number(decision.previousBalance).toFixed(2)} to $${decision.record.balance.toFixed(2)} — `
+        + 'anything solved from the old figure is flagged for review');
+    } else if (decision.code === openingBalance.NOT_ROLLED_CODE) {
+      this.logOnce(`${sessionDate}:not-rolled`,
+        `[opening-balance] ${openingBalance.NOT_ROLLED_CODE}: ${sessionDate} — ${decision.record.reason}; `
+        + 'not recording until it does, and no price will be solved until then');
     } else {
-      this.log(`[opening-balance] TVCM-OB-UNKNOWN: ${sessionDate} — ${decision.record.reason}; the missing-fill banner will ask for a price instead of solving one`);
+      this.logOnce(`${sessionDate}:unknown`,
+        `[opening-balance] TVCM-OB-UNKNOWN: ${sessionDate} — ${decision.record.reason}; the missing-fill banner will ask for a price instead of solving one`);
     }
     return decision.record;
+  }
+
+  /** Says a repeating condition once, so a 5-second poll cannot flood the log. */
+  private logOnce(key: string, line: string): void {
+    if (this.said.has(key)) return;
+    this.said.add(key);
+    this.log(line);
+  }
+
+  /** When a session's opening balance last moved, for re-validating what was solved from it. */
+  changedAt(mode: 'live' | 'paper', sessionDate: string): number | null {
+    const rec = this.get(mode, sessionDate) as (OpeningBalanceRecord & { changedAt?: number | null }) | null;
+    return rec && rec.changedAt ? Number(rec.changedAt) : null;
   }
 
   /** The balance to use for a session, and where it came from. Never a guess. */
