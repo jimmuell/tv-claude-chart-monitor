@@ -282,7 +282,9 @@ body {
   padding: 3px 12px;
 }
 
-.corrections { margin: 16px 0 0; }
+/* The corrections block is a sibling of .summary, not a child, so it has to carry the
+   same gutter itself or it sits flush against the window edge. */
+.corrections { margin: 0; padding: 0 22px 24px; max-width: 820px; }
 
 .correction-row {
   display: grid;
