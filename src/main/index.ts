@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr, peekBars, getActiveModelId } from './bridge';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr, peekBars, getActiveModelId, connectionState } from './bridge';
 import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
 import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
 import { notifyVerdict, resetNotifier, notifyProblem } from './notifier';
@@ -670,6 +670,8 @@ type TrayTitleOpts = {
   paperMode?: boolean; source?: string | null; switchHint?: string | null; feedReason?: string | null;
   feedSource?: string | null; crossCheck?: unknown; lastKnown?: boolean;
   appliedCorrections?: string[];
+  /** The CDP connection's own state, so "lost" can be said differently from "no broker". */
+  cdpState?: string; cdpLostAt?: number | null;
 };
 const { trayTitleColoured, trayTooltip } = sharedModule('tray-title.js') as {
   trayTitleColoured: (s: OrderImportState | null, o?: TrayTitleOpts) => string;
@@ -797,6 +799,7 @@ function refreshTrayTitle(): void {
   const merged = currentMergedState();
   const state = mergedToImportState(merged, orderImport?.getState() ?? null, liveFeed?.getState() ?? null);
   const staleMinutes = getSettings().orderImportStaleMinutes ?? 30;
+  const cdpStatus = connectionState();
   const opts: TrayTitleOpts = {
     staleMinutes,
     isTestProfile: isTestProfile(),
@@ -809,6 +812,10 @@ function refreshTrayTitle(): void {
     crossCheck:    liveFeed?.getState().crossCheck ?? null,
     lastKnown:     merged.lastKnown,
     appliedCorrections: liveFeed?.getState().appliedCorrections ?? [],
+    // The connection speaks for itself: "reconnecting" and "press Connect" are different
+    // problems with different answers, and only the manager knows which one this is.
+    cdpState:      cdpStatus.state,
+    cdpLostAt:     cdpStatus.lostAt,
   };
   try {
     // monospacedDigit stops the title's width jittering as the number changes.

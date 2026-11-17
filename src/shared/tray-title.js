@@ -126,6 +126,47 @@ function fallbackNote(sessionDate, currentSession) {
   return `${dayLabel(sessionDate)} — ${just ? 'the session just ended' : 'the last session with fills'}`;
 }
 
+/**
+ * The two reasons TVCM cannot read TradingView, which need completely different actions
+ * and so must never share a sentence.
+ *
+ *   - the PIPE is down (TVCM-CDP-LOST / TVCM-LF-NOT-CONNECTED): TradingView is not
+ *     reachable. TVCM is already reconnecting and Jim need do nothing.
+ *   - the BROKER is not connected (TVCM-LF-NO-BROKER-OBJECT): TradingView is reachable
+ *     and answering, but is not logged in to AMP. No amount of reconnecting fixes that;
+ *     Jim has to press Connect. Usually it is the iPhone holding his single allowed
+ *     connection.
+ *
+ * Before TVCM-41 both arrived as "Last import failed: <code> — <reason>", which told him
+ * neither which one it was nor whether he had to do anything.
+ */
+const PIPE_DOWN_CODES   = new Set(['TVCM-CDP-LOST', 'TVCM-LF-NOT-CONNECTED']);
+const BROKER_DOWN_CODES = new Set(['TVCM-LF-NO-BROKER-OBJECT']);
+
+/** A moment as a short Chicago clock reading, e.g. "7:04 PM CT". */
+function clockAt(ms) {
+  if (ms == null) return null;
+  return new Date(Number(ms)).toLocaleTimeString('en-US',
+    { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' }) + ' CT';
+}
+
+/**
+ * The one line about the connection, or null when there is nothing wrong with it.
+ * The pipe outranks the broker: with no connection, what the broker is doing is unknown.
+ */
+function connectionNote(opts) {
+  const o = opts || {};
+  const pipeDown = o.cdpState === 'lost' || PIPE_DOWN_CODES.has(o.errorCode);
+  if (pipeDown) {
+    const when = clockAt(o.cdpLostAt);
+    return `Lost connection to TradingView${when ? ` at ${when}` : ''} — reconnecting`;
+  }
+  if (BROKER_DOWN_CODES.has(o.errorCode)) {
+    return 'TradingView has no broker connected — press Connect in TradingView';
+  }
+  return null;
+}
+
 /** The labels that go in front of the number: profile first, then account. */
 function titlePrefix(opts) {
   return (opts.isTestProfile ? TEST_PREFIX : '') + (opts.paperMode ? PAPER_PREFIX : '');
@@ -251,7 +292,16 @@ function trayTooltip(state, options) {
     if (line) lines.push(line);
   }
   if (s.openPositionAtEnd !== 0) lines.push(`Open position ${s.openPositionAtEnd > 0 ? '+' : ''}${s.openPositionAtEnd}`);
-  if (hasFailedImport(state)) {
+  // A connection fault says what it is and what Jim should do, in its own words. It
+  // replaces the generic failure pair below, which named a code and left him to guess
+  // whether the problem was his to fix.
+  const connection = connectionNote({
+    cdpState: opts.cdpState, cdpLostAt: opts.cdpLostAt, errorCode: state.errorCode,
+  });
+  if (connection) {
+    lines.push(connection);
+    lines.push('Showing the last good reading — the number above is not being refreshed');
+  } else if (hasFailedImport(state)) {
     // A fault does not always mean a stale number. A position mismatch is raised about
     // figures that were read the same second, so calling them "not being refreshed"
     // would be plainly false — the same wrongness TVCM-33 removed from the cross-check.
@@ -274,6 +324,7 @@ module.exports = {
   NO_DATA_TITLE, STALE_MARKER, TEST_PREFIX, PAPER_PREFIX, LIVE_FAULT_CODES,
   DEFAULT_STALE_MINUTES, MAX_TOOLTIP_REASON, ANSI,
   formatNet, ansiFor, isStale, hasFailedImport, shortReason, titlePrefix, sourceLabel, crossCheckLine,
-  dayLabel, daysBetween, fallbackNote,
+  dayLabel, daysBetween, fallbackNote, connectionNote, clockAt,
+  PIPE_DOWN_CODES, BROKER_DOWN_CODES,
   trayTitle, trayTitleColoured, stripAnsi, trayTooltip,
 };

@@ -520,13 +520,19 @@ test('a successful read never claims the number is not being refreshed', () => {
   }
 });
 
+// REWORDED in TVCM-41: a lost connection used to arrive as "Last import failed:
+// TVCM-LF-NOT-CONNECTED — WebSocket is not open", which named a code and left Jim to
+// work out whether it was his to fix. It now says what happened and that TVCM is already
+// dealing with it. The "not being refreshed" half — the part that keeps a stale number
+// honest — is unchanged, and still asserted to appear exactly once.
 test('a real read failure DOES say the number is not being refreshed, once', () => {
   const s = state({ importedAt: FRI_OPEN - 10 * MIN });
   s.errorCode = 'TVCM-LF-NOT-CONNECTED';
   s.errorMessage = 'WebSocket is not open';
   const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders',
+                             cdpLostAt: FRI_OPEN - 10 * MIN,
                              crossCheck: { state: 'unavailable', message: 'no figure' } });
-  assert.ok(/Last import failed: TVCM-LF-NOT-CONNECTED/.test(t), t);
+  assert.ok(/Lost connection to TradingView at .* — reconnecting/.test(t), t);
   assert.ok(/not being refreshed/i.test(t), t);
   assert.strictEqual(t.split('\n').filter(l => /not being refreshed/i.test(l)).length, 1);
 });
@@ -596,9 +602,11 @@ test('a genuinely stale number still says so', () => {
   const s = state({ importedAt: FRI_OPEN - 90 * MIN });
   s.errorCode = 'TVCM-LF-NOT-CONNECTED';
   s.errorMessage = 'WebSocket is not open';
-  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders', lastKnown: true });
-  assert.ok(/Last import failed/i.test(t), t);
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', feedSource: 'orders', lastKnown: true,
+                             cdpState: 'lost', cdpLostAt: FRI_OPEN - 90 * MIN });
+  assert.ok(/Lost connection to TradingView/i.test(t), t);
   assert.ok(/not being refreshed/i.test(t), t);
+  assert.ok(/— stale/.test(t), 'the age of the reading is still called out');
 });
 
 // ── An active correction is declared (TVCM-36) ───────────────────────────
@@ -692,4 +700,93 @@ test('an unusable date never produces a confident label', () => {
 test('a coloured fallback title still strips back to the plain one', () => {
   const plain = trayTitle(yesterday(), { now: NEW_SESSION });
   assert.strictEqual(tt.stripAnsi(tt.trayTitleColoured(yesterday(), { now: NEW_SESSION })), plain);
+});
+
+// ── Two different problems, two different sentences (TVCM-41) ────────────
+//
+// "TVCM cannot reach TradingView" and "TradingView is not logged in to AMP" need opposite
+// actions: the first is already being fixed and Jim need do nothing; the second will never
+// fix itself and he has to press Connect. Before TVCM-41 both arrived as
+// "Last import failed: <code> — <reason>", which told him neither.
+
+const LOST_AT = at('2026-11-17T01:04:00Z');   // Mon 19:04 CT — the TVCM-40 outage began
+
+test('a lost connection says so, with the time it went, and that it is reconnecting', () => {
+  const t = trayTooltip(state({ importedAt: LOST_AT }),
+    { now: LOST_AT + 60 * MIN, source: 'feed', cdpState: 'lost', cdpLostAt: LOST_AT });
+  assert.ok(t.includes('Lost connection to TradingView at 7:04 PM CT — reconnecting'), t);
+  assert.ok(/not being refreshed/i.test(t), t);
+  assert.ok(!/press Connect/i.test(t), 'there is nothing for Jim to do: ' + t);
+});
+
+test('no broker connected tells Jim to press Connect, and does not claim to be reconnecting', () => {
+  const s = state({ importedAt: LOST_AT });
+  s.errorCode = 'TVCM-LF-NO-BROKER-OBJECT';
+  s.errorMessage = 'TradingView could not be read';
+  const t = trayTooltip(s, { now: LOST_AT + 10 * MIN, source: 'feed' });
+  assert.ok(t.includes('TradingView has no broker connected — press Connect in TradingView'), t);
+  assert.ok(!/Lost connection/i.test(t), 'the pipe is fine — saying otherwise sends him to the wrong place: ' + t);
+  assert.ok(/not being refreshed/i.test(t), t);
+});
+
+test('the two are never shown together, and the pipe outranks the broker', () => {
+  // With no connection, what the broker is doing is simply unknown.
+  const s = state({ importedAt: LOST_AT });
+  s.errorCode = 'TVCM-LF-NO-BROKER-OBJECT';
+  const t = trayTooltip(s, { now: LOST_AT + MIN, source: 'feed', cdpState: 'lost', cdpLostAt: LOST_AT });
+  assert.ok(/Lost connection to TradingView/.test(t), t);
+  assert.ok(!/press Connect/i.test(t), t);
+});
+
+test('a healthy connection says nothing about connections at all', () => {
+  const t = trayTooltip(state(), { now: FRI_OPEN, source: 'feed', cdpState: 'connected' });
+  assert.ok(!/Lost connection/i.test(t), t);
+  assert.ok(!/press Connect/i.test(t), t);
+  assert.ok(!/not being refreshed/i.test(t), t);
+});
+
+test('an outage with no recorded start still reads as a sentence', () => {
+  const note = tt.connectionNote({ cdpState: 'lost', cdpLostAt: null });
+  assert.strictEqual(note, 'Lost connection to TradingView — reconnecting');
+});
+
+test('connectionNote answers for the codes that mean each thing, and no others', () => {
+  for (const code of ['TVCM-CDP-LOST', 'TVCM-LF-NOT-CONNECTED']) {
+    assert.match(tt.connectionNote({ errorCode: code, cdpLostAt: LOST_AT }), /Lost connection/, code);
+  }
+  assert.match(tt.connectionNote({ errorCode: 'TVCM-LF-NO-BROKER-OBJECT' }), /press Connect/);
+  // Everything else is somebody else's problem and must not be dressed up as a connection.
+  for (const code of ['TVCM-OH-BAD-HEADER', 'TVCM-LF-BLIND', 'TVCM-LF-POSITION-MISMATCH',
+                      'TVCM-LF-SHAPE', 'TVCM-OI-NOT-LIVE', null, undefined]) {
+    assert.strictEqual(tt.connectionNote({ errorCode: code }), null, String(code));
+  }
+  assert.strictEqual(tt.connectionNote({}), null);
+  assert.strictEqual(tt.connectionNote(null), null);
+});
+
+test('a connection fault replaces the generic failure pair, never doubles it', () => {
+  const s = state({ importedAt: LOST_AT });
+  s.errorCode = 'TVCM-LF-NOT-CONNECTED';
+  s.errorMessage = 'WebSocket is not open: readyState 3 (CLOSED)';
+  const t = trayTooltip(s, { now: LOST_AT + MIN, source: 'feed', cdpState: 'lost', cdpLostAt: LOST_AT });
+  assert.ok(!/Last import failed/.test(t), 'the vague line must be gone, not added to: ' + t);
+  assert.strictEqual(t.split('\n').filter(l => /not being refreshed/i.test(l)).length, 1);
+});
+
+test('a fault that is not about the connection keeps its own wording', () => {
+  // TVCM-33/35: a position mismatch is about numbers read this second, and must not be
+  // described as a connection problem or as a stale number.
+  const s = state();
+  s.errorCode = 'TVCM-LF-POSITION-MISMATCH';
+  s.errorMessage = 'TradingView’s records and its live position disagree';
+  const t = trayTooltip(s, { now: FRI_OPEN, source: 'feed', cdpState: 'connected' });
+  assert.ok(t.includes('TVCM-LF-POSITION-MISMATCH'), t);
+  assert.ok(!/not being refreshed/i.test(t), t);
+  assert.ok(!/Lost connection/i.test(t), t);
+});
+
+test('the clock reads in Chicago time, which is the only clock TVCM uses', () => {
+  assert.strictEqual(tt.clockAt(at('2026-11-17T01:04:00Z')), '7:04 PM CT');
+  assert.strictEqual(tt.clockAt(at('2026-11-17T15:30:00Z')), '9:30 AM CT');
+  assert.strictEqual(tt.clockAt(null), null);
 });
