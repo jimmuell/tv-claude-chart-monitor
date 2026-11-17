@@ -300,9 +300,10 @@ const SettingsPanel: React.FC = () => {
         <div className="settings-section-title">Opening balance</div>
         <div className="settings-row">
           <span className="settings-label settings-label-wrap">
-            TVCM records each session’s opening balance itself, while the account is
-            flat and before the first fill. Fill these in only to override one session —
-            from the AMP statement, say — and clear the date when you are done.
+            TVCM reads each session’s opening balance from AMP’s own “Prev day balance”,
+            and waits for AMP to roll its statement after 17:00 before recording it. Fill
+            these in only to override one session — from the AMP statement, say — and
+            clear the date when you are done.
           </span>
         </div>
         <div className="settings-row">

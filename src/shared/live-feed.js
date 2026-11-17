@@ -612,8 +612,11 @@ function liveFeedExpression() {
     // The account's own money, from the live header. Measured 2026-11-16 14:24 with the
     // account FLAT: Purchasing power 5,640.14 equalled Account balance 5,640.14 exactly.
     // It is the only balance figure that is live — the Account summary tab freezes.
+    // Read ONCE per poll and used twice: the header summary and the Balances table both
+    // live on it, and this runs every five seconds.
+    let ami = null;
     try {
-      let ami = broker.accountManagerInfo();
+      ami = broker.accountManagerInfo();
       if (ami && typeof ami.then === 'function') ami = await ami;
       out.summary = {};
       for (const row of ((ami && ami.summary) || [])) {
@@ -635,9 +638,7 @@ function liveFeedExpression() {
     // low by exactly Monday's fees, $219.60, and the missing-fill solve produced a price
     // that is not even on a tick (TVCM-42).
     try {
-      let ami2 = broker.accountManagerInfo();
-      if (ami2 && typeof ami2.then === 'function') ami2 = await ami2;
-      const page = ((ami2 && ami2.pages) || []).find(p => p && p.id === 'summary');
+      const page = ((ami && ami.pages) || []).find(p => p && p.id === 'summary');
       const table = (((page && page.tables) || [])).find(t => t && t.id === 'balance');
       let rows = table && typeof table.getData === 'function' ? table.getData() : null;
       if (rows && typeof rows.then === 'function') rows = await rows;
