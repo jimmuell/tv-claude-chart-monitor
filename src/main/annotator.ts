@@ -8,6 +8,17 @@ const INDICATOR_NAME = 'TA Levels';
 
 let singleStudyId: string | null = null;
 
+/**
+ * Whether the annotator may touch the chart. AI analysis off means nothing AI-derived is
+ * drawn, whichever entry point asks — and the entry points are several (TVCM-44).
+ */
+let drawingAllowed = false;
+
+/** Turns chart annotation on or off, from the same setting that gates the LLM. */
+export function setAnnotationsEnabled(on: boolean): void {
+  drawingAllowed = on === true;
+}
+
 export function invalidateStudyCache(): void {
   singleStudyId = null;
 }
@@ -44,6 +55,8 @@ function buildFullPatch(slots: Array<LevelAnnotation | null>): Record<string, un
 
 /** Write all 40 level inputs at once. Slots beyond levels.length are zeroed. */
 export async function writeLevels(levels: LevelAnnotation[]): Promise<void> {
+  if (!drawingAllowed) return;   // AI analysis is off: nothing AI-derived is drawn
+
   const slots: Array<LevelAnnotation | null> = Array(SLOTS).fill(null);
   for (let i = 0; i < Math.min(levels.length, SLOTS); i++) {
     const lvl = levels[i];
@@ -69,6 +82,7 @@ export async function writeLevel(
   visible: number,
   priority: string = 'primary',
 ): Promise<void> {
+  if (!drawingAllowed) return;   // AI analysis is off: nothing AI-derived is drawn
   const base  = (slotIndex - 1) * 5;
   const patch: Record<string, unknown> = {
     [`in_${base}`]:     price,
@@ -128,6 +142,8 @@ export function buildAnnotations(levels: KeyLevel[], currentPrice: number, armed
 
 /** Write entry/stop/target bracket lines (in_43–in_45). */
 export async function writeTradePlan(entry: number, stop: number, target: number): Promise<void> {
+  if (!drawingAllowed) return;   // AI analysis is off: nothing AI-derived is drawn
+
   const patch: Record<string, unknown> = { in_43: entry, in_44: stop, in_45: target };
   const studyId = await resolveStudyId();
   const result  = await callSetStudyInputs(studyId, patch);
@@ -151,6 +167,8 @@ const MAX_PATTERN_MARKERS = 4;
 
 /** Write up to 4 candle pattern markers (in_46–in_57). Pass [] to clear all. */
 export async function writePatternMarkers(markers: PatternMarker[]): Promise<void> {
+  if (!drawingAllowed) return;   // AI analysis is off: nothing AI-derived is drawn
+
   const patch: Record<string, unknown> = {};
   for (let i = 0; i < MAX_PATTERN_MARKERS; i++) {
     const base = PATTERN_MARKER_BASE + i * 3;
@@ -180,6 +198,8 @@ const CONFIDENCE_DIR_INPUT = 59;
 
 /** Write confidence percentage (0–100) and direction label to in_58/in_59. */
 export async function writeConfidence(pct: number, dir: string = ''): Promise<void> {
+  if (!drawingAllowed) return;   // AI analysis is off: nothing AI-derived is drawn
+
   const patch: Record<string, unknown> = {
     [`in_${CONFIDENCE_INPUT}`]:     pct,
     [`in_${CONFIDENCE_DIR_INPUT}`]: dir,

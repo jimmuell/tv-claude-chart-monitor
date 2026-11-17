@@ -127,6 +127,10 @@ interface CdpManager {
   peekReader(): ReturnType<typeof createReader> | null;
 }
 
+const { AI_OFF_CODE, AI_OFF_REASON } = require(path.join(app.getAppPath(), 'src/shared/ai-gate.js')) as {
+  AI_OFF_CODE: string; AI_OFF_REASON: string;
+};
+
 const { createReader, PRICE_POLL_EXPR } = require(path.join(app.getAppPath(), 'src/shared/tv-reader')) as {
   PRICE_POLL_EXPR: string;
   createReader: (config: AppConfig, log: Logger) => {
@@ -208,8 +212,33 @@ function withReader<T>(fn: (r: ReturnType<typeof createReader>) => Promise<T>): 
   return manager.withReader(fn);
 }
 
-/** Ensure the CommentaryEngine is initialised. */
+/**
+ * Whether TVCM may spend money on an LLM. Set by index.ts from the saved settings on
+ * startup and on every change; OFF until told otherwise, so a bridge that is never told
+ * cannot bill anybody.
+ */
+let aiEnabled = false;
+
+/** Turns AI chart analysis on or off. The only way `aiEnabled` ever becomes true. */
+export function setAiAnalysisEnabled(on: boolean): void {
+  aiEnabled = on === true;
+  if (!aiEnabled) engine = null;      // drop the provider as well as the permission
+}
+
+/** Whether an LLM call is currently permitted, for callers that need to ask first. */
+export function aiAnalysisEnabled(): boolean {
+  return aiEnabled;
+}
+
+/**
+ * Ensure the CommentaryEngine is initialised.
+ *
+ * The gate is here as well as at the top of runAnalysis() on purpose: this is the only
+ * place in the app that constructs a provider, so a future caller that finds another way
+ * to an analysis still cannot reach one (TVCM-44).
+ */
 function ensureEngine(): void {
+  if (!aiEnabled) throw new Error(`${AI_OFF_CODE}: ${AI_OFF_REASON}`);
   if (!engine) {
     engine = new CommentaryEngine(resolveLlm(config), logger);
   }
@@ -268,6 +297,9 @@ function sendStatus(status: string): void {
 }
 
 export async function runAnalysis(): Promise<AnalysisResult> {
+  // Refused before anything is read, so an analysis that cannot finish does not cost a
+  // CDP round trip either.
+  if (!aiEnabled) throw new Error(`${AI_OFF_CODE}: ${AI_OFF_REASON}`);
   const analysisStartedAt = Date.now();
   sendStatus('Reading chart data...');
   let snapshot: unknown;

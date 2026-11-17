@@ -1368,3 +1368,22 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
 }
+
+/* The panel while AI chart analysis is off (TVCM-44). It is a state, not an error:
+   nothing has gone wrong, and the P&L half of the app is still working. */
+.ai-off-title {
+  margin: 28px 0 10px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ai-off-note {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-width: 460px;
+}
+
+.ai-off-note.dim { color: var(--text-secondary); opacity: 0.75; }

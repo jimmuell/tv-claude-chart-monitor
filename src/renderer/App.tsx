@@ -642,6 +642,8 @@ type UIStatus = 'idle' | 'loading' | 'complete' | 'error';
 
 const App: React.FC = () => {
   const [view, setView]                     = useState<'analysis' | 'settings'>('analysis');
+  /** AI chart analysis. Off since TVCM-44; the panel says so instead of showing nothing. */
+  const [aiEnabled, setAiEnabled]           = useState(false);
   const [uiStatus, setUiStatus]             = useState<UIStatus>('idle');
   const [loadingMessage, setLoadingMessage] = useState('');
   const [result, setResult]                 = useState<AnalysisResult | null>(null);
@@ -692,6 +694,7 @@ const App: React.FC = () => {
       setAutoTradeTestMode(s.autoTradeTestMode);
       setAutoTradeStopDollars(s.autoTradeStopDollars ?? 15);
       setAutoTradeTargetDollars(s.autoTradeTargetDollars ?? 30);
+      setAiEnabled(s.aiAnalysisEnabled === true);
     }).catch(() => {/* ignore */});
   }, []);
 
@@ -833,6 +836,7 @@ const App: React.FC = () => {
         setAutoTradeTestMode(s.autoTradeTestMode);
         setAutoTradeStopDollars(s.autoTradeStopDollars ?? 15);
         setAutoTradeTargetDollars(s.autoTradeTargetDollars ?? 30);
+        setAiEnabled(s.aiAnalysisEnabled === true);
       }).catch(() => {});
     }
   }, [view]);
@@ -1087,6 +1091,23 @@ const App: React.FC = () => {
         </div>
       );
     }
+    // Ahead of every other state: with AI off there is no loading, no error and no card
+    // to report, and the reason is the only useful thing on screen (TVCM-44).
+    if (!aiEnabled) {
+      return (
+        <div className="body">
+          <p className="ai-off-title">AI analysis is off</p>
+          <p className="ai-off-note">
+            Chart commentary, auto-draw and the trade-plan bracket are all switched off, and
+            nothing is being sent to an AI provider. Turn it back on in Settings.
+          </p>
+          <p className="ai-off-note dim">
+            P&amp;L, the live feed, the menu bar and the Order History window are unaffected —
+            they have never used AI.
+          </p>
+        </div>
+      );
+    }
     if (uiStatus === 'loading') {
       return <div className="body"><p className="loading-text">{loadingMessage}</p></div>;
     }
@@ -1279,9 +1300,10 @@ const App: React.FC = () => {
             <button
               className="refresh-btn"
               onClick={handleRefresh}
-              disabled={uiStatus === 'loading'}
+              disabled={uiStatus === 'loading' || !aiEnabled}
+              title={aiEnabled ? 'Run an analysis now' : 'AI analysis is off'}
             >
-              {uiStatus === 'loading' ? 'Loading...' : 'Refresh'}
+              {!aiEnabled ? 'AI off' : uiStatus === 'loading' ? 'Loading...' : 'Refresh'}
             </button>
           </div>
         </footer>

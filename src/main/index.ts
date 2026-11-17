@@ -2,9 +2,9 @@ import 'dotenv/config';
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen, dialog, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr, peekBars, getActiveModelId, connectionState } from './bridge';
+import { runAnalysis, getSnapshot, disconnect, setStatusCallback, setCdpPort, setApiKeyOverride, resetConnection, getKeyStatus, evalPage, setLessonsProvider, getPricePollExpr, peekBars, getActiveModelId, connectionState, setAiAnalysisEnabled } from './bridge';
 import { registerAlert, checkCrossings, clearAlertForPrice, getArmedPrices } from './alert-monitor';
-import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence } from './annotator';
+import { writeLevel, writeLevels, clearAll as clearAllLevels, buildAnnotations, invalidateStudyCache, writeTradePlan, clearTradePlan, writePatternMarkers, writeConfidence, setAnnotationsEnabled } from './annotator';
 import { notifyVerdict, resetNotifier, notifyProblem } from './notifier';
 import { submitMarketOrder, getCooldownStatus, getTradeWindowStatus } from './order-executor';
 import { PnlTracker } from './pnl-tracker';
@@ -300,6 +300,12 @@ function maybeAutostartScheduler(): void {
 }
 
 function startSchedulerOnce(): void {
+  // Nothing timed runs while AI analysis is off — a scheduler that wakes up only to be
+  // refused is still a scheduler nobody asked for (TVCM-44).
+  if (!aiGate.aiAllowed(getSettings())) {
+    console.log(`[scheduler] ${aiGate.AI_OFF_MESSAGE} — not starting`);
+    return;
+  }
   if (!schedulerStarted) {
     schedulerStarted = true;
     if (getSettings().autoRefresh !== false) {
@@ -702,6 +708,12 @@ const { mergePnl, mergedToImportState } = sharedModule('pnl-merge.js') as {
   mergedToImportState: (m: unknown, c: unknown, f: unknown) => OrderImportState;
 };
 
+const aiGate = sharedModule('ai-gate.js') as {
+  AI_OFF_MESSAGE: string; AI_OFF_REASON: string; AI_OFF_CODE: string;
+  aiAllowed: (settings: unknown) => boolean;
+  aiOffReason: (settings: unknown) => string | null;
+};
+
 const correctionsLib = sharedModule('corrections.js') as {
   reviewCorrection: (c: unknown, ctx: Record<string, unknown>) => { id: string; needsReview: boolean; problems: string[] };
   reviewText: (r: unknown) => string | null;
@@ -990,6 +1002,9 @@ app.on('ready', () => {
   // Apply persisted overrides so bridge/scheduler honour stored settings from first use
   setCdpPort(initialSettings.cdpPort);
   if (initialSettings.apiKeyOverride) setApiKeyOverride(initialSettings.apiKeyOverride);
+  // The bridge starts refusing and is only ever told otherwise from the saved setting.
+  setAiAnalysisEnabled(aiGate.aiAllowed(initialSettings));
+  setAnnotationsEnabled(aiGate.aiAllowed(initialSettings));
   app.dock?.hide();
 
   // Tray
@@ -1187,6 +1202,12 @@ app.on('ready', () => {
       mainWindow?.webContents.send(IPC.ANALYZE_STATUS, status);
     });
     try {
+      // Refresh Now is disabled in the panel while AI is off; this is the same refusal
+      // from the other side, so an IPC call that arrives anyway cannot spend anything.
+      if (!aiGate.aiAllowed(getSettings())) {
+        mainWindow?.webContents.send(IPC.ANALYZE_STATUS, 'error', aiGate.AI_OFF_REASON);
+        throw new Error(`${aiGate.AI_OFF_CODE}: ${aiGate.AI_OFF_REASON}`);
+      }
       const result = await runAnalysis();
       lastResult = result;
       recordAndGrade(result);
@@ -1229,6 +1250,19 @@ app.on('ready', () => {
     }
     if ('apiKeyOverride' in partial && partial.apiKeyOverride !== undefined) {
       setApiKeyOverride(partial.apiKeyOverride);
+    }
+    if ('aiAnalysisEnabled' in partial) {
+      const on = aiGate.aiAllowed(updated);
+      setAiAnalysisEnabled(on);
+      setAnnotationsEnabled(on);
+      if (on) {
+        startSchedulerOnce();
+      } else {
+        // Turning it off stops the timer and wipes the chart of anything AI drew.
+        scheduler?.stop();
+        void clearAllLevels().catch(() => {});
+        void clearTradePlan().catch(() => {});
+      }
     }
     if ('autoRefresh' in partial) {
       if (partial.autoRefresh && schedulerStarted && scheduler && !scheduler.isRunning()) {

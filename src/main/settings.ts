@@ -9,6 +9,8 @@ const DEFAULTS: AppSettings = {
   persistLevels:         false,
   notifications:         true,
   autoTrade:             false,
+  // Off by default: a setting that costs money per tick has to be asked for (TVCM-44).
+  aiAnalysisEnabled:     false,
   autoTradeTestMode:     false,
   autoTradeStopDollars:   15.00,
   autoTradeTargetDollars: 30.00,

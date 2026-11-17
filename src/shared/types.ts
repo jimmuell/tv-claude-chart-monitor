@@ -433,6 +433,8 @@ export interface AppSettings {
   persistLevels:       boolean;
   notifications:       boolean;
   autoTrade:           boolean;  // auto-submit market order on valid_long / valid_short
+  /** AI chart analysis. Off since TVCM-44: nothing may reach an LLM while it is false. */
+  aiAnalysisEnabled:   boolean;
   autoTradeTestMode:   boolean;  // show Long/Short quick-fire buttons in panel header
   autoTradeStopDollars:   number;  // stop loss in $ per contract (default 15.00)
   autoTradeTargetDollars: number;  // take profit in $ per contract (default 30.00)

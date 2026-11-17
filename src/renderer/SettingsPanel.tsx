@@ -244,6 +244,22 @@ const SettingsPanel: React.FC = () => {
           />
         </div>
 
+        <div className="settings-section-title">AI chart analysis</div>
+        <div className="settings-row">
+          <span className="settings-label">AI analysis</span>
+          <SettingsToggle
+            checked={settings.aiAnalysisEnabled ?? false}
+            onChange={v => update({ aiAnalysisEnabled: v })}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label settings-label-wrap">
+            Off since 2026-11-17. While it is off nothing is sent to an AI provider, the
+            scheduler does not run and nothing is drawn on the chart. P&amp;L, the live
+            feed and the menu bar never used AI and are unaffected.
+          </span>
+        </div>
+
         <div className="settings-section-title">Fees (MES / AMP)</div>
         <div className="settings-row">
           <span className="settings-label">Subtract commissions</span>
