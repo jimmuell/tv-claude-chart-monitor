@@ -384,7 +384,13 @@ test('a solve that lands on a tick is offered as before', () => {
 });
 
 test('a solve outside the bars is refused even when it is on a tick', () => {
-  const bars = [{ time: Date.parse('2026-11-16T17:10:00Z') / 1000, low: 7490, high: 7500 }];
+  // Two bars, so the interval is knowable — since TVCM-43 a lone bar covers nothing,
+  // because there is no way to say how long it lasted.
+  const t = (iso) => Date.parse(iso) / 1000;
+  const bars = [
+    { time: t('2026-11-16T17:09:00Z'), low: 7489, high: 7499 },
+    { time: t('2026-11-16T17:10:00Z'), low: 7490, high: 7500 },
+  ];
   const s = c.suggestMissingFill({ fills: DAY, brokerQty: 0, brokerGross: 156.25, bars });
   assert.strictEqual(s.needsPrice, true);
   assert.match(s.rejected.join(' '), /outside the bar/);
@@ -434,4 +440,102 @@ test('reviewing never changes what is applied — that stays Jim’s decision', 
   assert.strictEqual(c.reviewCorrection(bad, {}).needsReview, true);
   const { appliedIds } = c.applyCorrections(DAY, [bad]);
   assert.deepStrictEqual(appliedIds, [bad.id], 'a flagged correction still applies until Jim says otherwise');
+});
+
+// ── A solved price is only as good as the balance it came from (TVCM-43) ─
+
+/** A correction whose price was inferred, not seen. */
+function inferred(over = {}) {
+  return { id: 'c1', side: 'Buy', qty: 1, price: 7331.75, fillTime: '2026-11-17 13:53:56',
+           sessionDate: '2026-11-17', source: 'inferred from balance', status: 'added',
+           createdAt: 100, ...over };
+}
+
+test('a correction solved before the opening balance moved is flagged', () => {
+  const r = c.reviewCorrection(inferred(), {
+    openingChangedAt: 200, previousBalance: 5474.29, openingBalance: 6252.89 });
+  assert.strictEqual(r.needsReview, true);
+  assert.match(r.problems.join(' '), /opening balance this price was solved from has changed/);
+  assert.match(r.problems.join(' '), /5474\.29 to 6252\.89/);
+});
+
+test('a correction made AFTER the move is not flagged', () => {
+  const r = c.reviewCorrection(inferred({ createdAt: 300 }), {
+    openingChangedAt: 200, previousBalance: 5474.29, openingBalance: 6252.89 });
+  assert.strictEqual(r.needsReview, false);
+});
+
+test('a price Jim saw himself does not depend on any balance', () => {
+  for (const source of ['entered by Jim', 'AMP statement']) {
+    const r = c.reviewCorrection(inferred({ source }), {
+      openingChangedAt: 200, previousBalance: 1, openingBalance: 2 });
+    assert.strictEqual(r.needsReview, false, source);
+  }
+});
+
+test('with no move recorded, nothing is flagged for it', () => {
+  assert.strictEqual(c.reviewCorrection(inferred(), {}).needsReview, false);
+  assert.strictEqual(c.reviewCorrection(inferred(), { openingChangedAt: 0 }).needsReview, false);
+  assert.strictEqual(c.reviewCorrection(inferred(), { openingChangedAt: null }).needsReview, false);
+});
+
+test('a correction with no timestamp is not flagged forever', () => {
+  // It cannot be shown to pre-date the move, and a flag that never clears teaches Jim
+  // to ignore flags.
+  const r = c.reviewCorrection(inferred({ createdAt: null }), { openingChangedAt: 200 });
+  assert.strictEqual(r.needsReview, false);
+});
+
+test('a moved balance is reported alongside a bad price, not instead of it', () => {
+  const r = c.reviewCorrection(inferred({ price: 7375.67 }), {
+    openingChangedAt: 200, previousBalance: 5474.29, openingBalance: 6252.89 });
+  assert.strictEqual(r.problems.length, 2);
+  assert.match(r.problems[0], /not on a 0\.25 tick/);
+  assert.match(r.problems[1], /opening balance/);
+});
+
+test('flagging still never changes what is applied', () => {
+  const made = c.makeCorrection({ side: 'Buy', qty: 5, price: 7480.50, status: 'added',
+                                  source: 'inferred from balance', fillTime: '2026-11-16 11:10:09',
+                                  createdAt: 100 });
+  assert.strictEqual(c.reviewCorrection(made, { openingChangedAt: 200 }).needsReview, true);
+  assert.deepStrictEqual(c.applyCorrections(DAY, [made]).appliedIds, [made.id],
+    'a flagged correction still applies until Jim says otherwise');
+});
+
+// ── A bar covers its own interval, and no more (TVCM-43) ────────────────
+
+test('a moment after a bar has closed is not inside it', () => {
+  const t = (iso) => Date.parse(iso) / 1000;
+  const bars = [
+    { time: t('2026-11-17T14:00:00Z'), low: 7400, high: 7410 },
+    { time: t('2026-11-17T14:01:00Z'), low: 7401, high: 7411 },
+  ];
+  assert.strictEqual(c.barInterval(bars), 60_000);
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T14:01:30Z')).low, 7401, 'inside the second bar');
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T14:00:59Z')).low, 7400, 'the last instant of the first');
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T14:02:00Z')), null, 'one interval past the last bar');
+  // The review's case: a fill 5h49m after the only bars still matched one before TVCM-43.
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T19:53:56Z')), null);
+});
+
+test('with too few bars to know the interval, nothing is claimed to cover anything', () => {
+  const one = [{ time: Date.parse('2026-11-17T14:00:00Z') / 1000, low: 7400, high: 7410 }];
+  assert.strictEqual(c.barInterval(one), null);
+  assert.strictEqual(c.barFor(one, Date.parse('2026-11-17T14:00:30Z')), null,
+    'no interval means no evidence, which is not a refusal');
+  assert.strictEqual(c.validateSuggestion({ price: 7331.75, qty: 1, imbalanceQty: -1,
+    bar: c.barFor(one, Date.parse('2026-11-17T14:00:30Z')) }).ok, true);
+});
+
+test('the interval is the smallest gap, so a gap in the data does not widen a bar', () => {
+  const t = (iso) => Date.parse(iso) / 1000;
+  const bars = [
+    { time: t('2026-11-17T14:00:00Z'), low: 7400, high: 7410 },
+    { time: t('2026-11-17T14:01:00Z'), low: 7401, high: 7411 },
+    { time: t('2026-11-17T14:30:00Z'), low: 7450, high: 7460 },   // a 29-minute hole
+  ];
+  assert.strictEqual(c.barInterval(bars), 60_000);
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T14:15:00Z')), null, 'the hole is not covered');
+  assert.strictEqual(c.barFor(bars, Date.parse('2026-11-17T14:30:30Z')).low, 7450);
 });

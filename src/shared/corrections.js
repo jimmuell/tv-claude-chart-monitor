@@ -64,16 +64,41 @@ function onTick(price, tick) {
   return Math.abs(steps - Math.round(steps)) < 1e-6;
 }
 
-/** The bar covering a moment, from a chart's bars, or null when none does. */
+/**
+ * The interval the bars are spaced at, in milliseconds, from the smallest positive gap
+ * between consecutive bar opens. Null when there are too few bars to tell.
+ */
+function barInterval(bars) {
+  const times = (bars || []).filter(Boolean).map(b => Number(b.time) * 1000)
+    .filter(Number.isFinite).sort((a, b) => a - b);
+  let smallest = null;
+  for (let n = 1; n < times.length; n++) {
+    const gap = times[n] - times[n - 1];
+    if (gap > 0 && (smallest === null || gap < smallest)) smallest = gap;
+  }
+  return smallest;
+}
+
+/**
+ * The bar covering a moment, or null when none does.
+ *
+ * Bounded by the bars' own interval: before TVCM-43 this returned the last bar that had
+ * opened at or before the moment, however long ago — a fill 5h49m after the only bar
+ * matched it, and would then have been judged against a range from a different part of
+ * the day. A moment outside every bar is no evidence, which is not a refusal.
+ */
 function barFor(bars, timeMs) {
   const at = Number(timeMs);
   if (!Array.isArray(bars) || !Number.isFinite(at)) return null;
+  const interval = barInterval(bars);
+  if (interval === null) return null;      // one bar, or none: nothing can be said to cover anything
   let best = null;
   for (const b of bars) {
     if (!b) continue;
     // Bar times are the OPEN of the bar, in seconds, as TradingView reports them.
     const start = Number(b.time) * 1000;
     if (!Number.isFinite(start) || start > at) continue;
+    if (at >= start + interval) continue;  // the moment falls after this bar closed
     if (!best || start > Number(best.time) * 1000) best = b;
   }
   return best;
@@ -296,6 +321,9 @@ function suggestMissingFill(input) {
   // it is a price that could have traded: on a tick, the right size, and inside the bar
   // if TVCM has one. TVCM-42: without this, a broker gross that was wrong by a day of
   // fees produced 7,375.67 — a price MES has never printed — and it was offered as advice.
+  // The size rule is vacuous here by construction — qty IS Math.abs(run) — and that is
+  // deliberate: it is written once and enforced on the way IN as well as on review, where
+  // a stored correction can genuinely disagree with the imbalance it was meant to close.
   const check = validateSuggestion({
     price: rounded, qty, imbalanceQty: run, tick: i.tick,
     bar: i.bar || barFor(i.bars, unmatched ? Date.parse(String(unmatched.fillTime).replace(' ', 'T')) : NaN),
@@ -328,7 +356,36 @@ function reviewCorrection(correction, context) {
     imbalanceQty: ctx.imbalanceQty,
     bar: ctx.bar || barFor(ctx.bars, Date.parse(String(c.fillTime).replace(' ', 'T'))),
   });
-  return { id: c.id, needsReview: !check.ok, problems: check.problems };
+  const problems = check.problems.slice();
+
+  // A price solved from the broker's money is only as good as the opening balance it was
+  // solved against. When AMP's figure moves — which TVCM-43 expects at every 17:00 roll —
+  // anything inferred BEFORE the move was computed from a number that has since changed.
+  // It is never silently kept and never silently recalculated: it is flagged, and Jim
+  // decides.
+  if (solvedFromBalance(c) && outdatedByBalance(c, ctx)) {
+    const from = Number(ctx.previousBalance), to = Number(ctx.openingBalance);
+    const moved = Number.isFinite(from) && Number.isFinite(to)
+      ? ` (it moved from ${from.toFixed(2)} to ${to.toFixed(2)})` : '';
+    problems.push(`the opening balance this price was solved from has changed since${moved}`);
+  }
+  return { id: c.id, needsReview: problems.length > 0, problems };
+}
+
+/** True when a correction's price was inferred from the broker's money rather than seen. */
+function solvedFromBalance(correction) {
+  return !!correction && correction.source === 'inferred from balance';
+}
+
+/** True when a correction was recorded before its session's opening balance last moved. */
+function outdatedByBalance(correction, context) {
+  const changedAt = Number(context && context.openingChangedAt);
+  if (!Number.isFinite(changedAt) || changedAt <= 0) return false;
+  const madeAt = Number(correction && correction.createdAt);
+  // A correction with no timestamp cannot be shown to pre-date the change, and a flag
+  // that fires on every correction forever would teach Jim to ignore it.
+  if (!Number.isFinite(madeAt) || madeAt <= 0) return false;
+  return madeAt < changedAt;
 }
 
 /** The same check over a whole list, returning only the ones that need Jim's attention. */
@@ -361,8 +418,9 @@ function suggestionText(s) {
 module.exports = {
   SOURCES, STATUSES, MATCH_PRICE_TOLERANCE, MATCH_TIME_TOLERANCE_MS, NO_DAY_CODE,
   REVIEW_CODE, MES_TICK,
-  onTick, barFor, priceInBar, validateSuggestion,
+  onTick, barFor, barInterval, priceInBar, validateSuggestion,
   reviewCorrection, reviewCorrections, reviewText,
+  solvedFromBalance, outdatedByBalance,
   dayIsCovered,
   sessionDateForStamp, chicagoStamp,
   makeCorrection, correctionToFill, fillSupersedes,

@@ -716,11 +716,18 @@ function correctionsWithReview(): unknown[] {
   const mode = paperMode() ? 'paper' : 'live';
   const rows = correctionsStore?.list(mode) ?? [];
   return rows.map((c) => {
+    const opening = openingStore?.get(mode, c.sessionDate) as
+      (import('../shared/types').OpeningBalanceRecord & { changedAt?: number | null; previousBalance?: number | null }) | null;
     const review = correctionsLib.reviewCorrection(c, {
       imbalanceQty: liveFeed?.rawImbalance(c.sessionDate) ?? null,
       // Bars are deliberately not supplied: the active chart is not guaranteed to be the
       // instrument that traded, and a wrong bar would reject a good price (TVCM-42 §7).
       bars: null,
+      // A price solved from the broker's money is only as good as the opening balance it
+      // came from, and AMP's figure moves at every 17:00 roll (TVCM-43).
+      openingChangedAt: openingStore?.changedAt(mode, c.sessionDate) ?? null,
+      previousBalance:  opening?.previousBalance ?? null,
+      openingBalance:   opening?.balance ?? null,
     });
     return { ...c, needsReview: review.needsReview, reviewText: correctionsLib.reviewText(review) };
   });
