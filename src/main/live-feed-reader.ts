@@ -98,6 +98,8 @@ export class LiveFeedReader {
   private loggedCode: string | null = null;
   /** When TVCM's open quantity and the broker's first disagreed, for the 30 s grace. */
   private mismatchSince: number | null = null;
+  /** The truncation notice already given, so a 5-second poll cannot repeat it. */
+  private truncationSaid: string | null = null;
   /** The raw fills of the last good read, before corrections, for the imbalance check. */
   private lastRawFills: any[] = [];
   /** Everything the last good read produced, so the window can show trades and fills too. */
@@ -292,8 +294,14 @@ export class LiveFeedReader {
       const blindDetail = shape.empty ? ' (nothing was returned, so the shape proved nothing)' : '';
 
       this.lastRawFills = anchored.fills || [];
-      if (anchored.truncated) {
-        this.logOnce(liveFeed.TRUNCATED_CODE, `[live-feed] ${liveFeed.TRUNCATED_CODE}: ${anchored.reason}`);
+      // Its own latch: logOnce() shares one slot with the fault codes, and the "recovered"
+      // line clears that slot on every healthy poll — which made this print every five
+      // seconds instead of once.
+      if (anchored.truncated && this.truncationSaid !== anchored.reason) {
+        this.truncationSaid = anchored.reason;
+        this.log(`[live-feed] ${liveFeed.TRUNCATED_CODE}: ${anchored.reason}`);
+      } else if (!anchored.truncated) {
+        this.truncationSaid = null;
       }
       this.lastSessions = (result.sessions || []).map(toImportedSession);
       this.lastTrades   = (result.trades  || []).map(toImportedTrade);
