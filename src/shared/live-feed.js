@@ -515,6 +515,100 @@ function prevDayBalanceFrom(payload) {
   return Number.isFinite(v) ? v : null;
 }
 
+/** Raised when the visible history cannot be anchored to a position the broker proves. */
+const TRUNCATED_CODE = 'TVCM-LF-TRUNCATED';
+
+/**
+ * Where the FIFO ledger may start.
+ *
+ * The feed sees the newest HISTORY_LIMIT rows of a history that is already 1,352 long and
+ * growing. That window has no reason to begin at a flat book — and on 2026-11-18 it did
+ * not. It began three fills into session 2026-11-13, so the ledger started from an
+ * *assumed* flat point that was really short 5, and that phantom +5 carried through every
+ * later session: 11-13 read −963.75 against a statement-proven +1,296.25, and the menu bar
+ * showed +$1,731.80 against AMP's +$177.50 (TVCM-45 §4.1).
+ *
+ * The rows were right and the engine was right. Only the window was wrong.
+ *
+ * So the start is no longer wherever the rows happen to begin. It is **proven flat by the
+ * broker's own live position**: start from `positions()` quantity NOW, walk the fills
+ * backwards undoing each one, and every moment the running quantity passes through zero is
+ * a point the book is known to have been empty. The OLDEST such point is the anchor,
+ * because it keeps the most history that can be trusted.
+ *
+ * A session may only be priced if it BEGINS at or after the anchor. A session the anchor
+ * falls inside is not half-priced — it is left out, and the export owns it as it always
+ * has. If no zero-crossing exists at all, nothing can be priced and the feed says so
+ * rather than publishing an offset ledger: correct, or refuse.
+ */
+function anchorFills(fills, livePositionQty) {
+  const rows = (fills || []).filter(Boolean)
+    .slice().sort((a, b) => (String(a.fillTime) < String(b.fillTime) ? -1 : 1));
+
+  // With no answer from the broker there is nothing to anchor against, and an unanchored
+  // ledger is exactly what this exists to stop.
+  if (livePositionQty === null || livePositionQty === undefined || !Number.isFinite(Number(livePositionQty))) {
+    return { fills: [], anchorTime: null, anchored: false, truncated: true,
+             coveredSessions: [], droppedSessions: sessionsOf(rows),
+             reason: 'the broker reported no position to anchor the ledger against' };
+  }
+
+  // The first visible row of each session. A session whose earliest row is not the
+  // anchor has rows before the anchor, so it cannot be priced from it.
+  const firstOfSession = new Set();
+  const seen = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    if (seen.has(rows[i].sessionDate)) continue;
+    seen.add(rows[i].sessionDate);
+    firstOfSession.add(i);
+  }
+
+  // Walk backwards, undoing each fill, so the running total is the position the book held
+  // just BEFORE that row. Every zero is a moment the book is PROVEN empty — but it is only
+  // usable as a start if the row after it also BEGINS a session, or the session it lands
+  // inside would be priced from half its rows.
+  let position = Number(livePositionQty);
+  const usable = [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    position -= signedQty(rows[i]);
+    if (position === 0 && firstOfSession.has(i)) usable.push(i);
+  }
+  if (usable.length === 0) {
+    return { fills: [], anchorTime: null, anchored: false, truncated: true,
+             coveredSessions: [], droppedSessions: sessionsOf(rows),
+             reason: 'the visible history never reaches a session that starts from a flat position, so no part of it can be priced' };
+  }
+
+  // The oldest usable point keeps the most history that can be trusted.
+  const anchorIndex = usable[usable.length - 1];
+  const kept = rows.slice(anchorIndex);
+  const anchorTime = kept[0].fillTime;
+
+  const covered = sessionsOf(kept);
+  const dropped = sessionsOf(rows.slice(0, anchorIndex));
+
+  return {
+    fills: kept,
+    anchorTime,
+    anchored: true,
+    truncated: dropped.length > 0,
+    coveredSessions: covered,
+    droppedSessions: dropped,
+    reason: dropped.length === 0 ? null
+      : `the visible history starts inside ${dropped.join(', ')}, so ${dropped.length === 1 ? 'that session is' : 'those sessions are'} left to the export`,
+  };
+}
+
+/** A fill's contribution to the running position: + for a buy, − for a sell. */
+function signedQty(fill) {
+  return (fill && fill.side === 'Buy' ? 1 : -1) * Number((fill && fill.qty) || 0);
+}
+
+/** The distinct session dates a set of fills covers, oldest first. */
+function sessionsOf(fills) {
+  return Array.from(new Set((fills || []).filter(Boolean).map(f => f.sessionDate))).sort();
+}
+
 /** The broker's SIGNED open quantity, summed across symbols. Null when it has no answer. */
 function sumPositionQty(positions) {
   if (!Array.isArray(positions)) return null;
@@ -553,8 +647,12 @@ function positionMismatch(input) {
   return {
     mismatch: true, warn: true, code: 'TVCM-LF-POSITION-MISMATCH', since,
     // Kept under the tooltip's 120-character cut so the words that matter survive it.
+    // The cause matters as much as the fact: a cut-short history explains a disagreement
+    // without a fill being missing, and saying "a fill may be missing" would send Jim
+    // looking for one that does not exist (TVCM-47).
     message: `TradingView's records and its live position disagree `
-           + `(orders say ${engineQty}, it reports ${brokerQty}) — a fill may be missing`,
+           + `(orders say ${engineQty}, it reports ${brokerQty}) — `
+           + (i.historyTruncated ? 'the visible history is cut short' : 'a fill may be missing'),
   };
 }
 
@@ -713,6 +811,7 @@ module.exports = {
   crossCheck, sumBrokerProfit, sumOpenQty, sumPositionQty, positionMismatch, POSITION_GRACE_MS,
   brokerSessionGross,
   prevDayBalanceFrom,
+  TRUNCATED_CODE, anchorFills, signedQty, sessionsOf,
   chicagoStamp, chicagoStampFromIso, sessionDateForEpoch, decodeSide,
   executionsToFills, ordersToFills, fillsFromPayload,
   analyseExecutions, analyseFeed, liveFeedExpression,

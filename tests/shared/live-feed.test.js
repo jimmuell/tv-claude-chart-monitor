@@ -13,6 +13,7 @@ const assert = require('node:assert');
 const path   = require('path');
 
 const lf = require(path.join(__dirname, '../../src/shared/live-feed.js'));
+const { analyseFills } = require(path.join(__dirname, '../../src/shared/order-history.js'));
 const { brokerAvailability, detectExecutionShape, executionsToFills,
         analyseExecutions, liveFeedExpression,
         REQUIRED_EXECUTION_FIELDS } = lf;
@@ -777,4 +778,134 @@ test('the expression reads the Balances table, not the Account summary tab', () 
   assert.ok(expr.includes('getData'), 'through the broker, not the DOM');
   // TVCM-34: the rendered Account summary tab freezes and is never read.
   assert.ok(!/querySelector|accountSummaryField/.test(expr), 'and never off the screen');
+});
+
+// ── The ledger starts where the broker proves the book was empty (TVCM-47) ─
+//
+// On 2026-11-18 the feed's 500-row window began three fills inside session 2026-11-13.
+// The FIFO ledger started from an ASSUMED flat book that was really short 5, and that
+// phantom +5 carried through every later session: 11-13 read −963.75 against a
+// statement-proven +1,296.25, and the menu bar showed +$1,731.80 against AMP's +$177.50.
+// The rows were right and the engine was right. Only the window was wrong.
+//
+// These are today's REAL seven fills, which priced on their own give exactly AMP's figure.
+
+/** One engine fill. */
+function lfFill(side, qty, price, fillTime, sessionDate) {
+  return { orderId: `${fillTime}-${side}`, symbol: 'MES', side, qty, price, fillTime,
+           sessionDate, status: 'Filled', orderType: '', source: 'test', line: 0 };
+}
+
+/** Session 2026-11-18 as AMP actually filled it: 11 bought, 11 sold, finishing flat. */
+const WED_FILLS = [
+  lfFill('Sell', 5, 7410.00, '2026-11-17 17:28:43', '2026-11-18'),
+  lfFill('Buy',  5, 7406.50, '2026-11-17 17:55:48', '2026-11-18'),
+  lfFill('Sell', 1, 7406.00, '2026-11-17 18:15:05', '2026-11-18'),
+  lfFill('Sell', 4, 7403.75, '2026-11-17 18:27:20', '2026-11-18'),
+  lfFill('Buy',  5, 7400.00, '2026-11-17 19:05:53', '2026-11-18'),
+  lfFill('Buy',  1, 7381.75, '2026-11-17 23:31:15', '2026-11-18'),
+  lfFill('Sell', 1, 7378.75, '2026-11-17 23:34:17', '2026-11-18'),
+];
+
+/** The cut: session 2026-11-17's rows arrive already short 5 of their matching side. */
+const CUT_TUESDAY = [
+  lfFill('Buy', 5, 7500.00, '2026-11-17 09:00:00', '2026-11-17'),
+  lfFill('Buy', 5, 7505.00, '2026-11-17 10:00:00', '2026-11-17'),
+  lfFill('Sell', 5, 7510.00, '2026-11-17 11:00:00', '2026-11-17'),
+];
+
+test('a window cut inside a session no longer poisons the sessions after it', () => {
+  // (a) The acceptance. The broker says FLAT; the visible rows say +5, because the cut
+  // took the other side. Today must still price exactly.
+  const all = CUT_TUESDAY.concat(WED_FILLS);
+  const raw = all.reduce((n, f) => n + (f.side === 'Buy' ? 1 : -1) * f.qty, 0);
+  assert.strictEqual(raw, 5, 'the fixture must actually reproduce the phantom carry');
+
+  const anchored = lf.anchorFills(all, 0);
+  assert.strictEqual(anchored.anchored, true);
+  assert.deepStrictEqual(anchored.coveredSessions, ['2026-11-18']);
+  assert.deepStrictEqual(anchored.droppedSessions, ['2026-11-17']);
+
+  const priced = analyseFills(anchored.fills, { perContractSideFee: 0.60 });
+  const wed = priced.sessions.find(s => s.sessionDate === '2026-11-18');
+  assert.strictEqual(wed.grossPnl, 177.50, "AMP's own pl, to the cent");
+  assert.strictEqual(wed.netPnl, 164.30);
+  assert.strictEqual(wed.contractSides, 22);
+  assert.strictEqual(wed.openPositionAtEnd, 0, 'no phantom carry');
+  assert.strictEqual(priced.sessions.find(s => s.sessionDate === '2026-11-17'), undefined,
+    'the half-seen session is left to the export, not half-priced');
+});
+
+test('the unanchored ledger really did produce the number on the menu bar', () => {
+  // What the old code did with the same rows, pinned so it cannot come back unnoticed.
+  const wrong = analyseFills(CUT_TUESDAY.concat(WED_FILLS), { perContractSideFee: 0.60 })
+    .sessions.find(s => s.sessionDate === '2026-11-18');
+  assert.strictEqual(wrong.openPositionAtEnd, 5, 'the phantom carry');
+  assert.notStrictEqual(wrong.grossPnl, 177.50);
+});
+
+test('no flat point anywhere means nothing is published', () => {
+  // (b) One buy visible and the broker FLAT: undoing it leaves the book short 5 and it
+  // never reaches zero, so there is no honest place to start and no number to show.
+  const out = lf.anchorFills([lfFill('Buy', 5, 7400, '2026-11-17 17:28:43', '2026-11-18')], 0);
+  assert.strictEqual(out.anchored, false);
+  assert.strictEqual(out.truncated, true);
+  assert.deepStrictEqual(out.fills, []);
+  assert.match(out.reason, /never reaches a session that starts from a flat position/);
+  assert.strictEqual(lf.TRUNCATED_CODE, 'TVCM-LF-TRUNCATED');
+});
+
+test('a cut that happens to land on a flat point changes nothing', () => {
+  // (c) The common case, and the one that worked by luck until this morning.
+  const out = lf.anchorFills(WED_FILLS, 0);
+  assert.strictEqual(out.anchored, true);
+  assert.strictEqual(out.truncated, false);
+  assert.strictEqual(out.fills.length, WED_FILLS.length, 'every row kept');
+  assert.deepStrictEqual(out.coveredSessions, ['2026-11-18']);
+  assert.deepStrictEqual(out.droppedSessions, []);
+  assert.strictEqual(out.reason, null);
+});
+
+test('being in a trade right now does not move the anchor', () => {
+  // (d) The same day with the last sell not yet made: the broker is long 1, and the
+  // anchor must still be the start of the session.
+  const inTrade = WED_FILLS.slice(0, 6);           // ends Buy 1 — long 1
+  const out = lf.anchorFills(inTrade, 1);
+  assert.strictEqual(out.anchored, true);
+  assert.strictEqual(out.fills.length, inTrade.length);
+  const priced = analyseFills(out.fills, { perContractSideFee: 0.60 })
+    .sessions.find(s => s.sessionDate === '2026-11-18');
+  assert.strictEqual(priced.openPositionAtEnd, 1, "matching the broker's own position");
+});
+
+test('a broker with no answer anchors nothing at all', () => {
+  for (const qty of [null, undefined, NaN, 'n/a']) {
+    const out = lf.anchorFills(WED_FILLS, qty);
+    assert.strictEqual(out.anchored, false, String(qty));
+    assert.match(out.reason, /no position to anchor/);
+  }
+});
+
+test('the oldest proven-flat point is chosen, to keep the most history', () => {
+  // Two zero-crossings: the anchor must be the earlier one.
+  const twoDays = [
+    lfFill('Buy',  5, 7300, '2026-11-16 09:00:00', '2026-11-16'),
+    lfFill('Sell', 5, 7310, '2026-11-16 10:00:00', '2026-11-16'),
+  ].concat(WED_FILLS);
+  const out = lf.anchorFills(twoDays, 0);
+  assert.strictEqual(out.anchorTime, '2026-11-16 09:00:00');
+  assert.deepStrictEqual(out.coveredSessions, ['2026-11-16', '2026-11-18']);
+  assert.strictEqual(out.truncated, false);
+});
+
+test('the mismatch warning names the cause, and does not invent a missing fill', () => {
+  const base = { engineQty: 5, brokerQty: 0, mismatchSince: 1, now: 1 + 40_000 };
+  assert.match(lf.positionMismatch(base).message, /a fill may be missing/);
+  assert.match(lf.positionMismatch({ ...base, historyTruncated: true }).message,
+    /the visible history is cut short/);
+  assert.ok(!/a fill may be missing/.test(lf.positionMismatch({ ...base, historyTruncated: true }).message));
+  // Both must survive the tooltip's 120-character cut.
+  for (const truncated of [false, true]) {
+    assert.ok(lf.positionMismatch({ ...base, historyTruncated: truncated }).message.length <= 120);
+  }
 });

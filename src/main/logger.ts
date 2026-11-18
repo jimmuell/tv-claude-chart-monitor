@@ -125,8 +125,20 @@ export function formatArgs(args: unknown[]): string {
 let started = false;
 
 /**
- * Mirror console.log/warn/error into the log file for the rest of the run.
- * Safe to call twice; returns the path so startup can announce it.
+ * The Chicago wall clock as "HH:MM:SS", the only clock this app reasons in. Every
+ * timestamp TVCM prints or stores is CT, so the log is comparable with the session
+ * boundaries, the AMP statement and Jim's own screen without conversion.
+ */
+export function logStamp(now?: number): string {
+  return new Date(now == null ? Date.now() : now).toLocaleTimeString('en-GB', {
+    timeZone: 'America/Chicago', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+}
+
+/**
+ * Mirror console.log/warn/error into the log file for the rest of the run, and stamp
+ * every line on the way out. Safe to call twice; returns the path so startup can announce it.
  */
 export function initLogger(): string {
   if (started) return logFilePath();
@@ -134,7 +146,10 @@ export function initLogger(): string {
   for (const level of ['log', 'warn', 'error'] as const) {
     const original = console[level].bind(console);
     console[level] = (...args: unknown[]) => {
-      original(...args);
+      // Stamped on the way out as well as into the file. TVCM-45 §4.4: the roll report
+      // had to bound every log line by its run's file-creation time, because no line
+      // said when it happened.
+      original(`${logStamp()} CT`, ...args);
       logLine(level, formatArgs(args));
     };
   }

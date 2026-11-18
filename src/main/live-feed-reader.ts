@@ -208,8 +208,17 @@ export class LiveFeedReader {
         perContractSideFee: this.feeRate(),
         source: `live-feed:${this.mode}`,
       });
+      // The ledger may only start where the broker's own live position proves the book was
+      // empty. Without this the window simply began wherever the newest 500 rows did, and
+      // on 2026-11-18 that was three fills inside a session — a phantom +5 that carried
+      // through every later day and put +$1,731.80 on the menu bar against AMP's +$177.50
+      // (TVCM-45 §4.1, TVCM-47).
+      const anchored = liveFeed.anchorFills(feed.fills, liveFeed.sumPositionQty(payload.positions));
+      if (!anchored.anchored) {
+        return this.hardFail(at, payload, 'unreadable', liveFeed.TRUNCATED_CODE, anchored.reason);
+      }
       // Jim's accepted corrections are part of every calculation from here on.
-      const corrected = corrections.analyseWithCorrections(feed.fills, this.corrections(), {
+      const corrected = corrections.analyseWithCorrections(anchored.fills, this.corrections(), {
         mode: this.mode, perContractSideFee: this.feeRate(), skipped: feed.skipped,
       });
       const result = corrected.result;
@@ -263,6 +272,9 @@ export class LiveFeedReader {
       const posCheck = liveFeed.positionMismatch({
         engineQty: match ? match.openPositionAtEnd : 0,
         brokerQty, mismatchSince: this.mismatchSince, now: at,
+        // A truncated history explains a disagreement without a fill being missing, and
+        // sending Jim to look for one would be sending him to look for nothing (TVCM-47).
+        historyTruncated: anchored.truncated,
       });
       this.mismatchSince = posCheck.since;
 
@@ -279,7 +291,10 @@ export class LiveFeedReader {
       // says something happened, that is the blind case, named.
       const blindDetail = shape.empty ? ' (nothing was returned, so the shape proved nothing)' : '';
 
-      this.lastRawFills = feed.fills || [];
+      this.lastRawFills = anchored.fills || [];
+      if (anchored.truncated) {
+        this.logOnce(liveFeed.TRUNCATED_CODE, `[live-feed] ${liveFeed.TRUNCATED_CODE}: ${anchored.reason}`);
+      }
       this.lastSessions = (result.sessions || []).map(toImportedSession);
       this.lastTrades   = (result.trades  || []).map(toImportedTrade);
       this.lastFills    = (result.fills   || []).map(toImportedFill);

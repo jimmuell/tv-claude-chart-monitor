@@ -98,3 +98,28 @@ test('the live file rotates once it passes the size cap and keeps 5 files', () =
 test('logging never throws even when the folder cannot be written', () => {
   assert.doesNotThrow(() => logLine('error', 'still fine'));
 });
+
+// ── Every console line carries the Chicago clock (TVCM-47) ──────────────
+//
+// TVCM-45 §4.4 complained that log lines had no times. That was only half right: the
+// app's OWN log file has carried full ISO CT stamps since logger.ts was written — what
+// had none was stdout, which is what a `npm run dev` run captures and what the report was
+// actually reading. initLogger() now stamps both.
+
+test('the stamp is the Chicago wall clock, in 24-hour form', () => {
+  const { logStamp } = require(path.join(__dirname, '../../dist/main/main/logger.js'));
+  // 2026-11-18T13:36:19Z is 07:36:19 CT (CST, UTC-6).
+  assert.strictEqual(logStamp(Date.parse('2026-11-18T13:36:19Z')), '07:36:19');
+  // And in July it is CDT (UTC-5), so the same UTC instant is an hour later.
+  assert.strictEqual(logStamp(Date.parse('2026-07-15T13:36:19Z')), '08:36:19');
+});
+
+test('initLogger prefixes stdout as well as the file', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../../src/main/logger.ts'), 'utf8');
+  const fn = src.slice(src.indexOf('export function initLogger'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /original\(`\$\{logStamp\(\)\} CT`, \.\.\.args\)/,
+    'the console line must carry the time');
+  assert.match(body, /logLine\(level, formatArgs\(args\)\)/,
+    'and the file still gets the full ISO stamp from logLine');
+});
